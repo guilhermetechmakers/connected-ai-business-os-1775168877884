@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Gauge,
   LayoutDashboard,
+  LogOut,
   Menu,
   Plug,
   Search,
@@ -18,9 +19,10 @@ import {
   Puzzle,
 } from "lucide-react";
 import { useState } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/contexts/auth-context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -127,6 +129,10 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
 
 export function DashboardLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const { signOut, tenant, isConfigured } = useAuth();
+  const navigate = useNavigate();
+  const tenantName = tenant?.name ?? null;
+  const tenantDomain = tenant?.domain ?? null;
 
   return (
     <div className="grid-bg min-h-screen">
@@ -199,7 +205,17 @@ export function DashboardLayout() {
                   <span className="absolute inline-flex h-full w-full animate-pulse-live rounded-full bg-success opacity-75" />
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                 </span>
-                Tenant health · All systems operational
+                {tenantName ? (
+                  <span className="text-foreground/90">
+                    <span className="font-medium text-primary">{tenantName}</span>
+                    {tenantDomain ? (
+                      <span className="text-muted-foreground"> · {tenantDomain}</span>
+                    ) : null}{" "}
+                    · isolated tenant context
+                  </span>
+                ) : (
+                  <span>Tenant health · All systems operational</span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -209,6 +225,22 @@ export function DashboardLayout() {
               <Button variant="cta" size="sm" asChild>
                 <Link to="/dashboard/ai">Open AI</Link>
               </Button>
+              {isConfigured ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="hidden sm:inline-flex"
+                  onClick={async () => {
+                    await signOut();
+                    navigate("/login", { replace: true, state: { signedOut: true } });
+                  }}
+                  aria-label="Sign out"
+                >
+                  <LogOut className="mr-1 h-4 w-4" />
+                  Sign out
+                </Button>
+              ) : null}
             </div>
           </header>
 

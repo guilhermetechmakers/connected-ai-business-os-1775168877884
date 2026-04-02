@@ -1,0 +1,1041 @@
+/**
+ * Auth API — multi-tenant signup/login, refresh, password reset, email verification, profile, API keys.
+ * Uses Supabase Auth (GoTrue) for credentials; service role for provisioning and token-backed flows.
+ * Client: supabase.functions.invoke('auth-api', { body: { op, ... } }).
+ * Secrets: SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_ANON_KEY.
+ * Optional: SITE_URL (for email links), GOOGLE_OAUTH_CLIENT_ID, MICROSOFT_OAUTH_CLIENT_ID.
+ */
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+import { z } from "https://esm.sh/zod@3.25.76";
+import { corsHeaders } from "../_shared/cors.ts";
+
+const MAX_FAILURES = 8;
+const FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOCKOUT_MS = 30 * 60 * 1000;
+
+const passwordPolicySchema = z.object({
+  minLength: z.number().min(6).max(128),
+  requireSpecialChar: z.boolean(),
+  requireNumbers: z.boolean(),
+  requireUppercase: z.boolean(),
+});
+
+type PasswordPolicy = z.infer<typeof passwordPolicySchema>;
+
+const defaultPolicy: PasswordPolicy = {
+  minLength: 10,
+  requireSpecialChar: true,
+  requireNumbers: true,
+  requireUppercase: true,
+};
+
+const opSchema = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("auth.signup"),
+    tenantName: z.string().min(2).max(200),
+    industry: z.string().max(120).optional(),
+    domainHint: z.string().max(200).optional(),
+    fullName: z.string().min(2).max(200),
+    email: z.string().email(),
+    password: z.string().min(8).max(200),
+    inviteToken: z.string().max(500).optional(),
+    acceptTerms: z.boolean(),
+  }),
+  z.object({
+    op: z.literal("auth.login"),
+    email: z.string().email(),
+    password: z.string().min(1).max(200),
+    tenantDomain: z.string().max(200).optional(),
+    tenantId: z.string().uuid().optional(),
+  }),
+  z.object({
+    op: z.literal("auth.logout"),
+    refreshToken: z.string().optional(),
+  }),
+  z.object({
+    op: z.literal("auth.refresh"),
+    refreshToken: z.string().min(10),
+  }),
+  z.object({ op: z.literal("auth.status") }),
+  z.object({
+    op: z.literal("password.request"),
+    email: z.string().email(),
+  }),
+  z.object({
+    op: z.literal("password.confirm"),
+    token: z.string().min(8),
+    password: z.string().min(8).max(200),
+  }),
+  z.object({
+    op: z.literal("verify.email"),
+    token: z.string().min(8),
+  }),
+  z.object({
+    op: z.literal("invitations.resolve"),
+    token: z.string().min(4).max(500),
+  }),
+  z.object({
+    op: z.literal("profile.get"),
+  }),
+  z.object({ op: z.literal("profile.ensure") }),
+  z.object({
+    op: z.literal("profile.update"),
+    displayName: z.string().min(2).max(200).optional(),
+    avatarUrl: z.union([z.string().url(), z.literal("")]).optional(),
+    preferences: z.record(z.string(), z.unknown()).optional(),
+  }),
+  z.object({
+    op: z.literal("apikeys.create"),
+    name: z.string().min(2).max(120),
+    scopes: z.array(z.string()).optional(),
+  }),
+  z.object({
+    op: z.literal("apikeys.list"),
+  }),
+  z.object({
+    op: z.literal("apikeys.revoke"),
+    keyId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("oauth.url"),
+    provider: z.enum(["google", "microsoft"]),
+    redirectTo: z.string().url().optional(),
+  }),
+  z.object({ op: z.literal("mfa.status") }),
+  z.object({ op: z.literal("mfa.verify"), code: z.string().min(4).optional() }),
+  z.object({ op: z.literal("saml.acs") }),
+]);
+
+type ParsedOp = z.infer<typeof opSchema>;
+
+function jsonResponse(
+  body: Record<string, unknown>,
+  status = 200,
+): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function randomToken(): string {
+  const u = crypto.randomUUID().replace(/-/g, "");
+  return `${u}${crypto.randomUUID().replace(/-/g, "")}`;
+}
+
+function validatePassword(pw: string, policy: PasswordPolicy): string | null {
+  if (pw.length < policy.minLength) {
+    return `Password must be at least ${policy.minLength} characters`;
+  }
+  if (policy.requireNumbers && !/\d/.test(pw)) {
+    return "Password must include a number";
+  }
+  if (policy.requireUppercase && !/[A-Z]/.test(pw)) {
+    return "Password must include an uppercase letter";
+  }
+  if (policy.requireSpecialChar && !/[^A-Za-z0-9]/.test(pw)) {
+    return "Password must include a special character";
+  }
+  return null;
+}
+
+function parsePolicy(raw: unknown): PasswordPolicy {
+  const p = passwordPolicySchema.safeParse(raw);
+  return p.success ? p.data : defaultPolicy;
+}
+
+function getClientIp(req: Request): string {
+  return (
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    req.headers.get("cf-connecting-ip") ??
+    "0.0.0.0"
+  );
+}
+
+async function requireUser(
+  req: Request,
+  supabaseUrl: string,
+  anonKey: string,
+): Promise<{ userId: string; jwt: string; admin: SupabaseClient }> {
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    throw new Response(JSON.stringify({ data: null, error: { message: "Unauthorized" }, meta: {} }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  const jwt = authHeader.slice(7);
+  const admin = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data, error } = await admin.auth.getUser(jwt);
+  if (error || !data.user) {
+    throw new Response(JSON.stringify({ data: null, error: { message: "Invalid session" }, meta: {} }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  return { userId: data.user.id, jwt, admin };
+}
+
+async function isLockedOut(
+  admin: SupabaseClient,
+  emailNorm: string,
+): Promise<boolean> {
+  const { data } = await admin
+    .from("auth_lockouts")
+    .select("locked_until")
+    .eq("email_normalized", emailNorm)
+    .maybeSingle();
+  const until = data?.locked_until ? new Date(data.locked_until as string) : null;
+  return until !== null && until > new Date();
+}
+
+async function recordFailure(admin: SupabaseClient, emailNorm: string, ip: string): Promise<void> {
+  await admin.from("auth_login_attempts").insert({
+    email_normalized: emailNorm,
+    ip,
+    success: false,
+  });
+  const since = new Date(Date.now() - FAILURE_WINDOW_MS).toISOString();
+  const { count } = await admin
+    .from("auth_login_attempts")
+    .select("*", { count: "exact", head: true })
+    .eq("email_normalized", emailNorm)
+    .eq("success", false)
+    .gte("attempted_at", since);
+  const failures = count ?? 0;
+  if (failures >= MAX_FAILURES) {
+    const lockedUntil = new Date(Date.now() + LOCKOUT_MS).toISOString();
+    await admin.from("auth_lockouts").upsert({
+      email_normalized: emailNorm,
+      failed_count: failures,
+      locked_until: lockedUntil,
+      updated_at: new Date().toISOString(),
+    });
+  }
+}
+
+async function recordSuccess(admin: SupabaseClient, emailNorm: string, ip: string): Promise<void> {
+  await admin.from("auth_login_attempts").insert({
+    email_normalized: emailNorm,
+    ip,
+    success: true,
+  });
+  await admin.from("auth_lockouts").upsert({
+    email_normalized: emailNorm,
+    failed_count: 0,
+    locked_until: null,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function logSecurityEvent(
+  admin: SupabaseClient,
+  companyId: string | null,
+  profileId: string | null,
+  eventType: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await admin.from("auth_security_events").insert({
+    company_id: companyId,
+    profile_id: profileId,
+    event_type: eventType,
+    payload,
+  });
+}
+
+async function fetchProfileBundle(admin: SupabaseClient, userId: string) {
+  const { data: profile, error: pErr } = await admin
+    .from("profiles")
+    .select(
+      "id,email,display_name,avatar_url,roles,auth_methods,company_id,preferences,status,created_at",
+    )
+    .eq("id", userId)
+    .maybeSingle();
+  if (pErr || !profile) return { profile: null, company: null };
+  const companyId = profile.company_id as string | null;
+  let company: Record<string, unknown> | null = null;
+  if (companyId) {
+    const { data: co } = await admin
+      .from("companies")
+      .select(
+        "id,name,domain,industry,timezone,currency,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
+      )
+      .eq("id", companyId)
+      .maybeSingle();
+    company = co;
+  }
+  return { profile, company };
+}
+
+async function notifyEmail(
+  kind: "verification" | "password_reset",
+  to: string,
+  token: string,
+): Promise<void> {
+  const fnUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/email-auth-notifications`;
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!key) return;
+  try {
+    await fetch(fnUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({ kind, to, token }),
+    });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+  if (!supabaseUrl || !serviceKey || !anonKey) {
+    return jsonResponse(
+      { data: null, error: { message: "Server misconfigured" }, meta: {} },
+      500,
+    );
+  }
+
+  const admin = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  let parsed: ParsedOp;
+  try {
+    const body = await req.json();
+    const r = opSchema.safeParse(body);
+    if (!r.success) {
+      return jsonResponse(
+        { data: null, error: { message: "Invalid request", details: r.error.flatten() }, meta: {} },
+        400,
+      );
+    }
+    parsed = r.data;
+  } catch {
+    return jsonResponse({ data: null, error: { message: "Invalid JSON" }, meta: {} }, 400);
+  }
+
+  try {
+    switch (parsed.op) {
+      case "auth.status":
+        return jsonResponse({
+          data: { ok: true, version: "1" },
+          error: null,
+          meta: {},
+        });
+
+      case "mfa.status":
+        return jsonResponse({
+          data: { enabled: false, factors: [] as string[] },
+          error: null,
+          meta: {},
+        });
+
+      case "mfa.verify":
+        return jsonResponse(
+          { data: null, error: { message: "MFA not enabled for this tenant" }, meta: {} },
+          501,
+        );
+
+      case "saml.acs":
+        return jsonResponse(
+          { data: null, error: { message: "SAML ACS must be configured on the IdP integration" }, meta: {} },
+          501,
+        );
+
+      case "oauth.url": {
+        const site = parsed.redirectTo ?? Deno.env.get("SITE_URL") ?? "http://localhost:5173";
+        if (parsed.provider === "google") {
+          const cid = Deno.env.get("GOOGLE_OAUTH_CLIENT_ID") ?? "";
+          if (!cid) {
+            return jsonResponse({
+              data: null,
+              error: { message: "Google OAuth is not configured" },
+              meta: {},
+            }, 503);
+          }
+          const q = new URLSearchParams({
+            client_id: cid,
+            redirect_uri: `${supabaseUrl}/auth/v1/callback`,
+            response_type: "code",
+            scope: "openid email profile",
+            state: site,
+          });
+          return jsonResponse({
+            data: { url: `https://accounts.google.com/o/oauth2/v2/auth?${q.toString()}` },
+            error: null,
+            meta: {},
+          });
+        }
+        const msid = Deno.env.get("MICROSOFT_OAUTH_CLIENT_ID") ?? "";
+        if (!msid) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Microsoft OAuth is not configured" },
+            meta: {},
+          }, 503);
+        }
+        const q2 = new URLSearchParams({
+          client_id: msid,
+          response_type: "code",
+          redirect_uri: `${supabaseUrl}/auth/v1/callback`,
+          scope: "openid email profile offline_access",
+          state: site,
+        });
+        return jsonResponse({
+          data: {
+            url: `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${q2.toString()}`,
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "invitations.resolve": {
+        const { data: inv } = await admin
+          .from("invitations")
+          .select("email,company_id,status,expires_at")
+          .eq("token", parsed.token)
+          .maybeSingle();
+        if (!inv || inv.status !== "pending") {
+          return jsonResponse({
+            data: null,
+            error: { message: "Invalid or expired invitation" },
+            meta: {},
+          }, 400);
+        }
+        if (new Date(inv.expires_at as string) < new Date()) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Invitation expired" },
+            meta: {},
+          }, 400);
+        }
+        let companyName: string | null = null;
+        if (inv.company_id) {
+          const { data: co } = await admin
+            .from("companies")
+            .select("name")
+            .eq("id", inv.company_id as string)
+            .maybeSingle();
+          companyName = (co?.name as string) ?? null;
+        }
+        return jsonResponse({
+          data: {
+            email: inv.email,
+            companyId: inv.company_id,
+            companyName,
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "auth.signup": {
+        if (!parsed.acceptTerms) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Terms must be accepted" },
+            meta: {},
+          }, 400);
+        }
+        const emailNorm = normalizeEmail(parsed.email);
+        const ip = getClientIp(req);
+        let companyId: string;
+        let defaultRoles: string[] = ["admin"];
+
+        if (parsed.inviteToken) {
+          const { data: inv } = await admin
+            .from("invitations")
+            .select("id,company_id,email,status,expires_at")
+            .eq("token", parsed.inviteToken)
+            .maybeSingle();
+          if (!inv || inv.status !== "pending" || new Date(inv.expires_at as string) < new Date()) {
+            return jsonResponse({
+              data: null,
+              error: { message: "Invalid or expired invitation" },
+              meta: {},
+            }, 400);
+          }
+          if (normalizeEmail(inv.email as string) !== emailNorm) {
+            return jsonResponse({
+              data: null,
+              error: { message: "Email must match the invitation" },
+              meta: {},
+            }, 400);
+          }
+          companyId = inv.company_id as string;
+          defaultRoles = ["member"];
+        } else {
+          const settings = {
+            industry: parsed.industry ?? null,
+            domain_hint: parsed.domainHint ?? null,
+          };
+          const { data: co, error: cErr } = await admin
+            .from("companies")
+            .insert({
+              name: parsed.tenantName,
+              domain: parsed.domainHint?.trim() || null,
+              industry: parsed.industry?.trim() || null,
+              settings,
+            })
+            .select("id")
+            .single();
+          if (cErr || !co) {
+            return jsonResponse({
+              data: null,
+              error: { message: cErr?.message ?? "Could not create tenant" },
+              meta: {},
+            }, 400);
+          }
+          companyId = co.id as string;
+        }
+
+        const policy = defaultPolicy;
+        const pwErr = validatePassword(parsed.password, policy);
+        if (pwErr) {
+          return jsonResponse({ data: null, error: { message: pwErr }, meta: {} }, 400);
+        }
+
+        const { data: created, error: signErr } = await admin.auth.admin.createUser({
+          email: parsed.email,
+          password: parsed.password,
+          email_confirm: false,
+          user_metadata: { full_name: parsed.fullName },
+        });
+        if (signErr || !created.user) {
+          return jsonResponse({
+            data: null,
+            error: { message: signErr?.message ?? "Could not create user" },
+            meta: {},
+          }, 400);
+        }
+
+        const userId = created.user.id;
+        const { error: profErr } = await admin.from("profiles").upsert({
+          id: userId,
+          email: parsed.email,
+          display_name: parsed.fullName,
+          company_id: companyId,
+          roles: defaultRoles,
+          auth_methods: ["password"],
+        });
+        if (profErr) {
+          await admin.auth.admin.deleteUser(userId);
+          return jsonResponse({
+            data: null,
+            error: { message: profErr.message },
+            meta: {},
+          }, 400);
+        }
+
+        if (parsed.inviteToken) {
+          await admin
+            .from("invitations")
+            .update({ status: "accepted" })
+            .eq("token", parsed.inviteToken);
+        }
+
+        const vToken = randomToken();
+        const vExp = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString();
+        await admin.from("email_verification_tokens").insert({
+          token: vToken,
+          user_id: userId,
+          expires_at: vExp,
+        });
+        await notifyEmail("verification", parsed.email, vToken);
+        await logSecurityEvent(admin, companyId, userId, "signup_completed", { ip });
+
+        return jsonResponse({
+          data: {
+            userId,
+            companyId,
+            emailVerificationSent: true,
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "auth.login": {
+        const emailNorm = normalizeEmail(parsed.email);
+        const ip = getClientIp(req);
+        if (await isLockedOut(admin, emailNorm)) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Too many attempts. Try again later." },
+            meta: { code: "lockout" },
+          });
+        }
+
+        const anon = createClient(supabaseUrl, anonKey, {
+          auth: { persistSession: false, autoRefreshToken: false },
+        });
+        const { data: sessionData, error: signErr } = await anon.auth.signInWithPassword({
+          email: parsed.email,
+          password: parsed.password,
+        });
+        if (signErr || !sessionData.session) {
+          await recordFailure(admin, emailNorm, ip);
+          return jsonResponse({
+            data: null,
+            error: { message: "Invalid credentials" },
+            meta: { code: "invalid_credentials" },
+          });
+        }
+
+        const userId = sessionData.user.id;
+        const { data: profile } = await admin
+          .from("profiles")
+          .select("company_id,email")
+          .eq("id", userId)
+          .maybeSingle();
+        const companyId = profile?.company_id as string | null;
+
+        if (parsed.tenantId && companyId && companyId !== parsed.tenantId) {
+          await anon.auth.signOut();
+          await recordFailure(admin, emailNorm, ip);
+          return jsonResponse({
+            data: null,
+            error: { message: "Tenant mismatch" },
+            meta: { code: "tenant_mismatch" },
+          });
+        }
+
+        const emailDomain = parsed.email.split("@")[1]?.toLowerCase() ?? "";
+        if (companyId) {
+          const { data: co } = await admin
+            .from("companies")
+            .select("domain,sso_settings")
+            .eq("id", companyId)
+            .maybeSingle();
+          const sso = (co?.sso_settings as Record<string, unknown> | null) ?? {};
+          const allowPassword =
+            typeof sso.allowPasswordLogin === "boolean" ? sso.allowPasswordLogin : true;
+          if (!allowPassword) {
+            await anon.auth.signOut();
+            await recordFailure(admin, emailNorm, ip);
+            return jsonResponse({
+              data: null,
+              error: { message: "Password sign-in is disabled for this tenant. Use SSO." },
+              meta: { code: "sso_only" },
+            });
+          }
+          const restrictionsRaw = sso.domainRestrictions;
+          const restrictions = Array.isArray(restrictionsRaw)
+            ? restrictionsRaw.map((d) => String(d).toLowerCase())
+            : [];
+          if (restrictions.length > 0 && !restrictions.includes(emailDomain)) {
+            await anon.auth.signOut();
+            await recordFailure(admin, emailNorm, ip);
+            return jsonResponse({
+              data: null,
+              error: { message: "Email domain not allowed for this tenant" },
+              meta: { code: "domain_restriction" },
+            });
+          }
+          const tenantHint = parsed.tenantDomain?.trim().toLowerCase() ?? "";
+          const registeredDomain = (co?.domain as string | null)?.toLowerCase() ?? "";
+          if (tenantHint && registeredDomain && tenantHint !== registeredDomain) {
+            await anon.auth.signOut();
+            await recordFailure(admin, emailNorm, ip);
+            return jsonResponse({
+              data: null,
+              error: { message: "Workspace domain does not match this account" },
+              meta: { code: "tenant_domain_mismatch" },
+            });
+          }
+        }
+
+        const { data: userRow } = await admin.auth.admin.getUserById(userId);
+        const emailConfirmed = Boolean(userRow.user?.email_confirmed_at);
+        if (!emailConfirmed) {
+          await anon.auth.signOut();
+          await recordFailure(admin, emailNorm, ip);
+          return jsonResponse({
+            data: null,
+            error: { message: "Email not verified" },
+            meta: { code: "email_unverified" },
+          });
+        }
+
+        await recordSuccess(admin, emailNorm, ip);
+        const bundle = await fetchProfileBundle(admin, userId);
+        await logSecurityEvent(admin, companyId, userId, "login_success", { ip });
+
+        return jsonResponse({
+          data: {
+            session: {
+              access_token: sessionData.session.access_token,
+              refresh_token: sessionData.session.refresh_token,
+              expires_at: sessionData.session.expires_at,
+              expires_in: sessionData.session.expires_in,
+              token_type: sessionData.session.token_type,
+            },
+            user: {
+              id: userId,
+              email: sessionData.user.email,
+            },
+            profile: bundle.profile,
+            tenant: bundle.company,
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "auth.logout": {
+        const authHeader = req.headers.get("Authorization");
+        if (authHeader?.startsWith("Bearer ")) {
+          const jwt = authHeader.slice(7);
+          const { error: signOutErr } = await admin.auth.admin.signOut(jwt, "global");
+          if (signOutErr) {
+            return jsonResponse(
+              {
+                data: null,
+                error: { message: signOutErr.message },
+                meta: {},
+              },
+              400,
+            );
+          }
+        }
+        return jsonResponse({
+          data: { ok: true },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "auth.refresh": {
+        const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+          },
+          body: JSON.stringify({ refresh_token: parsed.refreshToken }),
+        });
+        const j = await res.json();
+        if (!res.ok) {
+          return jsonResponse({
+            data: null,
+            error: { message: j.error_description ?? j.msg ?? "Refresh failed" },
+            meta: {},
+          }, 401);
+        }
+        return jsonResponse({
+          data: {
+            session: {
+              access_token: j.access_token,
+              refresh_token: j.refresh_token,
+              expires_at: j.expires_at,
+              expires_in: j.expires_in,
+              token_type: j.token_type,
+            },
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "password.request": {
+        const emailNorm = normalizeEmail(parsed.email);
+        const { data: profile } = await admin
+          .from("profiles")
+          .select("id,company_id")
+          .eq("email", emailNorm)
+          .maybeSingle();
+        if (!profile) {
+          return jsonResponse({
+            data: { ok: true },
+            error: null,
+            meta: { notice: "If the account exists, a reset link was sent." },
+          });
+        }
+        const token = randomToken();
+        const exp = new Date(Date.now() + 1000 * 60 * 60).toISOString();
+        await admin.from("password_reset_tokens").insert({
+          token,
+          user_id: profile.id,
+          company_id: profile.company_id,
+          expires_at: exp,
+        });
+        await notifyEmail("password_reset", parsed.email, token);
+        await logSecurityEvent(admin, profile.company_id as string, profile.id as string, "password_reset_requested", {});
+        return jsonResponse({
+          data: { ok: true },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "password.confirm": {
+        const { data: row } = await admin
+          .from("password_reset_tokens")
+          .select("user_id,company_id,expires_at,used")
+          .eq("token", parsed.token)
+          .maybeSingle();
+        if (!row || row.used || new Date(row.expires_at as string) < new Date()) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Invalid or expired token" },
+            meta: {},
+          }, 400);
+        }
+        const { data: co } = await admin
+          .from("companies")
+          .select("password_policy")
+          .eq("id", row.company_id as string)
+          .maybeSingle();
+        const policy = parsePolicy(co?.password_policy);
+        const pwErr = validatePassword(parsed.password, policy);
+        if (pwErr) {
+          return jsonResponse({ data: null, error: { message: pwErr }, meta: {} }, 400);
+        }
+        const { error: updErr } = await admin.auth.admin.updateUserById(row.user_id as string, {
+          password: parsed.password,
+        });
+        if (updErr) {
+          return jsonResponse({
+            data: null,
+            error: { message: updErr.message },
+            meta: {},
+          }, 400);
+        }
+        await admin.from("password_reset_tokens").update({ used: true }).eq("token", parsed.token);
+        await logSecurityEvent(admin, row.company_id as string, row.user_id as string, "password_reset_completed", {});
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "verify.email": {
+        const { data: row } = await admin
+          .from("email_verification_tokens")
+          .select("user_id,expires_at,used")
+          .eq("token", parsed.token)
+          .maybeSingle();
+        if (!row || row.used || new Date(row.expires_at as string) < new Date()) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Invalid or expired verification link" },
+            meta: {},
+          }, 400);
+        }
+        const { error: vErr } = await admin.auth.admin.updateUserById(row.user_id as string, {
+          email_confirm: true,
+        });
+        if (vErr) {
+          return jsonResponse({
+            data: null,
+            error: { message: vErr.message },
+            meta: {},
+          }, 400);
+        }
+        await admin.from("email_verification_tokens").update({ used: true }).eq("token", parsed.token);
+        const uid = row.user_id as string;
+        const { data: prof } = await admin.from("profiles").select("company_id").eq("id", uid).maybeSingle();
+        await logSecurityEvent(admin, prof?.company_id as string | null, uid, "email_verified", {});
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "profile.ensure": {
+        const { userId, admin: svc } = await requireUser(req, supabaseUrl, anonKey);
+        const { data: userRow, error: uErr } = await svc.auth.admin.getUserById(userId);
+        if (uErr || !userRow.user?.email) {
+          return jsonResponse(
+            { data: null, error: { message: uErr?.message ?? "User not found" }, meta: {} },
+            400,
+          );
+        }
+        const user = userRow.user;
+        const { data: existing } = await svc.from("profiles").select("id").eq("id", userId).maybeSingle();
+        if (existing) {
+          return jsonResponse({ data: { created: false }, error: null, meta: {} });
+        }
+        const meta = user.user_metadata as Record<string, unknown> | undefined;
+        const companyId = typeof meta?.company_id === "string" ? meta.company_id : null;
+        const displayName =
+          typeof meta?.full_name === "string" ? meta.full_name : user.email.split("@")[0];
+        const { error: insErr } = await svc.from("profiles").insert({
+          id: userId,
+          email: user.email,
+          display_name: displayName,
+          company_id: companyId,
+          roles: companyId ? (["member"] as string[]) : ([] as string[]),
+          auth_methods: ["oauth"],
+        });
+        if (insErr) {
+          return jsonResponse({ data: null, error: { message: insErr.message }, meta: {} }, 400);
+        }
+        await logSecurityEvent(svc, companyId, userId, "profile_provisioned", {});
+        return jsonResponse({ data: { created: true }, error: null, meta: {} });
+      }
+
+      case "profile.get": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const ext = await admin
+          .from("external_accounts")
+          .select("id,provider,linked_at")
+          .eq("profile_id", userId);
+        const keys = await admin
+          .from("user_api_keys")
+          .select("id,name,key_prefix,scopes,created_at,last_used_at")
+          .eq("profile_id", userId);
+        const events = await admin
+          .from("auth_security_events")
+          .select("event_type,payload,created_at")
+          .eq("profile_id", userId)
+          .order("created_at", { ascending: false })
+          .limit(25);
+        return jsonResponse({
+          data: {
+            profile: bundle.profile,
+            tenant: bundle.company,
+            externalAccounts: Array.isArray(ext.data) ? ext.data : [],
+            apiKeys: Array.isArray(keys.data) ? keys.data : [],
+            securityEvents: Array.isArray(events.data) ? events.data : [],
+          },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "profile.update": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+        if (parsed.displayName !== undefined) patch.display_name = parsed.displayName;
+        if (parsed.avatarUrl !== undefined) {
+          patch.avatar_url = parsed.avatarUrl === "" ? null : parsed.avatarUrl;
+        }
+        if (parsed.preferences !== undefined) patch.preferences = parsed.preferences;
+        const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
+        if (uErr) {
+          return jsonResponse({
+            data: null,
+            error: { message: uErr.message },
+            meta: {},
+          }, 400);
+        }
+        const bundle = await fetchProfileBundle(admin, userId);
+        return jsonResponse({ data: { profile: bundle.profile, tenant: bundle.company }, error: null, meta: {} });
+      }
+
+      case "apikeys.create": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        if (!bundle.profile?.company_id) {
+          return jsonResponse({
+            data: null,
+            error: { message: "No tenant context" },
+            meta: {},
+          }, 400);
+        }
+        const st = (bundle.company?.settings as Record<string, unknown> | null) ?? {};
+        const allow = st.allowUserApiKeys !== false;
+        if (!allow) {
+          return jsonResponse({
+            data: null,
+            error: { message: "API keys are disabled for this tenant" },
+            meta: {},
+          }, 403);
+        }
+        const raw = `caos_${randomToken()}`;
+        const enc = new TextEncoder().encode(raw);
+        const digest = await crypto.subtle.digest("SHA-256", enc);
+        const hashHex = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        const prefix = raw.slice(0, 12);
+        const scopes = Array.isArray(parsed.scopes) ? parsed.scopes : [];
+        const { data: row, error: kErr } = await admin
+          .from("user_api_keys")
+          .insert({
+            profile_id: userId,
+            company_id: bundle.profile.company_id as string,
+            name: parsed.name,
+            key_prefix: prefix,
+            key_hash: hashHex,
+            scopes,
+          })
+          .select("id,name,key_prefix,scopes,created_at")
+          .single();
+        if (kErr || !row) {
+          return jsonResponse({
+            data: null,
+            error: { message: kErr?.message ?? "Could not create key" },
+            meta: {},
+          }, 400);
+        }
+        await logSecurityEvent(admin, bundle.profile.company_id as string, userId, "api_key_created", {
+          keyId: row.id,
+        });
+        return jsonResponse({
+          data: { key: row, secret: raw },
+          error: null,
+          meta: { warning: "Store the secret once; it cannot be retrieved again." },
+        });
+      }
+
+      case "apikeys.list": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const { data: list } = await admin
+          .from("user_api_keys")
+          .select("id,name,key_prefix,scopes,created_at,last_used_at")
+          .eq("profile_id", userId);
+        return jsonResponse({
+          data: { keys: Array.isArray(list) ? list : [] },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "apikeys.revoke": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const { error: dErr } = await admin
+          .from("user_api_keys")
+          .delete()
+          .eq("id", parsed.keyId)
+          .eq("profile_id", userId);
+        if (dErr) {
+          return jsonResponse({
+            data: null,
+            error: { message: dErr.message },
+            meta: {},
+          }, 400);
+        }
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      default:
+        return jsonResponse({ data: null, error: { message: "Unknown op" }, meta: {} }, 400);
+    }
+  } catch (e) {
+    if (e instanceof Response) return e;
+    return jsonResponse(
+      {
+        data: null,
+        error: { message: e instanceof Error ? e.message : "Internal error" },
+        meta: {},
+      },
+      500,
+    );
+  }
+});

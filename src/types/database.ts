@@ -16,6 +16,11 @@ export interface Database {
           timezone: string;
           currency: string;
           settings: Json;
+          domain: string | null;
+          industry: string | null;
+          sso_settings: Json;
+          password_policy: Json;
+          allowed_auth_methods: string[];
           created_at: string;
           updated_at: string;
         };
@@ -25,6 +30,11 @@ export interface Database {
           timezone?: string;
           currency?: string;
           settings?: Json;
+          domain?: string | null;
+          industry?: string | null;
+          sso_settings?: Json;
+          password_policy?: Json;
+          allowed_auth_methods?: string[];
           created_at?: string;
           updated_at?: string;
         };
@@ -34,6 +44,11 @@ export interface Database {
           timezone?: string;
           currency?: string;
           settings?: Json;
+          domain?: string | null;
+          industry?: string | null;
+          sso_settings?: Json;
+          password_policy?: Json;
+          allowed_auth_methods?: string[];
           created_at?: string;
           updated_at?: string;
         };
@@ -44,8 +59,11 @@ export interface Database {
           company_id: string | null;
           email: string | null;
           display_name: string | null;
+          avatar_url: string | null;
           roles: string[];
           auth_methods: string[];
+          preferences: Json;
+          status: string;
           created_at: string;
           updated_at: string;
         };
@@ -54,8 +72,11 @@ export interface Database {
           company_id?: string | null;
           email?: string | null;
           display_name?: string | null;
+          avatar_url?: string | null;
           roles?: string[];
           auth_methods?: string[];
+          preferences?: Json;
+          status?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -64,8 +85,11 @@ export interface Database {
           company_id?: string | null;
           email?: string | null;
           display_name?: string | null;
+          avatar_url?: string | null;
           roles?: string[];
           auth_methods?: string[];
+          preferences?: Json;
+          status?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -511,6 +535,217 @@ export interface Database {
           level?: string;
           message?: string;
           error_details?: Json | null;
+          created_at?: string;
+        };
+      };
+      invitations: {
+        Row: {
+          id: string;
+          company_id: string;
+          token: string;
+          email: string;
+          invited_by: string | null;
+          expires_at: string;
+          status: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          token: string;
+          email: string;
+          invited_by?: string | null;
+          expires_at: string;
+          status?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          token?: string;
+          email?: string;
+          invited_by?: string | null;
+          expires_at?: string;
+          status?: string;
+          created_at?: string;
+        };
+      };
+      external_accounts: {
+        Row: {
+          id: string;
+          profile_id: string;
+          company_id: string;
+          provider: string;
+          provider_user_id: string;
+          linked_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: string;
+          company_id: string;
+          provider: string;
+          provider_user_id: string;
+          linked_at?: string;
+        };
+        Update: {
+          id?: string;
+          profile_id?: string;
+          company_id?: string;
+          provider?: string;
+          provider_user_id?: string;
+          linked_at?: string;
+        };
+      };
+      auth_login_attempts: {
+        Row: {
+          id: string;
+          email_normalized: string;
+          ip: string | null;
+          attempted_at: string;
+          success: boolean;
+        };
+        Insert: {
+          id?: string;
+          email_normalized: string;
+          ip?: string | null;
+          attempted_at?: string;
+          success?: boolean;
+        };
+        Update: {
+          id?: string;
+          email_normalized?: string;
+          ip?: string | null;
+          attempted_at?: string;
+          success?: boolean;
+        };
+      };
+      auth_lockouts: {
+        Row: {
+          email_normalized: string;
+          failed_count: number;
+          locked_until: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          email_normalized: string;
+          failed_count?: number;
+          locked_until?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          email_normalized?: string;
+          failed_count?: number;
+          locked_until?: string | null;
+          updated_at?: string;
+        };
+      };
+      password_reset_tokens: {
+        Row: {
+          token: string;
+          user_id: string;
+          company_id: string | null;
+          expires_at: string;
+          used: boolean;
+          created_at: string;
+        };
+        Insert: {
+          token: string;
+          user_id: string;
+          company_id?: string | null;
+          expires_at: string;
+          used?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          token?: string;
+          user_id?: string;
+          company_id?: string | null;
+          expires_at?: string;
+          used?: boolean;
+          created_at?: string;
+        };
+      };
+      email_verification_tokens: {
+        Row: {
+          token: string;
+          user_id: string;
+          expires_at: string;
+          used: boolean;
+          created_at: string;
+        };
+        Insert: {
+          token: string;
+          user_id: string;
+          expires_at: string;
+          used?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          token?: string;
+          user_id?: string;
+          expires_at?: string;
+          used?: boolean;
+          created_at?: string;
+        };
+      };
+      user_api_keys: {
+        Row: {
+          id: string;
+          profile_id: string;
+          company_id: string;
+          name: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes: string[];
+          created_at: string;
+          last_used_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          profile_id: string;
+          company_id: string;
+          name: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes?: string[];
+          created_at?: string;
+          last_used_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          profile_id?: string;
+          company_id?: string;
+          name?: string;
+          key_prefix?: string;
+          key_hash?: string;
+          scopes?: string[];
+          created_at?: string;
+          last_used_at?: string | null;
+        };
+      };
+      auth_security_events: {
+        Row: {
+          id: string;
+          company_id: string | null;
+          profile_id: string | null;
+          event_type: string;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id?: string | null;
+          profile_id?: string | null;
+          event_type: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string | null;
+          profile_id?: string | null;
+          event_type?: string;
+          payload?: Json;
           created_at?: string;
         };
       };

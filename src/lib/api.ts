@@ -1,5 +1,20 @@
+import { supabase } from "@/lib/supabase";
+
 const getBaseUrl = () =>
   import.meta.env.VITE_API_URL ?? "http://localhost:3000/api";
+
+async function buildHeaders(
+  extra?: Record<string, string>,
+): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extra,
+  };
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
 
 async function apiRequest<T>(
   endpoint: string,
@@ -7,19 +22,15 @@ async function apiRequest<T>(
 ): Promise<T> {
   const url = `${getBaseUrl().replace(/\/$/, "")}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(options.headers as Record<string, string> | undefined),
-  };
+  const mergedHeaders = await buildHeaders(
+    options.headers as Record<string, string> | undefined,
+  );
 
-  const token = localStorage.getItem("auth_token");
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers: mergedHeaders });
 
   if (!response.ok) {
     if (response.status === 401) {
-      localStorage.removeItem("auth_token");
+      await supabase.auth.signOut();
       window.location.href = "/login";
     }
     throw new Error(`API Error: ${response.status}`);

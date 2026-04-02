@@ -1,11 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Link, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
 
 import { AnimatedPage } from "@/components/animated-page";
 import { PublicChrome } from "@/components/layout/public-chrome";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -26,42 +28,118 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { useAuth } from "@/contexts/auth-context";
+import { invokeAuthApi } from "@/lib/auth-api";
 
-const schema = z.object({
-  tenantName: z.string().min(2, "Company name required"),
-  domainHint: z.string().optional(),
-  fullName: z.string().min(2, "Name required"),
-  email: z.string().email(),
-  password: z.string().min(10, "Use at least 10 characters"),
-  inviteToken: z.string().optional(),
-  acceptTerms: z.boolean().refine((v) => v, {
-    message: "Accept terms to continue",
-  }),
-});
+const schema = z
+  .object({
+    tenantName: z.string().max(200).optional(),
+    industry: z.string().max(120).optional(),
+    domainHint: z.string().optional(),
+    fullName: z.string().min(2, "Name required"),
+    email: z.string().email(),
+    password: z.string().min(10, "Use at least 10 characters"),
+    inviteToken: z.string().optional(),
+    acceptTerms: z.boolean().refine((v) => v, {
+      message: "Accept terms to continue",
+    }),
+  })
+  .refine(
+    (d) =>
+      Boolean(d.inviteToken?.trim()) ||
+      (d.tenantName !== undefined && d.tenantName.trim().length >= 2),
+    { message: "Company name required", path: ["tenantName"] },
+  );
 
 type FormValues = z.infer<typeof schema>;
 
 export default function SignupPage() {
+  const navigate = useNavigate();
   const [params] = useSearchParams();
-  const invite = params.get("invite") ?? "";
+  const inviteFromUrl = params.get("invite") ?? "";
+  const { signUp, isConfigured } = useAuth();
+  const [invitePreview, setInvitePreview] = useState<{
+    companyName: string | null;
+    email: string;
+  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
       tenantName: "",
+      industry: "",
       domainHint: "",
       fullName: "",
       email: "",
       password: "",
-      inviteToken: invite,
+      inviteToken: inviteFromUrl,
       acceptTerms: false,
     },
   });
 
-  const onSubmit = (values: FormValues) => {
-    toast.success("Onboarding queued", {
-      description: `${values.tenantName} · ${values.email} will receive verification.`,
-    });
+  useEffect(() => {
+    const token = inviteFromUrl.trim();
+    if (!token || !isConfigured) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await invokeAuthApi<{
+          email: string;
+          companyId: string;
+          companyName: string | null;
+        }>({ op: "invitations.resolve", token }, { skipAuthHeader: true });
+        if (cancelled) return;
+        setInvitePreview({
+          email: data.email,
+          companyName: data.companyName,
+        });
+        form.setValue("email", data.email);
+        if (data.companyName) {
+          form.setValue("tenantName", data.companyName);
+        }
+      } catch {
+        if (!cancelled) {
+          setInvitePreview(null);
+          toast.error("Invite could not be loaded", {
+            description: "Check the token or ask your admin for a new invite.",
+          });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteFromUrl, isConfigured, form]);
+
+  const onSubmit = async (values: FormValues) => {
+    if (!isConfigured) {
+      toast.error("Supabase is not configured");
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const result = await signUp({
+        tenantName: values.tenantName?.trim() || invitePreview?.companyName || "Workspace",
+        industry: values.industry?.trim() || undefined,
+        domainHint: values.domainHint?.trim() || undefined,
+        fullName: values.fullName,
+        email: values.email,
+        password: values.password,
+        inviteToken: values.inviteToken?.trim() || undefined,
+        acceptTerms: values.acceptTerms,
+      });
+      if (!result.ok) {
+        toast.error(result.error ?? "Signup failed");
+        return;
+      }
+      toast.success("Workspace created", {
+        description: "Verify your email to activate the account.",
+      });
+      navigate(`/verify-email?email=${encodeURIComponent(values.email)}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const pwd = form.watch("password");
@@ -70,9 +148,9 @@ export default function SignupPage() {
   return (
     <PublicChrome>
       <AnimatedPage className="flex justify-center px-6 py-16 lg:px-24">
-        <Card className="w-full max-w-xl border-border/80 bg-card/95 shadow-card">
+        <Card className="w-full max-w-xl border-border/80 bg-card/95 shadow-card transition-transform duration-150 hover:-translate-y-1">
           <CardHeader className="space-y-3">
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
                 <CardTitle className="font-display text-2xl">
                   Create your workspace
@@ -86,6 +164,19 @@ export default function SignupPage() {
                 <Progress value={33} className="mt-2 h-1 w-28" />
               </div>
             </div>
+            {invitePreview ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-2 text-xs text-muted-foreground">
+                <span className="relative flex h-2 w-2 shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-pulse-live rounded-full bg-success opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+                </span>
+                Invited to{" "}
+                <Badge variant="secondary" className="font-normal">
+                  {invitePreview.companyName ?? "workspace"}
+                </Badge>
+                <span className="text-[10px]">({invitePreview.email})</span>
+              </div>
+            ) : null}
           </CardHeader>
           <CardContent>
             <Form {...form}>
@@ -98,12 +189,36 @@ export default function SignupPage() {
                       <FormItem>
                         <FormLabel>Tenant / company name</FormLabel>
                         <FormControl>
-                          <Input className="bg-surface-inner" {...field} />
+                          <Input
+                            className="bg-surface-inner"
+                            disabled={Boolean(invitePreview)}
+                            {...field}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={form.control}
+                    name="industry"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Industry (optional)</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder="Technology"
+                            className="bg-surface-inner"
+                            disabled={Boolean(invitePreview)}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
                   <FormField
                     control={form.control}
                     name="domainHint"
@@ -114,6 +229,7 @@ export default function SignupPage() {
                           <Input
                             placeholder="acme.connected.ai"
                             className="bg-surface-inner"
+                            disabled={Boolean(invitePreview)}
                             {...field}
                           />
                         </FormControl>
@@ -121,27 +237,27 @@ export default function SignupPage() {
                       </FormItem>
                     )}
                   />
+                  <FormField
+                    control={form.control}
+                    name="inviteToken"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Invite token</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder="Paste invite token if you have one"
+                            className="bg-surface-inner"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Leave blank to create a new tenant as the owner.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 </div>
-                <FormField
-                  control={form.control}
-                  name="inviteToken"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Invite token</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="Paste invite token if you have one"
-                          className="bg-surface-inner"
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        Leave blank to create a new tenant as the owner.
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
                 <div className="grid gap-4 md:grid-cols-2">
                   <FormField
                     control={form.control}
@@ -166,6 +282,7 @@ export default function SignupPage() {
                           <Input
                             type="email"
                             className="bg-surface-inner"
+                            readOnly={Boolean(invitePreview)}
                             {...field}
                           />
                         </FormControl>
@@ -181,11 +298,7 @@ export default function SignupPage() {
                     <FormItem>
                       <FormLabel>Password</FormLabel>
                       <FormControl>
-                        <Input
-                          type="password"
-                          className="bg-surface-inner"
-                          {...field}
-                        />
+                        <Input type="password" className="bg-surface-inner" {...field} />
                       </FormControl>
                       <Progress value={strength} className="h-1" />
                       <FormMessage />
@@ -214,8 +327,13 @@ export default function SignupPage() {
                     </FormItem>
                   )}
                 />
-                <Button type="submit" variant="cta" className="w-full">
-                  Continue to email verification
+                <Button
+                  type="submit"
+                  variant="cta"
+                  className="w-full transition-transform duration-150 hover:scale-[1.02]"
+                  disabled={isSubmitting || !isConfigured}
+                >
+                  {isSubmitting ? "Creating…" : "Continue to email verification"}
                 </Button>
               </form>
             </Form>

@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 
+import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppProviders } from "@/components/providers";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import AdminConsolePage from "@/pages/dashboard/admin-console-page";
@@ -62,23 +63,25 @@ export default function App() {
         <Route path="/loading" element={<LoadingPage />} />
         <Route path="/success" element={<SuccessPage />} />
         <Route path="/error-500" element={<ServerErrorPage />} />
-        <Route path="/dashboard" element={<DashboardLayout />}>
-          <Route index element={<GlobalDashboardPage />} />
-          <Route path="executive" element={<ExecutiveDashboardPage />} />
-          <Route path="workflows" element={<WorkflowsPage />} />
-          <Route path="modules" element={<ModulesHubPage />} />
-          <Route path="modules/new" element={<CreateModulePage />} />
-          <Route path="modules/:moduleId/manage" element={<EditModulePage />} />
-          <Route path="departments" element={<DepartmentsListPage />} />
-          <Route path="departments/:deptId" element={<DepartmentWorkspacePage />} />
-          <Route path="reports" element={<ReportsCenterPage />} />
-          <Route path="ai" element={<AIWorkspacePage />} />
-          <Route path="search" element={<SearchPage />} />
-          <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="activity" element={<ActivityLogPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-          <Route path="profile" element={<ProfilePage />} />
-          <Route path="admin" element={<AdminConsolePage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/dashboard" element={<DashboardLayout />}>
+            <Route index element={<GlobalDashboardPage />} />
+            <Route path="executive" element={<ExecutiveDashboardPage />} />
+            <Route path="workflows" element={<WorkflowsPage />} />
+            <Route path="modules" element={<ModulesHubPage />} />
+            <Route path="modules/new" element={<CreateModulePage />} />
+            <Route path="modules/:moduleId/manage" element={<EditModulePage />} />
+            <Route path="departments" element={<DepartmentsListPage />} />
+            <Route path="departments/:deptId" element={<DepartmentWorkspacePage />} />
+            <Route path="reports" element={<ReportsCenterPage />} />
+            <Route path="ai" element={<AIWorkspacePage />} />
+            <Route path="search" element={<SearchPage />} />
+            <Route path="notifications" element={<NotificationsPage />} />
+            <Route path="activity" element={<ActivityLogPage />} />
+            <Route path="settings" element={<SettingsPage />} />
+            <Route path="profile" element={<ProfilePage />} />
+            <Route path="admin" element={<AdminConsolePage />} />
+          </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
