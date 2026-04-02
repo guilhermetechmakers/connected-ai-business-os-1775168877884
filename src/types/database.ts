@@ -968,6 +968,207 @@ export interface Database {
           created_at?: string;
         };
       };
+      alert_rules: {
+        Row: {
+          id: string;
+          company_id: string;
+          name: string;
+          trigger_type: string;
+          conditions: Json;
+          actions: Json;
+          enabled: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          name: string;
+          trigger_type: string;
+          conditions?: Json;
+          actions?: Json;
+          enabled?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          name?: string;
+          trigger_type?: string;
+          conditions?: Json;
+          actions?: Json;
+          enabled?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      notifications: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          notification_type: string;
+          title: string;
+          message: string;
+          data: Json;
+          read_at: string | null;
+          created_at: string;
+          channel: string;
+          status: string;
+          related_item_id: string | null;
+          alert_rule_id: string | null;
+          priority: number;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          notification_type: string;
+          title: string;
+          message: string;
+          data?: Json;
+          read_at?: string | null;
+          created_at?: string;
+          channel: string;
+          status?: string;
+          related_item_id?: string | null;
+          alert_rule_id?: string | null;
+          priority?: number;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          notification_type?: string;
+          title?: string;
+          message?: string;
+          data?: Json;
+          read_at?: string | null;
+          created_at?: string;
+          channel?: string;
+          status?: string;
+          related_item_id?: string | null;
+          alert_rule_id?: string | null;
+          priority?: number;
+        };
+      };
+      notification_preferences: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          channels: string[];
+          preferences: Json;
+          quiet_hours: Json | null;
+          data_retention_days: number;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          channels?: string[];
+          preferences?: Json;
+          quiet_hours?: Json | null;
+          data_retention_days?: number;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          channels?: string[];
+          preferences?: Json;
+          quiet_hours?: Json | null;
+          data_retention_days?: number;
+          updated_at?: string;
+        };
+      };
+      notification_schedules: {
+        Row: {
+          id: string;
+          company_id: string;
+          name: string;
+          cron_expression: string;
+          next_run_at: string | null;
+          payload_template: Json;
+          active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          name: string;
+          cron_expression: string;
+          next_run_at?: string | null;
+          payload_template?: Json;
+          active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          name?: string;
+          cron_expression?: string;
+          next_run_at?: string | null;
+          payload_template?: Json;
+          active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      notification_channel_settings: {
+        Row: {
+          company_id: string;
+          sendgrid_from_email: string | null;
+          sendgrid_reply_to: string | null;
+          fcm_sender_id: string | null;
+          webhook_delivery_url: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          company_id: string;
+          sendgrid_from_email?: string | null;
+          sendgrid_reply_to?: string | null;
+          fcm_sender_id?: string | null;
+          webhook_delivery_url?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          company_id?: string;
+          sendgrid_from_email?: string | null;
+          sendgrid_reply_to?: string | null;
+          fcm_sender_id?: string | null;
+          webhook_delivery_url?: string | null;
+          updated_at?: string;
+        };
+      };
+      notification_provider_credentials: {
+        Row: {
+          id: string;
+          company_id: string;
+          provider: string;
+          encrypted_payload: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          provider: string;
+          encrypted_payload: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          provider?: string;
+          encrypted_payload?: string;
+          updated_at?: string;
+        };
+      };
     };
     Views: {
       v_dashboard_entity_rollups: {

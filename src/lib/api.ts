@@ -85,6 +85,26 @@ export {
   fetchUnifiedEntities,
 } from "@/api/unified-data";
 
+/** Notifications & alerts (Edge Function `notifications-api` + Realtime). */
+export {
+  bulkUpdateNotifications,
+  createAlertRule,
+  createNotificationEvent,
+  createNotificationSchedule,
+  deleteAlertRule,
+  fetchAlertRules,
+  fetchChannelSettings,
+  fetchNotificationPreferences,
+  fetchNotificationSchedules,
+  fetchNotificationsList,
+  testFcm,
+  testSendgrid,
+  updateAlertRule,
+  upsertChannelSecrets,
+  upsertChannelSettings,
+  upsertNotificationPreferences,
+} from "@/api/notifications";
+
 /** Workflows engine (Edge Function `workflows-api` + Supabase RLS). */
 export {
   appendWorkflowRunLogs,

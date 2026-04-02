@@ -42,6 +42,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  AlertRulesTab,
+  NotificationSchedulesTab,
+  NotificationsPreferencesTab,
+} from "@/components/settings/notifications-alerts-settings";
+import {
   useConnectorsQuery,
   useTenantHealthQuery,
   useTriggerSyncMutation,
@@ -75,6 +80,9 @@ const sections = [
   "Company",
   "Users & roles",
   "Integrations",
+  "Notifications",
+  "Alert rules",
+  "Schedules",
   "AI",
   "Branding",
   "Data policies",
@@ -459,6 +467,18 @@ export default function SettingsPage() {
               </ScrollArea>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="Notifications">
+          <NotificationsPreferencesTab />
+        </TabsContent>
+
+        <TabsContent value="Alert rules">
+          <AlertRulesTab />
+        </TabsContent>
+
+        <TabsContent value="Schedules">
+          <NotificationSchedulesTab />
         </TabsContent>
 
         <TabsContent value="AI">
