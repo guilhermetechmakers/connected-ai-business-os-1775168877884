@@ -18,6 +18,7 @@ import ProfilePage from "@/pages/dashboard/profile-page";
 import ReportsCenterPage from "@/pages/dashboard/reports-center-page";
 import SearchPage from "@/pages/dashboard/search-page";
 import SettingsPage from "@/pages/dashboard/settings-page";
+import WorkflowDetailPage from "@/pages/dashboard/workflow-detail-page";
 import WorkflowsPage from "@/pages/dashboard/workflows-page";
 import CookiesPage from "@/pages/cookies-page";
 import CompanySetupPage from "@/pages/company-setup-page";
@@ -69,6 +70,7 @@ export default function App() {
             <Route path="global" element={<GlobalDashboardPage />} />
             <Route path="executive" element={<ExecutiveDashboardPage />} />
             <Route path="workflows" element={<WorkflowsPage />} />
+            <Route path="workflows/:workflowId" element={<WorkflowDetailPage />} />
             <Route path="modules" element={<ModulesHubPage />} />
             <Route path="modules/new" element={<CreateModulePage />} />
             <Route path="modules/:moduleId/manage" element={<EditModulePage />} />

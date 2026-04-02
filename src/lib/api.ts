@@ -84,3 +84,22 @@ export {
   fetchSearchResults,
   fetchUnifiedEntities,
 } from "@/api/unified-data";
+
+/** Workflows engine (Edge Function `workflows-api` + Supabase RLS). */
+export {
+  appendWorkflowRunLogs,
+  createDefaultWorkflowDefinition,
+  createWorkflow,
+  deleteWorkflow,
+  fetchActivityLog,
+  fetchApprovals,
+  fetchWorkflow,
+  fetchWorkflowRun,
+  fetchWorkflowRuns,
+  fetchWorkflows,
+  parseRunLogs,
+  runWorkflow,
+  submitApproval,
+  updateWorkflow,
+  validateWorkflowDefinition,
+} from "@/api/workflows";

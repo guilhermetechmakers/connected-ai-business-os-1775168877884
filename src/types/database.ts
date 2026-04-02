@@ -368,6 +368,8 @@ export interface Database {
         Row: {
           id: string;
           company_id: string;
+          name: string;
+          owner_user_id: string | null;
           definition: Json;
           status: string;
           created_at: string;
@@ -376,6 +378,8 @@ export interface Database {
         Insert: {
           id?: string;
           company_id: string;
+          name?: string;
+          owner_user_id?: string | null;
           definition?: Json;
           status?: string;
           created_at?: string;
@@ -384,6 +388,8 @@ export interface Database {
         Update: {
           id?: string;
           company_id?: string;
+          name?: string;
+          owner_user_id?: string | null;
           definition?: Json;
           status?: string;
           created_at?: string;
@@ -395,7 +401,12 @@ export interface Database {
           id: string;
           workflow_id: string;
           status: string;
+          started_at: string | null;
+          finished_at: string | null;
           logs: Json;
+          result_metadata: Json;
+          test_mode: boolean;
+          correlation_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -403,7 +414,12 @@ export interface Database {
           id?: string;
           workflow_id: string;
           status?: string;
+          started_at?: string | null;
+          finished_at?: string | null;
           logs?: Json;
+          result_metadata?: Json;
+          test_mode?: boolean;
+          correlation_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -411,9 +427,46 @@ export interface Database {
           id?: string;
           workflow_id?: string;
           status?: string;
+          started_at?: string | null;
+          finished_at?: string | null;
           logs?: Json;
+          result_metadata?: Json;
+          test_mode?: boolean;
+          correlation_id?: string | null;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      workflow_approvals: {
+        Row: {
+          id: string;
+          run_id: string;
+          step_id: string | null;
+          approver_user_id: string | null;
+          decision: string;
+          notes: string | null;
+          created_at: string;
+          decided_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          run_id: string;
+          step_id?: string | null;
+          approver_user_id?: string | null;
+          decision?: string;
+          notes?: string | null;
+          created_at?: string;
+          decided_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          run_id?: string;
+          step_id?: string | null;
+          approver_user_id?: string | null;
+          decision?: string;
+          notes?: string | null;
+          created_at?: string;
+          decided_at?: string | null;
         };
       };
       documents: {
@@ -478,6 +531,9 @@ export interface Database {
           event_type: string;
           actor_user_id: string | null;
           payload: Json;
+          related_entity: string | null;
+          related_id: string | null;
+          department_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -486,6 +542,9 @@ export interface Database {
           event_type: string;
           actor_user_id?: string | null;
           payload?: Json;
+          related_entity?: string | null;
+          related_id?: string | null;
+          department_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -494,6 +553,9 @@ export interface Database {
           event_type?: string;
           actor_user_id?: string | null;
           payload?: Json;
+          related_entity?: string | null;
+          related_id?: string | null;
+          department_id?: string | null;
           created_at?: string;
         };
       };
