@@ -566,6 +566,9 @@ export interface Database {
           user_id: string;
           messages: Json;
           actions: Json;
+          mode: string;
+          title: string | null;
+          metadata: Json;
           created_at: string;
           updated_at: string;
         };
@@ -575,6 +578,9 @@ export interface Database {
           user_id: string;
           messages?: Json;
           actions?: Json;
+          mode?: string;
+          title?: string | null;
+          metadata?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -584,8 +590,183 @@ export interface Database {
           user_id?: string;
           messages?: Json;
           actions?: Json;
+          mode?: string;
+          title?: string | null;
+          metadata?: Json;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      ai_messages: {
+        Row: {
+          id: string;
+          conversation_id: string;
+          company_id: string;
+          role: string;
+          content: string;
+          citations: Json;
+          token_usage: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          conversation_id: string;
+          company_id: string;
+          role: string;
+          content?: string;
+          citations?: Json;
+          token_usage?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          conversation_id?: string;
+          company_id?: string;
+          role?: string;
+          content?: string;
+          citations?: Json;
+          token_usage?: Json | null;
+          created_at?: string;
+        };
+      };
+      ai_prompt_templates: {
+        Row: {
+          id: string;
+          company_id: string;
+          department: string | null;
+          purpose: string;
+          name: string;
+          template_text: string;
+          slots: Json;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          department?: string | null;
+          purpose?: string;
+          name: string;
+          template_text: string;
+          slots?: Json;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          department?: string | null;
+          purpose?: string;
+          name?: string;
+          template_text?: string;
+          slots?: Json;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      ai_action_logs: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          action_name: string;
+          status: string;
+          details: Json;
+          conversation_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          action_name: string;
+          status?: string;
+          details?: Json;
+          conversation_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          action_name?: string;
+          status?: string;
+          details?: Json;
+          conversation_id?: string | null;
+          created_at?: string;
+        };
+      };
+      ai_usage_telemetry: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          model: string;
+          prompt_tokens: number | null;
+          completion_tokens: number | null;
+          latency_ms: number | null;
+          conversation_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          model?: string;
+          prompt_tokens?: number | null;
+          completion_tokens?: number | null;
+          latency_ms?: number | null;
+          conversation_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          model?: string;
+          prompt_tokens?: number | null;
+          completion_tokens?: number | null;
+          latency_ms?: number | null;
+          conversation_id?: string | null;
+          created_at?: string;
+        };
+      };
+      ai_context_chunks: {
+        Row: {
+          id: string;
+          company_id: string;
+          workspace_id: string;
+          source_type: string;
+          source_id: string | null;
+          content: string;
+          metadata: Json;
+          embedding: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          workspace_id?: string;
+          source_type: string;
+          source_id?: string | null;
+          content: string;
+          metadata?: Json;
+          embedding?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          workspace_id?: string;
+          source_type?: string;
+          source_id?: string | null;
+          content?: string;
+          metadata?: Json;
+          embedding?: Json | null;
+          created_at?: string;
         };
       };
       connectors: {

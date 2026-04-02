@@ -105,6 +105,22 @@ export {
   upsertNotificationPreferences,
 } from "@/api/notifications";
 
+/** AI Assistant & Agent layer (Edge Function `ai-api`). */
+export {
+  assemblePrompt,
+  completeAiChat,
+  createAiConversation,
+  executeAiAction,
+  fetchAiContexts,
+  fetchAiDashboardSummary,
+  fetchAiPermissions,
+  getAiConversation,
+  listAiConversations,
+  listPromptTemplates,
+  streamAiChat,
+  updateAiConversation,
+} from "@/api/ai";
+
 /** Workflows engine (Edge Function `workflows-api` + Supabase RLS). */
 export {
   appendWorkflowRunLogs,

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowUpRight, Sparkles } from "lucide-react";
+import { ArrowUpRight, Bot, ShieldAlert, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   Area,
@@ -11,7 +11,6 @@ import {
   YAxis,
 } from "recharts";
 
-import { edgeApi } from "@/api/edge";
 import { AnimatedPage } from "@/components/animated-page";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActivityStream } from "@/components/unified-data/activity-stream";
@@ -21,6 +20,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
+import { useAiDashboardSummary } from "@/hooks/use-ai";
+import { completeAiChat } from "@/lib/ai-api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import {
   useDashboardRollups,
   useRecentActivityFeed,
@@ -92,27 +94,31 @@ export default function GlobalDashboardPage() {
 
   const kpiBlocks = rollupKpis ?? fallbackKpis;
 
+  const { data: aiGov, isLoading: aiGovLoading } = useAiDashboardSummary();
+  const aiRecentActions = Array.isArray(aiGov?.recentActions) ? aiGov!.recentActions : [];
+  const aiDenials = Array.isArray(aiGov?.recentPermissionDenials)
+    ? aiGov!.recentPermissionDenials
+    : [];
+
   async function runInsightStrip() {
+    if (!isSupabaseConfigured) {
+      toast.error("Configure Supabase env vars to run RAG-backed insights via ai-api.");
+      return;
+    }
     setInsightLoading(true);
     try {
       const summaryRollups = JSON.stringify(rollups ?? []).slice(0, 4000);
-      const data = await edgeApi.invoke<{
-        choices?: { message?: { content?: string } }[];
-      }>("llm-proxy", {
+      const out = await completeAiChat({
         messages: [
           {
-            role: "system",
-            content:
-              "You summarize tenant dashboard rollups. Output 3 concise bullets. Do not invent numbers.",
-          },
-          {
             role: "user",
-            content: `Rollups JSON (truncated): ${summaryRollups}`,
+            content: `Summarize these dashboard rollups in exactly 3 concise bullets. Do not invent numbers. JSON: ${summaryRollups}`,
           },
         ],
+        mode: "Analyze",
+        workspaceId: "global",
       });
-      const text = data?.choices?.[0]?.message?.content ?? "";
-      setInsightText(text || "No insight returned.");
+      setInsightText(out.message?.trim() || "No insight returned.");
       toast.success("Insight refreshed");
     } catch {
       toast.error("Could not refresh insight");
@@ -167,7 +173,8 @@ export default function GlobalDashboardPage() {
           <div>
             <CardTitle className="text-base">AI-assisted insight strip</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Summaries use the LLM proxy with tenant rollups you already loaded.
+              Uses <code className="text-primary">ai-api</code> with tenant RAG context plus rollups
+              you already loaded.
             </p>
           </div>
           <Button
@@ -188,10 +195,95 @@ export default function GlobalDashboardPage() {
             <p className="text-sm leading-relaxed text-muted-foreground">{insightText}</p>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Tap refresh to summarize current rollups. Requires OpenAI key on the
-              llm-proxy function when enabled.
+              Tap refresh to summarize current rollups. Requires deployed{" "}
+              <code className="text-primary">ai-api</code> with{" "}
+              <code className="text-primary">OPENAI_API_KEY</code>.
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/80 bg-card/90 shadow-card">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Bot className="h-5 w-5 text-primary" aria-hidden />
+              AI governance & telemetry
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Token usage (7d), recent actions, and permission signals from the AI layer.
+            </p>
+          </div>
+          <Button variant="cta" size="sm" className="shrink-0 gap-2" asChild>
+            <Link to="/dashboard/ai">
+              <Sparkles className="h-4 w-4" />
+              Open AI workspace
+            </Link>
+          </Button>
+        </CardHeader>
+        <CardContent className="grid gap-6 md:grid-cols-2">
+          {aiGovLoading ? (
+            <>
+              <Skeleton className="h-24 rounded-xl" />
+              <Skeleton className="h-24 rounded-xl" />
+            </>
+          ) : (
+            <>
+              <div className="rounded-xl border border-border/60 bg-surface-inner/80 p-4 transition-transform duration-150 hover:-translate-y-0.5">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Tokens (7 days)
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-foreground tabular-nums">
+                  {(aiGov?.tokenTotals7d?.prompt ?? 0) + (aiGov?.tokenTotals7d?.completion ?? 0)}
+                  <span className="ml-2 text-sm font-normal text-muted-foreground">total</span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Prompt {aiGov?.tokenTotals7d?.prompt ?? 0} · Completion{" "}
+                  {aiGov?.tokenTotals7d?.completion ?? 0} · Samples{" "}
+                  {aiGov?.tokenTotals7d?.samples ?? 0}
+                </p>
+              </div>
+              <div className="rounded-xl border border-border/60 bg-surface-inner/80 p-4 transition-transform duration-150 hover:-translate-y-0.5">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Recent AI actions
+                </p>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {aiRecentActions.length === 0 ? (
+                    <li className="text-muted-foreground">No logged actions yet.</li>
+                  ) : (
+                    aiRecentActions.slice(0, 5).map((a) => (
+                      <li
+                        key={a.id}
+                        className="flex justify-between gap-2 border-b border-border/30 pb-2 last:border-0"
+                      >
+                        <span className="truncate font-mono text-xs text-primary">
+                          {a.action_name}
+                        </span>
+                        <span className="shrink-0 text-xs text-muted-foreground">{a.status}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            </>
+          )}
+          <div className="md:col-span-2 rounded-xl border border-destructive/20 bg-destructive/5 p-4">
+            <p className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+              <ShieldAlert className="h-4 w-4 text-destructive" aria-hidden />
+              Permission denials
+            </p>
+            {aiDenials.length === 0 ? (
+              <p className="mt-2 text-sm text-muted-foreground">No recent denials.</p>
+            ) : (
+              <ul className="mt-2 space-y-1 text-sm">
+                {aiDenials.map((d) => (
+                  <li key={d.id} className="font-mono text-xs text-destructive/90">
+                    {d.action_name}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </CardContent>
       </Card>
 
