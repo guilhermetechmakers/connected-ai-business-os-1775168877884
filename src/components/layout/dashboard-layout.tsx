@@ -34,7 +34,7 @@ const navGroups: {
   {
     label: "Overview",
     items: [
-      { to: "/dashboard", label: "Global dashboard", icon: LayoutDashboard },
+      { to: "/dashboard/global", label: "Global dashboard", icon: LayoutDashboard },
       { to: "/dashboard/executive", label: "Executive", icon: Gauge },
     ],
   },
@@ -44,14 +44,14 @@ const navGroups: {
       { to: "/dashboard/workflows", label: "Workflows", icon: Workflow },
       { to: "/dashboard/modules", label: "Modules hub", icon: Puzzle },
       { to: "/dashboard/departments", label: "Departments", icon: Building2 },
-      { to: "/dashboard/reports", label: "Reports", icon: FileBarChart },
+      { to: "/reports", label: "Reports", icon: FileBarChart },
     ],
   },
   {
     label: "Intelligence",
     items: [
       { to: "/dashboard/ai", label: "AI workspace", icon: Bot },
-      { to: "/dashboard/search", label: "Search", icon: Search },
+      { to: "/search", label: "Search", icon: Search },
     ],
   },
   {
@@ -83,9 +83,13 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
               {group.items.map((item) => {
                 const Icon = item.icon;
                 const active =
-                  location.pathname === item.to ||
-                  (item.to !== "/dashboard" &&
-                    location.pathname.startsWith(item.to));
+                  item.to === "/dashboard/global"
+                    ? location.pathname === "/dashboard" ||
+                      location.pathname === "/dashboard/global"
+                    : location.pathname === item.to ||
+                      (item.to !== "/reports" &&
+                        item.to !== "/search" &&
+                        location.pathname.startsWith(`${item.to}/`));
                 return (
                   <li key={item.to}>
                     <NavLink
@@ -145,7 +149,7 @@ export function DashboardLayout() {
         >
           <div className="flex h-16 items-center justify-between border-b border-border/80 px-3">
             <Link
-              to="/dashboard"
+              to="/dashboard/global"
               className={cn(
                 "flex items-center gap-2 font-display font-bold text-foreground",
                 collapsed && "justify-center",
@@ -220,7 +224,7 @@ export function DashboardLayout() {
             </div>
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="sm" asChild>
-                <Link to="/dashboard/search">Search</Link>
+                <Link to="/search">Search</Link>
               </Button>
               <Button variant="cta" size="sm" asChild>
                 <Link to="/dashboard/ai">Open AI</Link>

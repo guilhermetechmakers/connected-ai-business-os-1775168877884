@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { ArrowUpRight, Sparkles } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
@@ -10,10 +11,24 @@ import {
   YAxis,
 } from "recharts";
 
+import { edgeApi } from "@/api/edge";
 import { AnimatedPage } from "@/components/animated-page";
 import { PageHeader } from "@/components/layout/page-header";
+import { ActivityStream } from "@/components/unified-data/activity-stream";
+import { AlertPanel } from "@/components/unified-data/alert-panel";
+import { KPIBlock } from "@/components/unified-data/kpi-block";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/contexts/auth-context";
+import {
+  useDashboardRollups,
+  useRecentActivityFeed,
+  useUnifiedEntitiesList,
+} from "@/hooks/use-unified-data";
+import type { DashboardEntityRollup, DashboardKpiSnapshot } from "@/types/unified";
+import { mapActivityLogsToFeed, mapUnifiedEntityRows } from "@/types/unified";
+import { toast } from "sonner";
 
 const trend = [
   { name: "Mon", value: 32 },
@@ -25,14 +40,87 @@ const trend = [
   { name: "Sun", value: 55 },
 ];
 
-const kpis = [
-  { label: "Active workflows", value: "128", delta: "+12%" },
-  { label: "Integration health", value: "98.4%", delta: "+0.6%" },
-  { label: "AI actions / day", value: "1.4k", delta: "+8%" },
-  { label: "Open approvals", value: "7", delta: "-3" },
+const fallbackKpis = [
+  { label: "Active workflows", value: "128", delta: "+12%", trend: "up" as const },
+  { label: "Integration health", value: "98.4%", delta: "+0.6%", trend: "up" as const },
+  { label: "AI actions / day", value: "1.4k", delta: "+8%", trend: "up" as const },
+  { label: "Open approvals", value: "7", delta: "-3", trend: "down" as const },
 ];
 
+function isKpiSnapshot(
+  row: DashboardEntityRollup | DashboardKpiSnapshot,
+): row is DashboardKpiSnapshot {
+  return "last_activity_at" in row && row.last_activity_at !== undefined;
+}
+
 export default function GlobalDashboardPage() {
+  const { profile } = useAuth();
+  const roles = Array.isArray(profile?.roles) ? profile!.roles : [];
+  const roleLabel = roles.length > 0 ? roles.join(", ") : "Member";
+
+  const { data: rollupsRaw = [], isLoading: rollupsLoading } =
+    useDashboardRollups("rollups");
+  const rollups = Array.isArray(rollupsRaw) ? rollupsRaw : [];
+
+  const { data: activityLogs = [], isLoading: actLoading } = useRecentActivityFeed(24);
+  const { data: alertRows = [], isLoading: alertLoading } = useUnifiedEntitiesList({
+    entityType: "Alert",
+    limit: 12,
+  });
+
+  const activityFeed = useMemo(
+    () => mapActivityLogsToFeed(activityLogs),
+    [activityLogs],
+  );
+  const alerts = useMemo(() => mapUnifiedEntityRows(alertRows), [alertRows]);
+
+  const [insightLoading, setInsightLoading] = useState(false);
+  const [insightText, setInsightText] = useState<string | null>(null);
+
+  const rollupKpis = useMemo(() => {
+    if (rollups.length === 0) return null;
+    return rollups.slice(0, 4).map((r) => {
+      const extra = isKpiSnapshot(r) ? r.last_activity_at : null;
+      return {
+        label: r.entity_type,
+        value: String(r.active_count ?? 0),
+        delta: extra ? new Date(extra).toLocaleDateString() : undefined,
+        trend: "neutral" as const,
+      };
+    });
+  }, [rollups]);
+
+  const kpiBlocks = rollupKpis ?? fallbackKpis;
+
+  async function runInsightStrip() {
+    setInsightLoading(true);
+    try {
+      const summaryRollups = JSON.stringify(rollups ?? []).slice(0, 4000);
+      const data = await edgeApi.invoke<{
+        choices?: { message?: { content?: string } }[];
+      }>("llm-proxy", {
+        messages: [
+          {
+            role: "system",
+            content:
+              "You summarize tenant dashboard rollups. Output 3 concise bullets. Do not invent numbers.",
+          },
+          {
+            role: "user",
+            content: `Rollups JSON (truncated): ${summaryRollups}`,
+          },
+        ],
+      });
+      const text = data?.choices?.[0]?.message?.content ?? "";
+      setInsightText(text || "No insight returned.");
+      toast.success("Insight refreshed");
+    } catch {
+      toast.error("Could not refresh insight");
+    } finally {
+      setInsightLoading(false);
+    }
+  }
+
   return (
     <AnimatedPage className="space-y-10">
       <PageHeader
@@ -41,7 +129,7 @@ export default function GlobalDashboardPage() {
         actions={
           <>
             <Button variant="outline" asChild>
-              <Link to="/dashboard/reports">Export report</Link>
+              <Link to="/reports">Export report</Link>
             </Button>
             <Button variant="cta" asChild>
               <Link to="/dashboard/ai">
@@ -53,26 +141,59 @@ export default function GlobalDashboardPage() {
         }
       />
 
+      <p className="text-xs uppercase tracking-widest text-muted-foreground">
+        Tailored for <span className="text-primary">{roleLabel}</span> · unified data
+        layer
+      </p>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((k) => (
-          <Card
-            key={k.label}
-            className="border-border/80 bg-card/90 shadow-card transition-all duration-150 hover:-translate-y-1 hover:shadow-card-hover"
-          >
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {k.label}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex items-end justify-between">
-              <span className="font-display text-3xl font-bold text-foreground">
-                {k.value}
-              </span>
-              <span className="text-xs font-semibold text-success">{k.delta}</span>
-            </CardContent>
-          </Card>
-        ))}
+        {rollupsLoading && !rollupKpis
+          ? Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-28 rounded-xl" />
+            ))
+          : kpiBlocks.map((k) => (
+              <KPIBlock
+                key={k.label}
+                label={k.label}
+                value={k.value}
+                delta={k.delta}
+                trend={"trend" in k ? k.trend : "neutral"}
+              />
+            ))}
       </div>
+
+      <Card className="border-border/80 bg-gradient-to-r from-primary/10 via-transparent to-success/5 shadow-card">
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-base">AI-assisted insight strip</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Summaries use the LLM proxy with tenant rollups you already loaded.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={insightLoading}
+            onClick={() => void runInsightStrip()}
+            className="gap-2 transition-transform duration-150 hover:scale-[1.02]"
+            aria-label="Refresh AI insights"
+          >
+            <Sparkles className="h-4 w-4" />
+            {insightLoading ? "Working…" : "Refresh insight"}
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {insightText ? (
+            <p className="text-sm leading-relaxed text-muted-foreground">{insightText}</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Tap refresh to summarize current rollups. Requires OpenAI key on the
+              llm-proxy function when enabled.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="border-border/80 bg-card/90 shadow-card lg:col-span-2">
@@ -80,7 +201,7 @@ export default function GlobalDashboardPage() {
             <div>
               <CardTitle>Cross-system throughput</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Normalized events ingested into the unified layer
+                Trend sample; wire to materialized KPI series from unified ingest.
               </p>
             </div>
             <Button variant="ghost" size="sm" asChild>
@@ -126,15 +247,22 @@ export default function GlobalDashboardPage() {
             <CardTitle>Quick actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {[
-              { label: "Run integration sync", to: "/onboarding/integrations" },
-              { label: "Create workflow", to: "/dashboard/workflows" },
-              { label: "Install module", to: "/dashboard/modules" },
-            ].map((a) => (
+            {(roles.some((r) => /admin|manager/i.test(r))
+              ? [
+                  { label: "Run integration sync", to: "/onboarding/integrations" },
+                  { label: "Create workflow", to: "/dashboard/workflows" },
+                  { label: "Install module", to: "/dashboard/modules" },
+                ]
+              : [
+                  { label: "Open search", to: "/search" },
+                  { label: "Department workspaces", to: "/dashboard/departments" },
+                  { label: "Notifications", to: "/dashboard/notifications" },
+                ]
+            ).map((a) => (
               <Button
                 key={a.label}
                 variant="outline"
-                className="w-full justify-between"
+                className="w-full justify-between transition-transform duration-150 hover:scale-[1.01]"
                 asChild
               >
                 <Link to={a.to}>
@@ -145,6 +273,11 @@ export default function GlobalDashboardPage() {
             ))}
           </CardContent>
         </Card>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <ActivityStream items={activityFeed} isLoading={actLoading} />
+        <AlertPanel alerts={alerts} isLoading={alertLoading} />
       </div>
     </AnimatedPage>
   );

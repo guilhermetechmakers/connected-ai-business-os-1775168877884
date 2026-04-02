@@ -185,6 +185,10 @@ export interface Database {
           entity_type: string;
           payload: Json;
           source_references: Json;
+          is_deleted: boolean;
+          version: number;
+          department_id: string | null;
+          linked_entity_ids: string[];
           created_at: string;
           updated_at: string;
         };
@@ -194,6 +198,10 @@ export interface Database {
           entity_type: string;
           payload?: Json;
           source_references?: Json;
+          is_deleted?: boolean;
+          version?: number;
+          department_id?: string | null;
+          linked_entity_ids?: string[];
           created_at?: string;
           updated_at?: string;
         };
@@ -203,8 +211,157 @@ export interface Database {
           entity_type?: string;
           payload?: Json;
           source_references?: Json;
+          is_deleted?: boolean;
+          version?: number;
+          department_id?: string | null;
+          linked_entity_ids?: string[];
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      unified_sources: {
+        Row: {
+          id: string;
+          unified_entity_id: string;
+          company_id: string;
+          provider: string;
+          external_id: string;
+          last_seen_at: string;
+        };
+        Insert: {
+          id?: string;
+          unified_entity_id: string;
+          company_id: string;
+          provider: string;
+          external_id: string;
+          last_seen_at?: string;
+        };
+        Update: {
+          id?: string;
+          unified_entity_id?: string;
+          company_id?: string;
+          provider?: string;
+          external_id?: string;
+          last_seen_at?: string;
+        };
+      };
+      entity_links: {
+        Row: {
+          id: string;
+          company_id: string;
+          left_entity_id: string;
+          right_entity_id: string;
+          relation_type: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          left_entity_id: string;
+          right_entity_id: string;
+          relation_type?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          left_entity_id?: string;
+          right_entity_id?: string;
+          relation_type?: string;
+          created_at?: string;
+        };
+      };
+      unified_entity_versions: {
+        Row: {
+          id: string;
+          unified_entity_id: string;
+          company_id: string;
+          version: number;
+          payload: Json;
+          source_references: Json;
+          actor_user_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          unified_entity_id: string;
+          company_id: string;
+          version: number;
+          payload: Json;
+          source_references?: Json;
+          actor_user_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          unified_entity_id?: string;
+          company_id?: string;
+          version?: number;
+          payload?: Json;
+          source_references?: Json;
+          actor_user_id?: string | null;
+          created_at?: string;
+        };
+      };
+      report_templates: {
+        Row: {
+          id: string;
+          company_id: string;
+          department_id: string | null;
+          name: string;
+          definition: Json;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          department_id?: string | null;
+          name: string;
+          definition?: Json;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          department_id?: string | null;
+          name?: string;
+          definition?: Json;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      report_schedules: {
+        Row: {
+          id: string;
+          company_id: string;
+          report_template_id: string;
+          cron_expression: string | null;
+          export_format: string;
+          next_run_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          report_template_id: string;
+          cron_expression?: string | null;
+          export_format?: string;
+          next_run_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          report_template_id?: string;
+          cron_expression?: string | null;
+          export_format?: string;
+          next_run_at?: string | null;
+          created_at?: string;
         };
       };
       workflows: {
@@ -750,9 +907,39 @@ export interface Database {
         };
       };
     };
-    Views: Record<string, never>;
+    Views: {
+      v_dashboard_entity_rollups: {
+        Row: {
+          company_id: string;
+          entity_type: string;
+          active_count: number;
+        };
+      };
+    };
     Functions: {
       current_company_id: { Args: Record<string, never>; Returns: string | null };
+      search_unified_entities: {
+        Args: {
+          p_search: string;
+          p_entity_type?: string | null;
+          p_department_id?: string | null;
+          p_limit?: number | null;
+        };
+        Returns: {
+          id: string;
+          company_id: string;
+          entity_type: string;
+          payload: Json;
+          source_references: Json;
+          is_deleted: boolean;
+          version: number;
+          department_id: string | null;
+          linked_entity_ids: string[];
+          created_at: string;
+          updated_at: string;
+        }[];
+      };
+      refresh_dashboard_kpis_mv: { Args: Record<string, never>; Returns: undefined };
     };
     Enums: Record<string, never>;
   };

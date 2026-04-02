@@ -73,3 +73,14 @@ export class ApiError extends Error {
 }
 
 export { integrationsClient } from "@/lib/integrations-client";
+
+/** Unified data layer (Edge Function `unified-data-api` + Supabase RLS). */
+export {
+  fetchDashboardRollups,
+  fetchDepartmentSnapshot,
+  fetchRecentActivity,
+  fetchReportSchedules,
+  fetchReportTemplates,
+  fetchSearchResults,
+  fetchUnifiedEntities,
+} from "@/api/unified-data";

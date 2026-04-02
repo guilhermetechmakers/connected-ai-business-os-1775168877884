@@ -1,4 +1,4 @@
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppProviders } from "@/components/providers";
@@ -65,7 +65,8 @@ export default function App() {
         <Route path="/error-500" element={<ServerErrorPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardLayout />}>
-            <Route index element={<GlobalDashboardPage />} />
+            <Route index element={<Navigate to="global" replace />} />
+            <Route path="global" element={<GlobalDashboardPage />} />
             <Route path="executive" element={<ExecutiveDashboardPage />} />
             <Route path="workflows" element={<WorkflowsPage />} />
             <Route path="modules" element={<ModulesHubPage />} />
@@ -73,14 +74,21 @@ export default function App() {
             <Route path="modules/:moduleId/manage" element={<EditModulePage />} />
             <Route path="departments" element={<DepartmentsListPage />} />
             <Route path="departments/:deptId" element={<DepartmentWorkspacePage />} />
-            <Route path="reports" element={<ReportsCenterPage />} />
             <Route path="ai" element={<AIWorkspacePage />} />
-            <Route path="search" element={<SearchPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="activity" element={<ActivityLogPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="profile" element={<ProfilePage />} />
             <Route path="admin" element={<AdminConsolePage />} />
+          </Route>
+          <Route path="/department/:deptId" element={<DashboardLayout />}>
+            <Route index element={<DepartmentWorkspacePage />} />
+          </Route>
+          <Route path="/reports" element={<DashboardLayout />}>
+            <Route index element={<ReportsCenterPage />} />
+          </Route>
+          <Route path="/search" element={<DashboardLayout />}>
+            <Route index element={<SearchPage />} />
           </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
