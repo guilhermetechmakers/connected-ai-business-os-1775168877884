@@ -60,3 +60,5 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+export { integrationsClient } from "@/lib/integrations-client";

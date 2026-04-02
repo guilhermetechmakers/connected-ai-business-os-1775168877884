@@ -345,6 +345,175 @@ export interface Database {
           updated_at?: string;
         };
       };
+      connectors: {
+        Row: {
+          id: string;
+          company_id: string;
+          provider_key: string;
+          display_name: string | null;
+          capabilities: Json;
+          config: Json;
+          config_hash: string | null;
+          status: string;
+          last_sync_at: string | null;
+          sync_interval_minutes: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          provider_key: string;
+          display_name?: string | null;
+          capabilities?: Json;
+          config?: Json;
+          config_hash?: string | null;
+          status?: string;
+          last_sync_at?: string | null;
+          sync_interval_minutes?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          provider_key?: string;
+          display_name?: string | null;
+          capabilities?: Json;
+          config?: Json;
+          config_hash?: string | null;
+          status?: string;
+          last_sync_at?: string | null;
+          sync_interval_minutes?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      connector_credentials: {
+        Row: {
+          id: string;
+          company_id: string;
+          connector_id: string;
+          encrypted_payload: string;
+          metadata: Json;
+          rotated_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          connector_id: string;
+          encrypted_payload: string;
+          metadata?: Json;
+          rotated_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          connector_id?: string;
+          encrypted_payload?: string;
+          metadata?: Json;
+          rotated_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      connector_field_mappings: {
+        Row: {
+          id: string;
+          company_id: string;
+          connector_id: string;
+          source_field: string;
+          target_entity: string;
+          target_field: string;
+          data_type: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          connector_id: string;
+          source_field: string;
+          target_entity: string;
+          target_field: string;
+          data_type?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          connector_id?: string;
+          source_field?: string;
+          target_entity?: string;
+          target_field?: string;
+          data_type?: string;
+          created_at?: string;
+        };
+      };
+      connector_sync_runs: {
+        Row: {
+          id: string;
+          company_id: string;
+          connector_id: string;
+          started_at: string;
+          ended_at: string | null;
+          status: string;
+          result_summary: Json;
+          idempotency_key: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          connector_id: string;
+          started_at?: string;
+          ended_at?: string | null;
+          status?: string;
+          result_summary?: Json;
+          idempotency_key?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          connector_id?: string;
+          started_at?: string;
+          ended_at?: string | null;
+          status?: string;
+          result_summary?: Json;
+          idempotency_key?: string | null;
+          created_at?: string;
+        };
+      };
+      connector_sync_log_entries: {
+        Row: {
+          id: string;
+          sync_run_id: string;
+          level: string;
+          message: string;
+          error_details: Json | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          sync_run_id: string;
+          level?: string;
+          message: string;
+          error_details?: Json | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          sync_run_id?: string;
+          level?: string;
+          message?: string;
+          error_details?: Json | null;
+          created_at?: string;
+        };
+      };
     };
     Views: Record<string, never>;
     Functions: {
