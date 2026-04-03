@@ -50,6 +50,7 @@ export type ProfilePayload = {
   preferences?: Json;
   status?: string;
   created_at?: string;
+  bio?: string | null;
 } | null;
 
 export type LoginResponseData = {
@@ -66,6 +67,8 @@ export type ProfileGetData = {
     id: string;
     provider: string;
     linked_at: string;
+    last_used_at?: string | null;
+    revoked?: boolean;
   }>;
   apiKeys: Array<{
     id: string;

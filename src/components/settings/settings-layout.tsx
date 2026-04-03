@@ -8,6 +8,7 @@ import {
   Palette,
   Plug,
   Shield,
+  User,
   Users,
   UserCog,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { cn } from "@/lib/utils";
 
 const navItems: { to: string; label: string; icon: typeof Building2 }[] = [
+  { to: "profile", label: "My profile", icon: User },
   { to: "company", label: "Company profile", icon: Building2 },
   { to: "users", label: "Users", icon: Users },
   { to: "roles", label: "Roles & permissions", icon: UserCog },

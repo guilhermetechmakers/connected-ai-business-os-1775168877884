@@ -25,7 +25,7 @@ import ExecutiveDashboardPage from "@/pages/dashboard/executive-dashboard-page";
 import GlobalDashboardPage from "@/pages/dashboard/global-dashboard-page";
 import ModulesHubPage from "@/pages/dashboard/modules-hub-page";
 import NotificationsPage from "@/pages/dashboard/notifications-page";
-import ProfilePage from "@/pages/dashboard/profile-page";
+import ProfileSettingsPage from "@/pages/dashboard/settings/profile-settings-page";
 import ReportsCenterPage from "@/pages/dashboard/reports-center-page";
 import SearchPage from "@/pages/dashboard/search-page";
 import { SettingsLayout } from "@/components/settings/settings-layout";
@@ -128,8 +128,9 @@ export default function App() {
               <Route path="audit" element={<SettingsAuditPage />} />
               <Route path="flags" element={<SettingsFlagsPage />} />
               <Route path="email-templates" element={<SettingsEmailTemplatesPage />} />
+              <Route path="profile" element={<ProfileSettingsPage />} />
             </Route>
-            <Route path="profile" element={<ProfilePage />} />
+            <Route path="profile" element={<Navigate to="/dashboard/settings/profile" replace />} />
             <Route path="admin" element={<AdminRoute />}>
               <Route element={<AdminDashboardShell />}>
                 <Route index element={<Navigate to="overview" replace />} />

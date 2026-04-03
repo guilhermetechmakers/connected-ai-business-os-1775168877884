@@ -326,382 +326,353 @@ All dashboard pages should be nested inside the dashboard layout, not separate r
 
 ## User Design Requirements
 
-# Connected AI Business OS - Development Blueprint
+# User Profile Page Prompt
 
-## Project Concept
-The Connected AI Business OS is a multi-tenant internal business operations platform that sits as an orchestration, intelligence, and execution layer on top of a company's existing SaaS stack. Its purpose is to connect disparate tools (CRM, PM, finance, docs, chat, calendars), normalize and centralize operational context, and provide dashboards, workflows, reporting, and an AI assistant that is grounded in tenant-specific data and actions. The vision is a reusable platform template that enables leadership and teams to operate with unified visibility, automated cross-system execution, and contextual AI assistance without replacing existing software.
-
-AI app description: Role-aware conversational AI with retrieval-augmented generation (RAG) that can answer questions, generate summaries and reports, and propose or execute permitted actions via workflows or integration connectors. Conversations are audited and all AI outputs are scoped by tenant and role.
-
-## Problem Statement
-- Core problems:
-  - Fragmented operational data across multiple tools causing lack of visibility and coordination.
-  - Manual, error-prone cross-tool workflows and repetitive operations.
-  - Difficulty for leadership to get concise, contextual executive summaries and risk detection.
-  - Long time-to-value for internal modules and inconsistent multi-tenant onboarding.
-  - Safety and access concerns when introducing AI-driven actions across systems.
-
-- Who experiences these problems:
-  - CEOs, COOs, managers, team members, admins, and internal builders in SMB and mid-market companies.
-
-- Why these problems matter:
-  - Slower decision-making, duplicated work, missed revenue/opportunity, operational risk, and high engineering costs to customise internal tooling per client.
-
-- Current state / gaps:
-  - No centralized orchestration layer that preserves existing tools while providing unified entities, workflows, and tenant-grounded AI.
-  - Limited role-aware AI that uses company context and enforces permissioned actions.
-
-## Solution
-- How application addresses problems:
-  - Provide a multi-tenant orchestration platform that connects integrations, ingests and normalizes data into a unified data layer, exposes dashboards and department workspaces, runs cross-system workflows, and offers an AI Workspace that reasons from tenant data.
-  - Offer reusable modules and templates to accelerate client onboarding and reduce rebuild cost.
-  - Enforce role-aware permissions and AI action gating to ensure safety.
-
-- Approach & methodology:
-  - Modular architecture (integration adapters, unified data models, workflow engine, AI layer) with tenant scoping at every layer.
-  - Retrieval-augmented generation for AI with vector store for document/knowledge retrieval and source citation.
-  - Widget-driven dashboards, module registry for mini-apps, and a visual workflow builder with action adapters.
-  - Strong observability, retry/error handling, and audit trails.
-
-- Key differentiators:
-  - AI grounded in per-tenant context with permission checks and actionable workflows.
-  - Reusable multi-tenant template oriented toward fast client onboarding and extensibility.
-  - Integration-first orchestration with mapping, sync logs, and health indicators.
-
-- Value creation:
-  - Faster decisions for executives, less manual cross-tool work for teams, consistent onboarding for clients, and safe AI-assisted execution that reduces human error.
-
-## Requirements
-
-### 1. Pages (UI Screens)
-For each page: Purpose, key sections/components, contribution to solving the problem.
-
-- Sign Up / Invite Acceptance Page
-  - Purpose: Tenant creation or invite acceptance; initial admin onboarding.
-  - Key sections: Tenant name & domain suggestion, admin fields (name, email, password), invite token processing, Terms checkbox, CTA, progress indicator.
-  - Contribution: Lowers friction to onboard tenants and seed the admin user.
-
-- Password Reset Page
-  - Purpose: Secure password reset flow.
-  - Key sections: Request form (email), reset form (token, new password, confirm, strength meter), success screen.
-  - Contribution: Secure account recovery and compliance.
-
-- Email Verification Page
-  - Purpose: Confirm email ownership before onboarding.
-  - Key sections: Success/failure states, resend link, next-step CTA.
-  - Contribution: Ensures verified accounts and secure onboarding.
-
-- Company Setup (Onboarding)
-  - Purpose: Initial tenant configuration.
-  - Key sections: Company profile, timezone & currency, logo upload, department templates, suggested integrations with connect buttons.
-  - Contribution: Accelerates first-week value and configures tenant context.
-
-- Landing Page (Public)
-  - Purpose: Marketing, feature overview, pricing, and demo CTAs.
-  - Key sections: Hero, feature highlights, testimonials, pricing, resource footer.
-  - Contribution: Drives signups and sales.
-
-- Login Page
-  - Purpose: Secure sign-in including SSO.
-  - Key sections: Email/password, OAuth/SAML buttons, tenant-aware microcopy, forgot password.
-  - Contribution: Secure and flexible authentication for enterprises.
-
-- Integration Connection Setup (Onboarding)
-  - Purpose: Connect first integrations and map sample data.
-  - Key sections: Integration catalog, connect buttons, mapping wizard, test & sync controls, health indicators.
-  - Contribution: Hooks tenant systems into the OS to power unified data.
-
-- Global Dashboard
-  - Purpose: High-level landing with aggregated KPIs, alerts, activity, and quick actions.
-  - Key sections: Widget grid, KPI cards, trend charts, quick actions, filters, sidebar.
-  - Contribution: Single-pane-of-glass reducing fragmentation.
-
-- Executive Dashboard
-  - Purpose: High-level executive view & AI brief.
-  - Key sections: Top-line KPIs, risk scoreboard, AI executive brief card, cross-department heatmap.
-  - Contribution: Rapid strategic insights and prioritized actions.
-
-- Workflows / Automations
-  - Purpose: Build/test/run workflows across systems.
-  - Key sections: Visual canvas/wizard (triggers/conditions/actions), library, execution log, approval config.
-  - Contribution: Automates cross-tool actions and reduces manual operations.
-
-- Internal Modules Hub
-  - Purpose: Registry and management of tenant mini-apps.
-  - Key sections: Catalog, install/config modal, permissions mapping, versioning.
-  - Contribution: Reusable internal apps accelerate operations.
-
-- Department Workspace List
-  - Purpose: Overview of department workspaces.
-  - Key sections: Department cards with KPIs, search/filter, create department.
-  - Contribution: Departmental organization and fast access.
-
-- Single Department Workspace
-  - Purpose: Department-specific operations and AI.
-  - Key sections: Header (lead, KPIs), tabs (Overview, Metrics, Tasks, Reports, Docs, AI Assistant), task list, documents.
-  - Contribution: Scoped context and AI for department workflows.
-
-- Reports Center
-  - Purpose: Create, view, schedule, export reports.
-  - Key sections: Report list, create wizard, detail view with charts and AI summary, schedule manager.
-  - Contribution: Data-driven decisions and reporting automation.
-
-- AI Workspace
-  - Purpose: Conversational AI scoped to tenant data capable of actions.
-  - Key sections: Chat panel, mode selector (Ask/Analyze/Report/Action), context panel (sources), action drawer (permission checks), conversation history.
-  - Contribution: Fast insights, summarization, and controlled action execution.
-
-- Search Results Page
-  - Purpose: Global permission-aware search.
-  - Key sections: Search bar with autosuggest, filters, results list, preview pane, AI-summary option.
-  - Contribution: Rapid retrieval of contextual information across systems.
-
-- Notifications Center
-  - Purpose: Manage in-app alerts and notification preferences.
-  - Key sections: Notification list, filters, bulk actions, rule management link.
-  - Contribution: Keeps teams informed and responsive.
-
-- Activity Log
-  - Purpose: Tenant-scoped audit and troubleshooting.
-  - Key sections: Chronological stream, filters, entry detail modal, export.
-  - Contribution: Compliance, observability, and issue investigation.
-
-- Settings / Preferences
-  - Purpose: Tenant & user configuration.
-  - Key sections: Company settings, users & roles, integrations, AI settings, branding, data policies, feature flags.
-  - Contribution: Tenant governance and customization.
-
-- User Profile Page
-  - Purpose: Manage user preferences and auth methods.
-  - Key sections: Profile info, password & 2FA, connected accounts, API keys.
-  - Contribution: User-level security and builder access.
-
-- Admin Console (Internal)
-  - Purpose: Platform admin operations for TechMakers.
-  - Key sections: Tenant list, system logs, feature flags, template management.
-  - Contribution: Platform operations, tenant provisioning, and troubleshooting.
-
-- Legal & Utility Pages (Privacy, Terms, Cookie, 404, 500, Loading/Success)
-  - Purpose: Compliance, error handling, and UX polish.
-  - Contribution: Trust, legal coverage, and user guidance.
-
-- Create / Add Module Page
-  - Purpose: Builder UI for creating mini-apps.
-  - Key sections: Metadata, data model binding, permissions, preview, publish.
-  - Contribution: Internal extensibility and tenant customizations.
-
-- Edit / Manage Module Page
-  - Purpose: Manage existing modules and versions.
-  - Key sections: Version diff, configuration, assign/uninstall controls.
-  - Contribution: Maintainability and controlled deployment.
-
-### 2. Features
-List core features with technical details and implementation notes.
-
-- User Authentication
-  - Support: Email/password, OAuth (Google/Microsoft), SAML/OIDC SSO.
-  - Tech notes: JWT access + refresh tokens; password hashing (bcrypt/argon2); rate limiting; tenant-aware sign-in; secure session invalidation.
-  - Contribution: Secure, enterprise-ready access.
-
-- User Profile Management
-  - Support: Profile CRUD, avatar upload/resizing, 2FA, SSO linking, scoped API keys.
-  - Tech notes: Image processing service, token scopes & expiry, revocation endpoints.
-  - Contribution: Builder access and personal security.
-
-- Multi-tenant Company Module
-  - Support: Tenant lifecycle, per-tenant config, row-level isolation.
-  - Tech notes: tenant_id in core tables; per-tenant config store; provisioning workflows; optional DB schema partitioning; encryption of credentials.
-  - Contribution: Scalable multi-tenancy and isolation.
-
-- Workflow & Automation Engine
-  - Support: Triggers, conditions, actions, schedules, manual runs, human approvals, retries.
-  - Tech notes: Event ingestion pipeline, durable queue, connector adapters, idempotency, transactional semantics where feasible, logs/metrics, backoff strategies.
-  - Contribution: Cross-system automation and resilience.
-
-- AI Assistant & Agent Layer
-  - Support: RAG with vector store, prompt templates, streaming responses, action gating, conversation audit.
-  - Tech notes: Vector DB (e.g., Pinecone/Weaviate), embedding pipeline, prompt templating service with role-aware variables, token accounting, action gating checks against permission service, logs persisted.
-  - Contribution: Contextual AI with safe action capabilities.
-
-- Integrations & Connectors
-  - Support: OAuth2/API-key connectors, per-tenant configs, sync scheduling, mapping engine.
-  - Tech notes: Connector registry pattern, credential encryption, adapter interface, mapping UI persisted definitions, sync logs & health API, manual sync endpoints.
-  - Contribution: Ingest external context and enable actions.
-
-- Global Search
-  - Support: Permission-aware search, autosuggest, snippet previews.
-  - Tech notes: Elasticsearch/OpenSearch index with tenant scoping, real-time or near-real-time indexing, pre-filter by permissions, query latency targets (<200ms for common queries).
-  - Contribution: Fast, secure retrieval.
-
-- Unified Data & Context Layer
-  - Support: Canonical entities, source metadata, linking, versioning.
-  - Tech notes: Normalized models (Company, Department, User, Contact, Lead, Deal, Project, Task, Document, KPI), store external IDs, soft-deletes, materialized views for dashboards.
-  - Contribution: Consistent single source for dashboards, AI, and workflows.
-
-- Dashboard Framework
-  - Support: Widget registry, drag-and-drop grid, role visibility, saved layouts.
-  - Tech notes: Widget config persisted per tenant/user, grid system, caching adapters, export/schedule endpoints.
-  - Contribution: Role-based visibility and configurable insights.
-
-- Notifications & Alerts
-  - Support: In-app websockets, email/push integration, alert rule engine.
-  - Tech notes: Notification queue + durable store, rule engine evaluating KPIs/events, integrations to SendGrid/FCM, preferences per user.
-  - Contribution: Timely awareness and automation triggers.
-
-- Internal Module/Template Builder
-  - Support: Module registration, data bindings, permissions, versioning.
-  - Tech notes: Module metadata model, preview rendering using component library, deployment pipeline, marketplace registry.
-  - Contribution: Reusability and fast tenant customization.
-
-- Activity Log & Audit Trail
-  - Support: Immutable logs for user actions, workflows, integrations, AI.
-  - Tech notes: Append-only store, retention policies per tenant, export capabilities, redaction rules.
-  - Contribution: Compliance and troubleshooting.
-
-### 3. User Journeys
-Step-by-step flows for major user types.
-
-- Onboarding Admin (Tenant Owner)
-  1. Visit Landing Page -> Click Sign Up -> Fill Sign Up/Invite Acceptance.
-  2. Verify email -> Company Setup: name, timezone, currency, logo, create departments.
-  3. Connect first integrations via Integration Connection Setup; run initial manual sync & mapping.
-  4. Invite team members and assign roles.
-  5. Open Global Dashboard and Executive Dashboard to verify KPIs.
-  6. Install starter modules from Modules Hub; optionally create a workflow template.
-  7. Configure alert rules and schedule first report.
-
-- Executive
-  1. Login -> Open Executive Dashboard.
-  2. Review top-line KPIs and AI executive brief.
-  3. Drill into cross-department heatmap; open department workspace drilldown for deeper context.
-  4. Use AI Workspace "Ask" to request a one-page weekly brief -> review sources and schedule report export.
-  5. Approve or request actions pushed to managers (via workflow/notification).
-
-- Manager
-  1. Login -> Go to Department Workspace.
-  2. View top priorities and task list; open Workflows to create trigger for overdue tasks.
-  3. Use AI Workspace "Analyze" for bottleneck detection in projects.
-  4. Assign tasks from AI suggestions and notify assignees.
-  5. Schedule recurring reports to execs.
-
-- Team Member
-  1. Login -> Open Global Dashboard or Department Workspace.
-  2. View assigned tasks and workflows; update task status and add comments.
-  3. Use AI Assistant to draft status updates or follow-ups.
-  4. Receive notifications/alerts and respond (e.g., approve an item).
-
-- Internal TechMakers Admin
-  1. Login -> Open Admin Console.
-  2. Provision tenant or impersonate for debugging.
-  3. Monitor integration health and system logs; toggle feature flags.
-  4. Deploy/update module templates to tenants and verify telemetry.
-
-- AI-driven Action Flow (Role-aware)
-  1. User requests an action in AI Workspace (e.g., "Advance deal to proposal stage").
-  2. System resolves tenant, user roles/permissions, and relevant entities.
-  3. Retrieval pipeline fetches supporting documents/data; prompt template assembled.
-  4. AI suggests action with citations; UI displays required approvals.
-  5. User confirms; permission checks executed and workflow action invoked.
-  6. Action logged and notifications sent; audit entry created.
-
-## UI Guide
-(See Visual Style below for complete design tokens and component guidance. All UI must adhere to these values.)
+This prompt is designed to drive an AI development tool to implement a complete, production-ready User Profile Page within a multi-tenant Connected AI Business OS. It enforces the runtime safety rules (null/undefined guards, array checks, proper useState initializations, etc.) and follows the dependency-first implementation order: auth/access control and core data setup before dashboard/analytics tasks when both are present.
 
 ---
 
-## Visual Style
+## User Profile Page
 
-### Color Palette:
-- Background primary: #05060A
-- Background gradient/center glow: radial #071228 → #0B1A2A
-- Surface/card background: #0F1720
-- Inner card fill: #0C1116
-- Primary accent: #9AD0FF
-- Secondary accent: #154E78
-- Action/success: #00D27A
-- Neutral text: #8FA0B0
-- Strong text: #F7FAFF
-- Subtle border/grid lines: rgba(255,255,255,0.03) or #11202B at 3–6%
-- Button fill (primary CTA): #FFFFFF
-- Button text for white CTA: #081017
+### Overview
+The User Profile Page delivers centralized user account management within a tenant context. It encompasses profile details, notification preferences, connected accounts, API keys (where allowed), and an activity snapshot. It ties into User Profile Management and User Authentication features, enabling users to securely manage their identity, authentication methods, and scoped API keys for builders. This page must be robust against null/undefined values and rely on guards and proper typing to prevent runtime crashes in all environments (web, mobile, SSR if applicable).
 
-### Typography & Layout:
-- Headings/display: Poppins or Manrope (700–900).
-- UI/body: Inter or Roboto (400–600).
-- Hero H1: 56–96px heavy (800–900) with one-two word accent in #9AD0FF.
-- Paragraphs: 16–20px, line-height ~1.6.
-- Micro labels: 10–12px small caps.
-- 12-column responsive grid; generous left gutters (64–160px).
-- Spacing modular scale: 8px base (8 / 16 / 24 / 32 / 48 / 64).
-- Alignment: left-aligned text blocks, right stacked card balance.
+---
 
-### Key Design Elements
-- Card Design: rounded radius 12–16px, inner shadow, faint outer stroke (#154E78 at 6–8%).
-- Navigation: top-centered minimal links, white pill CTA top-right.
-- Data Viz: thin lines, pale sky blue #9AD0FF for primary; #00D27A for positive.
-- Buttons: Primary CTA pill white, dark text; secondary ghost dark with azure outline.
-- Inputs: dark fills #0C1116, soft border #11202B low opacity, focus ring #9AD0FF at 12–18% opacity.
-- Micro-interactions: transitions 120–200ms, hover translateY(-4px) for cards, subtle glow on focus.
-- Live indicators: neon green #00D27A dot with minimal pulse.
+## Page Description (Full Detail)
 
-### Design Philosophy
-- Modern, high-contrast, enterprise-tech aesthetic.
-- Minimalist, data-first clarity with modular, scalable components.
-- Calm, technical refinement with subtle vignette and grid texture.
-- Trustworthy and action-oriented accents and accessible typography.
+What this page is:
+- A self-service, tenant-scoped User Profile Page that enables users to view and edit their profile, configure notification preferences, manage connected accounts, generate or revoke API keys (when allowed by tenant policy), and review recent activity snapshots.
 
-Implementation notes: Apply the design system consistently; ensure contrast/accessibility, responsive layouts, and reusable component patterns.
+Goals:
+- Allow users to view and update profile details (name, avatar, title/role, contact fields).
+- Enable authentication method management (password enablement, SSO/linkage, MFA/2FA toggles).
+- Present and manage notification preferences (email, SMS, in-app, frequency toggles).
+- List connected accounts (OAuth providers, SSO bindings, external login methods) with revoke/disconnect capability where permitted.
+- Manage API keys scoped to builders or tenants (where allowed by policy), including creation, rotation, scoping, and revocation.
+- Show an activity snapshot: recent login events, changes to profile/auth/preferences, API key usage, and notable system actions within the tenant context.
+- Integrate with User Profile Management and User Authentication flows; respect tenant RBAC to restrict sensitive operations (e.g., API key management, SSO unlinking).
 
-## Instructions to AI Development Tool
-1. Refer to Project Concept, Problem Statement, and Solution to understand the "why" for each requirement.
-2. Ensure all pages and features align with solving the identified problems and meet role/tenant scoping rules.
-3. Verify features/pages adhere exactly to the UI Guide visual style, tokens, spacing, and interactions before marking complete.
-4. Maintain strict tenant isolation in data access, AI retrieval, and action execution.
-5. Implement comprehensive logging and auditing for AI outputs, workflow runs, integration syncs, and admin actions.
-6. Use the provided data structures, API integrations, and asset list as canonical references when scaffolding models, endpoints, and UI components.
-7. Enforce security best practices: encrypted credentials, secure token flows, rate limiting, CSRF/XSS protections, and permission checks for sensitive actions.
+UI elements and how they should look and behave:
+- Profile section: avatar upload/replace, displayName, name, title, contact email (read-only vs editable per policy), bio/notes (optional).
+- Authentication section: password toggle (enable/disable), SSO bindings, MFA/2FA configuration, backup codes display.
+- Notification preferences: a set of on/off toggles grouped by channel (email, in-app, SMS), with per-channel sub-options (frequency, digests).
+- Connected accounts: list of linked providers (e.g., Google, GitHub, SSO provider), last used, with actions to revoke/disconnect; policy-driven visibility of revoke actions.
+- API Keys (if allowed): card-based UI listing scoped keys, builder scope pills, key value display (masked), creation time, expiration, last used, and actions: copy, rotate/regenerate, revoke, edit scope. Include a security-conscious display so that raw keys are only shown immediately after creation with a secure reveal pattern.
+- Activity snapshot: compact timeline or grid with recent events, filters (time range, event type), and export option.
+- Visual cues: use the provided design system and color palette for surfaces, typography, borders, and accents; ensure high contrast for primary actions and clear affordances.
+- API integrations: all data interactions occur through authenticated API calls; page should not perform client-side data mutations without server validation and optimistic UI guarded with proper fallbacks.
 
-PROJECT CONTEXT:
-Connected AI Business OS — reusable multi-tenant platform for orchestrating integrations, normalizing company context, providing dashboards, department workspaces, workflow automation, and a role-aware AI assistant. Key system areas include authentication/onboarding, tenant lifecycle, role-permissions, integration connectors, unified data models, dashboard widget framework, workflow engine, AI RAG layer, internal module registry, reporting, notifications, activity/audit logs, and global search.
+Connected features and data flow:
+- User Profile Management: updates to profile fields, auth methods, preferences, and scoped API keys per builder scope.
+- User Authentication: login/signup/SSO/session handling in tenant context; ensure changes are reflected in session state where necessary.
+- No external API integration required for this page in the current scope, but prepare for future integration hooks (e.g., external identity providers, API key auditing services).
 
-Data model summary (canonical fields):
-- User: id, email, displayName, roles, authMethods
-- Company (Tenant): id, name, timezone, currency, settings
-- Department: id, companyId, name, leadUserId, settings
-- Role & Permission: id, companyId, name, permissions
-- Integration: id, companyId, provider, status, config
-- UnifiedEntity: id, companyId, entityType, payload, sourceReferences
-- Workflow: id, companyId, definition, status
-- WorkflowRun: id, workflowId, status, logs
-- Document: id, companyId, sourceProvider, externalId, text, metadata
-- KPI / Metric: id, companyId, definition, cachedValue
-- ActivityLog: id, companyId, eventType, actorUserId, payload, createdAt
-- AIConversation: id, companyId, userId, messages, actions
+Validation and data integrity:
+- All forms must validate inputs with both client-side and server-side validation; implement schema-based validation where possible.
+- Ensure that every array operation in the code path is guarded: use (array ?? []).map(...) or Array.isArray(array) ? array.map(...) : [].
+- Use data ?? [] when handling Supabase results or similar data sources.
+- Validate API responses: const list = Array.isArray(response?.data) ? response.data : [].
+- Use optional chaining for nested API responses: obj?.property?.nested.
+- Initialize React state with correct types: useState<Type[]>([]) for arrays; useState<ProfileType | null>(null) if single object; prefer concrete defaults.
 
-APIs & Integrations:
-- OpenAI / LLM provider for generative AI.
-- HubSpot, Salesforce, QuickBooks, Google Drive/Calendar, Slack, Airtable, SendGrid, Firebase/FCM for push.
-- Support connector registry pattern and encrypted per-tenant credentials.
+Accessibility:
+- Ensure semantic HTML structure, ARIA attributes for toggles, expandable sections, and actions.
+- Keyboard navigability, focus rings on interactive elements, and screen-reader friendly labels.
 
-Assets:
-- App logo package, UI icon set (SVG), Figma design system kit, onboarding illustrations, AI prompt templates library, module starter pack, transactional email templates.
+---
 
-Success metrics & goals:
-- Time-to-first-value: connect 3 integrations within 7 days.
-- Adoption: 60% weekly active users among licensed seats.
-- Retention: >80% monthly tenant retention for production clients.
-- Automation impact: measurable reduction in manual cross-tool tasks within 90 days.
+## Components to Build
 
-Security & Safety:
-- Tenant isolation at every layer.
-- AI safety: RAG + source citation, permission enforcement, confirmation for sensitive actions, AI action logging.
-- Encryption in transit & at rest, secure token flows, auditability and redaction rules.
+- UserProfilePage
+  - Orchestrates sections and state; coordinates data fetches and mutations.
+- ProfileDetailsCard
+  - AvatarUploader
+  - Name, DisplayName, Title, Email (editable per policy)
+  - Bio/Notes
+- AuthenticationMethodsCard
+  - PasswordToggle
+  - SSOBindingsList
+  - MFA/2FAConfig
+  - Backup codes (readable via secure modal)
+- NotificationPreferencesCard
+  - ChannelToggleGroup (Email, In-App, SMS)
+  - PerChannelOptions (frequency, digest)
+- ConnectedAccountsCard
+  - ConnectedAccountItem (provider, last used)
+  - Revoke/Disconnect action with confirmation
+- ApiKeysCard (conditionally rendered if allowed by tenant)
+  - ApiKeyCard
+    - keyName, scope pills, createdAt, expiresAt, lastUsed
+    - copyKey, rotate/regenerate, revoke, edit scope actions
+    - secure reveal pattern for the raw key only on creation
+- ActivitySnapshotCard
+  - ActivityTimeline or ActivityGrid
+  - Filters (timeRange, eventType) and export
+- Utilities
+  - AvatarUploader, ImageCropper (optional)
+  - ConfirmDialog
+  - Toast / notification system
+  - RateLimiter / Debounce for search/filter inputs
+- Data Models and Types
+  - UserProfile, AuthMethod, NotificationPreferences, ApiKey, ConnectedAccount, ActivityEvent
 
-Deployment & Scalability notes:
-- Horizontal partitioning for tenants, per-tenant rate limiting, observability (metrics/tracing), and feature-flag driven rollouts.
-- Consider schema partitioning vs row-level tenancy depending on scale and compliance.
+All components must guard against null/undefined values and rely on defensive programming patterns:
+- (data ?? []) and Array.isArray(...) guards where arrays are expected
+- useState([]) defaults for array fields
+- Optional chaining for nested properties
+- Destructure with defaults: const { items = [], count = 0 } = data ?? {}
 
-End of blueprint.
+---
+
+## Implementation Requirements
+
+### Frontend
+
+- Routing
+  - Ensure a dedicated route (e.g., /settings/profile or /tenant/profile) with proper RBAC guards.
+- UI Components
+  - Implement presentational components with the given color palette, typography, and layout guidelines.
+  - All interactive elements must have accessible labels and announce state changes to assistive tech.
+- State Management
+  - Local component state for temporary edits; centralized mutation through API calls (or a state management library if present in the project).
+  - Maintain a stable loading/idle state during fetches and mutations.
+- API Integration (client)
+  - Define a cohesive API client layer to fetch and mutate:
+    - GET /tenants/{tenantId}/users/{userId}/profile
+    - PATCH /tenants/{tenantId}/users/{userId}/profile
+    - GET /tenants/{tenantId}/users/{userId}/auth-methods
+    - PATCH /tenants/{tenantId}/users/{userId}/auth-methods
+    - GET /tenants/{tenantId}/users/{userId}/notifications
+    - PATCH /tenants/{tenantId}/users/{userId}/notifications
+    - GET /tenants/{tenantId}/users/{userId}/connections
+    - PATCH /tenants/{tenantId}/users/{userId}/connections/{connectionId}
+    - GET /tenants/{tenantId}/users/{userId}/api-keys
+    - POST /tenants/{tenantId}/users/{userId}/api-keys
+    - PATCH /tenants/{tenantId}/users/{userId}/api-keys/{keyId}
+    - DELETE /tenants/{tenantId}/users/{userId}/api-keys/{keyId}
+    - GET /tenants/{tenantId}/activities?userId={userId}&range={range}
+  - Guard API responses: const profile = response?.data ?? {}; const items = Array.isArray(response?.data?.items) ? response.data.items : [].
+  - Use null safety in all fetch/mutate logic.
+
+- Validation
+  - Client-side validation using schema: required fields, email format, password strength, URL/URI validations for avatar, etc.
+  - Server-side validation expectations must be documented elsewhere; UI should surface server errors clearly with user-friendly messages.
+
+- Security
+  - Hide API keys by default; reveal only on creation with a secure pattern (temporary reveal window).
+  - Ensure sensitive actions (API key rotation, revoke) require confirmation.
+  - Respect tenant RBAC: hide or disable actions based on user roles/permissions.
+
+- Performance
+  - Lazy load sections if required; debounce filter inputs; batch requests when multiple fields update simultaneously.
+
+### Backend
+
+- Data Models (Database Tables/Schemas)
+  - User
+    - id (UUID, PK)
+    - tenant_id (FK)
+    - email (string, unique)
+    - display_name (string)
+    - name (string)
+    - title (string)
+    - avatar_url (string)
+    - bio (string)
+    - created_at, updated_at
+    - roles (array<string>)
+    - auth_methods (JSON) // metadata about password, SSO providers, MFA
+    - preferences (JSON) // notification prefs, UI flags
+  - NotificationPreference
+    - user_id (FK)
+    - channel (enum: email, in_app, sms)
+    - enabled (bool)
+    - frequency (enum: immediate, daily, weekly)
+  - ConnectedAccount
+    - id (UUID)
+    - user_id (FK)
+    - provider (string)
+    - last_used_at (timestamp)
+    - linked_at (timestamp)
+    - revoked (bool)
+    - metadata (JSON)
+  - ApiKey
+    - id (UUID)
+    - user_id (FK)
+    - tenant_id (FK)
+    - name (string)
+    - key_hash (string) // store hashed value
+    - scope (string) // e.g., builder:xyz
+    - created_at, expires_at, last_used_at
+    - active (bool)
+    - can_view_key (bool) // to support reveal pattern
+    - metadata (JSON)
+  - ActivityLog
+    - id (UUID)
+    - user_id (FK)
+    - tenant_id (FK)
+    - action (string)
+    - details (JSON)
+    - created_at
+
+- API Layer
+  - Implement RESTful routes as listed above with proper authentication and tenant scoping.
+  - Ensure input validation schemas server-side; return structured error payloads.
+  - Implement RBAC checks for sensitive endpoints (API key management, SSO unlinking, MFA changes).
+  - Implement audit logging for significant user changes (profile updates, auth method changes, API key events).
+
+- Security
+  - Store API keys securely with hashing; never log raw keys.
+  - Rate limit sensitive endpoints to prevent abuse.
+  - Ensure all endpoints require valid tenant context and user session.
+
+- Validation
+  - Validate required fields; enforce email uniqueness constraints within tenant.
+  - Validate API key scopes and lifecycle statuses per tenant policy.
+
+---
+
+## Integration
+
+- Data Flow:
+  - On page load, fetch profile, auth methods, notification prefs, connected accounts, API keys (if allowed), and activity snapshot via separate API calls or batched requests.
+  - Mutations should reflect optimistic UI when safe, with rollback on server error.
+  - All mutations should trigger UI refreshes or re-fetches to ensure data consistency.
+
+- State Management:
+  - Centralized data fetching layer with caching where possible.
+  - Use React state (or project-appropriate store) to manage UI states: editing flags, loading indicators, success/error toasts.
+
+- Error Handling:
+  - Centralized error handler to map server error payloads to user messages.
+  - Show contextual inline errors for form fields.
+
+- Accessibility and Internationalization:
+  - All UI text should be localization-ready; expose keys for i18n.
+  - ARIA labels and roles for complex controls (sliders, toggles, accordions).
+
+---
+
+## User Experience Flow
+
+1. User navigates to the User Profile Page within their tenant.
+2. Page loads: profile, auth methods, notification prefs, connected accounts, and API keys (if allowed) are fetched.
+3. User edits ProfileDetails:
+   - Update display name, title, avatar, bio.
+   - Save; show success or inline validation errors.
+4. User configures AuthenticationMethods:
+   - Toggle password enablement; manage SSO bindings; configure MFA.
+   - Save; reflect changes in session/state; handle errors.
+5. User updates NotificationPreferences:
+   - Turn channels on/off; adjust frequencies.
+   - Save; immediate UI feedback.
+6. User reviews ConnectedAccounts:
+   - Revoke or disconnect providers as allowed; confirm destructive actions.
+7. User manages ApiKeys (if allowed):
+   - Create a new key with specific builder scope.
+   - View the key once on creation; rotate/regenerate or revoke existing keys.
+   - Copy secure value to clipboard; key masked after a grace period.
+8. User views ActivitySnapshot:
+   - Filter by range and event type; export if enabled.
+9. All changes reflect in the user session as applicable (e.g., MFA status, SSO bindings).
+
+---
+
+## Build Order & Dependencies (Mandatory)
+
+- Prerequisites:
+  - Authentication system in place with tenant-scoped session management.
+  - Core User model in place with basic CRUD and roles/permissions support.
+  - UI design system implemented (colors, typography, components).
+- Blocks:
+  - Block 1: Backend APIs for profile, auth methods, notifications, connections, and API keys (CRUD + audit logs).
+  - Block 2: RBAC rules and tenant isolation for user profile actions.
+  - Block 3: Frontend components for ProfileDetails, AuthMethods, Notifications, Connections, ApiKeys, and ActivitySnapshot with integrated API client.
+  - Block 4: State management, error handling, and loading strategies; integration tests.
+  - Block 5: Accessibility, i18n, and responsive adaptations; visual QA.
+- Sequencing Rule:
+  - Auth/access control and core data setup must be completed before dashboard/workspace/analytics tasks when both exist.
+
+---
+
+## Technical Specifications
+
+- Data Models: See above under Data Models and Tables.
+- API Endpoints (Examples):
+  - GET /tenants/{tenantId}/users/{userId}/profile
+  - PATCH /tenants/{tenantId}/users/{userId}/profile
+  - GET /tenants/{tenantId}/users/{userId}/auth-methods
+  - PATCH /tenants/{tenantId}/users/{userId}/auth-methods
+  - GET /tenants/{tenantId}/users/{userId}/notifications
+  - PATCH /tenants/{tenantId}/users/{userId}/notifications
+  - GET /tenants/{tenantId}/users/{userId}/connections
+  - PATCH /tenants/{tenantId}/users/{userId}/connections/{connectionId}
+  - GET /tenants/{tenantId}/users/{userId}/api-keys
+  - POST /tenants/{tenantId}/users/{userId}/api-keys
+  - PATCH /tenants/{tenantId}/users/{userId}/api-keys/{keyId}
+  - DELETE /tenants/{tenantId}/users/{userId}/api-keys/{keyId}
+  - GET /tenants/{tenantId}/activities?userId={userId}&range={range}
+- Security:
+  - RBAC checks on sensitive endpoints.
+  - Use session-based authentication with token rotation where applicable.
+  - API keys stored hashed; keys emitted only on creation; display patterns ensure keys are not exposed broadly.
+- Validation:
+  - Client-side: form validation with immediate feedback.
+  - Server-side: strict schemas; return field-level errors when possible.
+
+---
+
+## Acceptance Criteria
+
+- [ ] All profile fields (name, avatar, displayName, title, bio) can be viewed and edited with successful server persistence; client reflects updates; invalid inputs show contextual errors.
+- [ ] Authentication methods can be viewed and updated; SSO bindings and MFA configurations are persisted with proper validation; session state reflects changes.
+- [ ] Notification preferences can be toggled per channel with correct frequency options; changes persist and reflect in user settings.
+- [ ] Connected accounts list renders accurately; revoke/disconnect actions are available only when permitted and confirmable.
+- [ ] API keys exist only if tenant policy allows; create, rotate, revoke actions work; raw key is revealed only at creation; subsequent displays mask the key.
+- [ ] Activity snapshot renders recent events with filters; export function (if defined) works; data is aligned to tenant scope.
+- [ ] All API responses and data manipulations guard against null/undefined values; array operations are guarded; useState defaults are correct; Supabase-like results use data ?? [].
+- [ ] UI adheres to design system colors, typography, spacing, and responsive behavior; accessibility checks pass (keyboard, screen readers, color contrast).
+- [ ] End-to-end flow tests validate that dependent data loads in the correct order and that permission constraints block unauthorized actions.
+
+---
+
+## UI/UX Guidelines
+
+Apply the project's design system with fidelity:
+- Color Palette, Typography, Spacing, and Grid
+- Card design, hover states, focus rings
+- Data visualization styling (timelines, simple charts if used in activity)
+- Button styles: primary, ghost/secondary, micro-pill tags
+- Form controls: inputs, selects, toggles, switches with accessible labels
+- Micro-interactions: transitions 120–200ms for state changes
+- Live indicators and status dots in neon green (#00D27A)
+
+---
+
+## Visual Style Details (Repeatable Reference)
+
+- Background: #05060A with radial center glow from #071228 to #0B1A2A
+- Surface: #0F1720; Inset panels: #0C1116
+- Text: Primary copy #F7FAFF; secondary #8FA0B0
+- Accent: Headline #9AD0FF; Outline/borders #154E78
+- Action: Positive #00D27A
+- Grids: Subtle borders at rgba(255,255,255,0.03)
+- Primary CTA: White pill with dark text; dark CTAs use white text on dark backgrounds
+
+---
+
+## Development Notes
+
+- Follow the runtime safety rules religiously:
+  - Supabase-like results: data ?? []
+  - (array ?? []).map(...) or Array.isArray(data) ? data.map(...) : []
+  - useState<Type[]>([]) for arrays
+  - const list = Array.isArray(response?.data) ? response.data : []
+  - Optional chaining for nested response data
+  - Destructure with defaults: const { items = [], count = 0 } = response ?? {}
+- Enforce dependency-first order: complete auth/access control and core data scaffolding before UI pages like dashboards/workspaces/analytics if both are in scope.
+
+If you need a ready-to-run starter code scaffold (frontend TS/React with a Node/Express or serverless backend), I can provide a structured repository skeleton with type definitions, API client wrappers, and sample test cases aligned to this prompt.
 
 ## Implementation Notes
 

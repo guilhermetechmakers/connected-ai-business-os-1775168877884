@@ -75,15 +75,13 @@ export function compositeSearchId(hit: Pick<GlobalSearchHit, "type" | "id">): st
   return `${hit.type}:${hit.id}`;
 }
 
-const HIT_TYPES: GlobalSearchHitType[] = ["Entity", "Document", "Activity", "Report"];
-
 export function coerceSavedSearchFilters(raw: unknown): GlobalSearchFilters {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const o = raw as Record<string, unknown>;
   const types = Array.isArray(o.types)
-    ? (o.types.filter((t): t is GlobalSearchHitType =>
-        HIT_TYPES.includes(t as GlobalSearchHitType),
-      ) as GlobalSearchHitType[])
+    ? o.types.filter((t): t is GlobalSearchHitType =>
+        t === "Entity" || t === "Document" || t === "Activity" || t === "Report",
+      )
     : undefined;
   const sources = Array.isArray(o.sources) ? o.sources.map((s) => String(s)) : undefined;
   const departmentIds = Array.isArray(o.departmentIds)

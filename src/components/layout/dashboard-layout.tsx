@@ -60,7 +60,7 @@ const navGroups: {
       { to: "/dashboard/notifications", label: "Notifications", icon: Bell },
       { to: "/dashboard/activity", label: "Activity log", icon: Activity },
       { to: "/dashboard/settings", label: "Settings", icon: Settings },
-      { to: "/dashboard/profile", label: "Profile", icon: User },
+      { to: "/dashboard/settings/profile", label: "Profile", icon: User },
       { to: "/dashboard/admin", label: "Admin console", icon: Shield },
     ],
   },
@@ -90,18 +90,16 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
                       ? location.pathname.startsWith("/dashboard/admin")
                       : item.to === "/dashboard/settings"
                         ? location.pathname.startsWith("/dashboard/settings")
-                        : item.to === "/dashboard/departments"
-                          ? location.pathname.startsWith("/dashboard/departments") ||
-                            location.pathname.startsWith("/departments") ||
-                            location.pathname.startsWith("/department/")
-                    : item.to === "/dashboard/departments"
-                      ? location.pathname.startsWith("/dashboard/departments") ||
-                        location.pathname.startsWith("/departments") ||
-                        location.pathname.startsWith("/department/")
-                      : location.pathname === item.to ||
-                        (item.to !== "/reports" &&
-                          item.to !== "/search" &&
-                          location.pathname.startsWith(`${item.to}/`));
+                        : item.to === "/dashboard/settings/profile"
+                          ? location.pathname.startsWith("/dashboard/settings")
+                          : item.to === "/dashboard/departments"
+                            ? location.pathname.startsWith("/dashboard/departments") ||
+                              location.pathname.startsWith("/departments") ||
+                              location.pathname.startsWith("/department/")
+                            : location.pathname === item.to ||
+                              (item.to !== "/reports" &&
+                                item.to !== "/search" &&
+                                location.pathname.startsWith(`${item.to}/`));
                 return (
                   <li key={item.to}>
                     <NavLink

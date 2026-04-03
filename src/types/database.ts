@@ -97,6 +97,7 @@ export interface Database {
           status: string;
           created_at: string;
           updated_at: string;
+          bio: string | null;
         };
         Insert: {
           id: string;
@@ -114,6 +115,7 @@ export interface Database {
           status?: string;
           created_at?: string;
           updated_at?: string;
+          bio?: string | null;
         };
         Update: {
           id?: string;
@@ -131,6 +133,7 @@ export interface Database {
           status?: string;
           created_at?: string;
           updated_at?: string;
+          bio?: string | null;
         };
       };
       departments: {
@@ -1338,6 +1341,8 @@ export interface Database {
           provider: string;
           provider_user_id: string;
           linked_at: string;
+          last_used_at: string | null;
+          revoked: boolean;
         };
         Insert: {
           id?: string;
@@ -1346,6 +1351,8 @@ export interface Database {
           provider: string;
           provider_user_id: string;
           linked_at?: string;
+          last_used_at?: string | null;
+          revoked?: boolean;
         };
         Update: {
           id?: string;
@@ -1354,6 +1361,8 @@ export interface Database {
           provider?: string;
           provider_user_id?: string;
           linked_at?: string;
+          last_used_at?: string | null;
+          revoked?: boolean;
         };
       };
       auth_login_attempts: {

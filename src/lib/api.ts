@@ -226,6 +226,24 @@ export {
   type TenantUserRow,
 } from "@/api/user-profile";
 
+/** Tenant-scoped user profile REST facade (`tenant-user-profile-api`). */
+export {
+  restCreateApiKey,
+  restDeleteApiKey,
+  restDisconnectConnection,
+  restFetchActivities,
+  restGetAuthMethods,
+  restGetNotificationEnvelope,
+  restGetTenantUserProfile,
+  restListApiKeys,
+  restListConnections,
+  restPatchApiKey,
+  restPatchNotifications,
+  restPatchTenantUserProfile,
+  type ApiKeyListItem,
+  type ExternalConnectionRow,
+} from "@/api/tenant-user-profile-rest";
+
 /** Admin console REST facade (`admin-console-api` Edge Function, super_admin only). */
 export {
   adminConsoleRest,

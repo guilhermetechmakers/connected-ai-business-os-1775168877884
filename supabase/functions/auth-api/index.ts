@@ -109,6 +109,7 @@ const opSchema = z.discriminatedUnion("op", [
     jobTitle: z.string().max(200).optional(),
     department: z.string().max(200).optional(),
     contactInfo: z.record(z.string(), z.unknown()).optional(),
+    bio: z.string().max(8000).optional(),
   }),
   z.object({
     op: z.literal("apikeys.create"),
@@ -122,6 +123,20 @@ const opSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("apikeys.revoke"),
     keyId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("apikeys.patch"),
+    keyId: z.string().uuid(),
+    name: z.string().min(2).max(120).optional(),
+    scopes: z.array(z.string()).optional(),
+  }),
+  z.object({
+    op: z.literal("apikeys.rotate"),
+    keyId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("connections.disconnect"),
+    connectionId: z.string().uuid(),
   }),
   z.object({
     op: z.literal("oauth.url"),
@@ -430,7 +445,7 @@ async function fetchProfileBundle(admin: SupabaseClient, userId: string) {
   const { data: profile, error: pErr } = await admin
     .from("profiles")
     .select(
-      "id,email,display_name,avatar_url,job_title,department,contact_info,totp_enabled,roles,auth_methods,company_id,preferences,status,created_at",
+      "id,email,display_name,avatar_url,job_title,department,contact_info,totp_enabled,roles,auth_methods,company_id,preferences,status,created_at,bio",
     )
     .eq("id", userId)
     .maybeSingle();
@@ -1179,7 +1194,7 @@ serve(async (req) => {
         const bundle = await fetchProfileBundle(admin, userId);
         const ext = await admin
           .from("external_accounts")
-          .select("id,provider,linked_at")
+          .select("id,provider,linked_at,last_used_at,revoked")
           .eq("profile_id", userId);
         const keys = await admin
           .from("user_api_keys")
@@ -1236,6 +1251,7 @@ serve(async (req) => {
         if (parsed.jobTitle !== undefined) patch.job_title = parsed.jobTitle.trim() || null;
         if (parsed.department !== undefined) patch.department = parsed.department.trim() || null;
         if (parsed.contactInfo !== undefined) patch.contact_info = parsed.contactInfo;
+        if (parsed.bio !== undefined) patch.bio = parsed.bio.trim() || null;
         const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
         if (uErr) {
           return jsonResponse({
@@ -1359,6 +1375,136 @@ serve(async (req) => {
           { keyId: parsed.keyId },
         );
         return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "apikeys.patch": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const patchRow: Record<string, unknown> = {};
+        if (parsed.name !== undefined) patchRow.name = parsed.name.trim();
+        if (parsed.scopes !== undefined) {
+          patchRow.scopes = Array.isArray(parsed.scopes) ? parsed.scopes : [];
+        }
+        if (Object.keys(patchRow).length === 0) {
+          return jsonResponse({ data: null, error: { message: "No updates" }, meta: {} }, 400);
+        }
+        const { data: row, error: pErr } = await admin
+          .from("user_api_keys")
+          .update(patchRow)
+          .eq("id", parsed.keyId)
+          .eq("profile_id", userId)
+          .eq("status", "active")
+          .select("id,name,key_prefix,scopes,expires_at,status,created_at,last_used_at")
+          .maybeSingle();
+        if (pErr) {
+          return jsonResponse({ data: null, error: { message: pErr.message }, meta: {} }, 400);
+        }
+        if (!row) {
+          return jsonResponse({ data: null, error: { message: "Key not found" }, meta: {} }, 404);
+        }
+        const bundle = await fetchProfileBundle(admin, userId);
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "api_key_patched",
+          { keyId: parsed.keyId },
+        );
+        return jsonResponse({ data: { key: row }, error: null, meta: {} });
+      }
+
+      case "apikeys.rotate": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        if (!bundle.profile?.company_id) {
+          return jsonResponse({
+            data: null,
+            error: { message: "No tenant context" },
+            meta: {},
+          }, 400);
+        }
+        const st = (bundle.company?.settings as Record<string, unknown> | null) ?? {};
+        const allow = st.allowUserApiKeys !== false;
+        if (!allow) {
+          return jsonResponse({
+            data: null,
+            error: { message: "API keys are disabled for this tenant" },
+            meta: {},
+          }, 403);
+        }
+        const { data: existing, error: gErr } = await admin
+          .from("user_api_keys")
+          .select("id,name,scopes,expires_at")
+          .eq("id", parsed.keyId)
+          .eq("profile_id", userId)
+          .eq("status", "active")
+          .maybeSingle();
+        if (gErr || !existing) {
+          return jsonResponse({
+            data: null,
+            error: { message: gErr?.message ?? "Key not found" },
+            meta: {},
+          }, 404);
+        }
+        const raw = `caos_${randomToken()}`;
+        const enc = new TextEncoder().encode(raw);
+        const digest = await crypto.subtle.digest("SHA-256", enc);
+        const hashHex = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        const prefix = raw.slice(0, 12);
+        const scopes = Array.isArray((existing as Record<string, unknown>).scopes)
+          ? (existing as { scopes: string[] }).scopes
+          : [];
+        const name =
+          typeof (existing as Record<string, unknown>).name === "string"
+            ? (existing as { name: string }).name
+            : "Rotated key";
+        let expiresAt: string | null = null;
+        const exp = (existing as Record<string, unknown>).expires_at;
+        if (typeof exp === "string") {
+          const d = new Date(exp);
+          if (!Number.isNaN(d.getTime()) && d.getTime() > Date.now()) {
+            expiresAt = d.toISOString();
+          }
+        }
+        const { error: revErr } = await admin
+          .from("user_api_keys")
+          .update({ status: "revoked" })
+          .eq("id", parsed.keyId)
+          .eq("profile_id", userId);
+        if (revErr) {
+          return jsonResponse({ data: null, error: { message: revErr.message }, meta: {} }, 400);
+        }
+        const { data: row, error: kErr } = await admin
+          .from("user_api_keys")
+          .insert({
+            profile_id: userId,
+            company_id: bundle.profile.company_id as string,
+            name: `${name} (rotated)`,
+            key_prefix: prefix,
+            key_hash: hashHex,
+            scopes,
+            expires_at: expiresAt,
+            status: "active",
+          })
+          .select("id,name,key_prefix,scopes,expires_at,status,created_at")
+          .single();
+        if (kErr || !row) {
+          return jsonResponse({
+            data: null,
+            error: { message: kErr?.message ?? "Could not create rotated key" },
+            meta: {},
+          }, 400);
+        }
+        await logSecurityEvent(admin, bundle.profile.company_id as string, userId, "api_key_rotated", {
+          previousKeyId: parsed.keyId,
+          newKeyId: row.id,
+        });
+        return jsonResponse({
+          data: { key: row, secret: raw },
+          error: null,
+          meta: { warning: "Store the secret once; it cannot be retrieved again." },
+        });
       }
 
       case "tenant.settings.get": {
@@ -1506,6 +1652,32 @@ serve(async (req) => {
           userId,
           "sso_unlinked",
           { provider: parsed.provider },
+        );
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "connections.disconnect": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const { data: removed, error: delErr } = await admin
+          .from("external_accounts")
+          .delete()
+          .eq("id", parsed.connectionId)
+          .eq("profile_id", userId)
+          .select("id")
+          .maybeSingle();
+        if (delErr) {
+          return jsonResponse({ data: null, error: { message: delErr.message }, meta: {} }, 400);
+        }
+        if (!removed) {
+          return jsonResponse({ data: null, error: { message: "Connection not found" }, meta: {} }, 404);
+        }
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "connection_disconnected",
+          { connectionId: parsed.connectionId },
         );
         return jsonResponse({ data: { ok: true }, error: null, meta: {} });
       }
