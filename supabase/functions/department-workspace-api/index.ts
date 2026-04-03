@@ -9,8 +9,76 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
 
+function taskPayloadIsOpen(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return true;
+  }
+  const st = (payload as Record<string, unknown>).status;
+  const s = typeof st === "string" ? st.toLowerCase() : "";
+  if (!s || s === "open" || s === "in progress" || s === "blocked") {
+    return true;
+  }
+  return false;
+}
+
+function readSettingsNumber(settings: unknown, key: string): number {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return 0;
+  }
+  const v = (settings as Record<string, unknown>)[key];
+  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.floor(v));
+}
+
+function readAiAvailableFromSettings(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return true;
+  }
+  const v = (settings as Record<string, unknown>).ai_available;
+  return v !== false;
+}
+
+function readAiWorkspaceEnabledColumn(
+  aiWorkspaceEnabled: unknown,
+  settings: unknown,
+): boolean {
+  if (aiWorkspaceEnabled === false) return false;
+  return readAiAvailableFromSettings(settings);
+}
+
+function resolveDepartmentUserRole(
+  leadUserId: string | null,
+  userId: string,
+  globalRoles: string[],
+  memberRole: string | null | undefined,
+): "Manager" | "Member" | "Guest" {
+  if (memberRole === "Manager" || memberRole === "Member" || memberRole === "Guest") {
+    return memberRole;
+  }
+  if (leadUserId && leadUserId === userId) return "Manager";
+  const r = new Set((globalRoles ?? []).map((x) => String(x).toLowerCase()));
+  if (r.has("guest")) return "Guest";
+  return "Member";
+}
+
+function normalizeWorkspaceStatus(
+  raw: string | null | undefined,
+): "active" | "paused" | "inactive" {
+  const s = typeof raw === "string" ? raw.toLowerCase() : "active";
+  if (s === "paused" || s === "inactive") return s;
+  return "active";
+}
+
 const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("tenants.departments.list") }),
+  z.object({
+    op: z.literal("tenants.departments.create"),
+    name: z.string().min(1).max(200),
+    departmentType: z.string().max(80).optional(),
+    leadUserId: z.string().uuid().nullable().optional(),
+    workspaceStatus: z.enum(["active", "paused", "inactive"]).optional(),
+    headcount: z.number().int().min(0).max(500_000).nullable().optional(),
+  }),
   z.object({
     op: z.literal("department.tasks.create"),
     departmentId: z.string().uuid(),
@@ -89,6 +157,11 @@ function canMutateTasks(roles: string[]): boolean {
   );
 }
 
+function canCreateDepartment(roles: string[]): boolean {
+  const r = normalizeRoles(roles);
+  return r.has("admin") || r.has("company admin");
+}
+
 async function assertDepartmentInTenant(
   supabase: SupabaseClient,
   companyId: string,
@@ -129,15 +202,57 @@ serve(async (req) => {
       case "tenants.departments.list": {
         const { data: depts, error: dErr } = await supabase
           .from("departments")
-          .select("id, name, lead_user_id, created_at, updated_at")
+          .select(
+            "id, name, lead_user_id, created_at, updated_at, department_type, workspace_status, headcount, settings, ai_workspace_enabled",
+          )
           .eq("company_id", companyId)
           .order("name", { ascending: true });
         if (dErr) throw dErr;
         const deptList = Array.isArray(depts) ? depts : [];
 
+        const { data: dmRows, error: dmErr } = await supabase
+          .from("department_members")
+          .select("department_id, profile_id, role")
+          .eq("company_id", companyId);
+        const dmList = !dmErr && Array.isArray(dmRows) ? dmRows : [];
+        const memberCountByDept = new Map<string, number>();
+        const roleByDeptForUser = new Map<string, string>();
+        for (const row of dmList) {
+          const did = row.department_id as string;
+          memberCountByDept.set(did, (memberCountByDept.get(did) ?? 0) + 1);
+          if ((row.profile_id as string) === userId) {
+            const rr = row.role as string;
+            if (typeof rr === "string") roleByDeptForUser.set(did, rr);
+          }
+        }
+
+        const leadIds = [
+          ...new Set(
+            deptList
+              .map((row) => row.lead_user_id as string | null)
+              .filter((x): x is string => typeof x === "string" && x.length > 0),
+          ),
+        ];
+        const leadNameById = new Map<string, string>();
+        if (leadIds.length > 0) {
+          const { data: profs, error: pErr } = await supabase
+            .from("profiles")
+            .select("id, display_name, email")
+            .in("id", leadIds);
+          if (!pErr && Array.isArray(profs)) {
+            for (const p of profs) {
+              const pid = p.id as string;
+              const dn = typeof p.display_name === "string" ? p.display_name.trim() : "";
+              const em = typeof p.email === "string" ? p.email.trim() : "";
+              const label = dn || em || "Lead";
+              leadNameById.set(pid, label);
+            }
+          }
+        }
+
         const { data: entities, error: eErr } = await supabase
           .from("unified_entities")
-          .select("department_id, entity_type")
+          .select("department_id, entity_type, payload")
           .eq("company_id", companyId)
           .eq("is_deleted", false);
         if (eErr) throw eErr;
@@ -156,26 +271,200 @@ serve(async (req) => {
           if (!did || !metrics.has(did)) continue;
           const m = metrics.get(did)!;
           const t = e.entity_type as string;
-          if (t === "Task") m.openTasks += 1;
-          else if (t === "KPI") m.kpis += 1;
+          if (t === "Task") {
+            if (taskPayloadIsOpen(e.payload)) m.openTasks += 1;
+          } else if (t === "KPI") m.kpis += 1;
           else if (t === "Document") m.documents += 1;
         }
 
         const enriched = deptList.map((d) => {
           const id = d.id as string;
           const m = metrics.get(id) ?? { openTasks: 0, kpis: 0, documents: 0 };
+          const leadUserId = (d.lead_user_id as string | null) ?? null;
+          const leadName = leadUserId ? leadNameById.get(leadUserId) ?? null : null;
+          const deptType =
+            typeof d.department_type === "string" && d.department_type.trim()
+              ? d.department_type.trim()
+              : null;
+          const ws = normalizeWorkspaceStatus(d.workspace_status as string | undefined);
+          const headcount =
+            typeof d.headcount === "number" && Number.isFinite(d.headcount)
+              ? Math.max(0, Math.floor(d.headcount))
+              : 0;
+          const settings = d.settings;
+          const newMessages = readSettingsNumber(settings, "new_messages");
+          const roster = memberCountByDept.get(id) ?? 0;
+          const activeMembers =
+            headcount > 0
+              ? headcount
+              : roster > 0
+                ? roster
+                : readSettingsNumber(settings, "active_members");
+          const lastActivity =
+            typeof d.updated_at === "string" ? d.updated_at : new Date().toISOString();
+          const aiCol = d.ai_workspace_enabled;
+          const aiAvailable = readAiWorkspaceEnabledColumn(aiCol, settings);
+
           return {
             id,
             name: d.name as string,
-            leadUserId: (d.lead_user_id as string | null) ?? null,
+            leadUserId,
+            leadName,
+            headcount,
+            status: ws,
+            type: deptType,
             createdAt: d.created_at as string,
             updatedAt: d.updated_at as string,
-            metrics: m,
-            status: "active" as const,
+            lastUpdated: d.updated_at as string,
+            metrics: {
+              openTasks: m.openTasks,
+              newMessages,
+              activeMembers,
+              lastActivity,
+              kpis: m.kpis,
+              documents: m.documents,
+            },
+            userRole: resolveDepartmentUserRole(
+              leadUserId,
+              userId,
+              profile.roles,
+              roleByDeptForUser.get(id),
+            ),
+            aiAvailable,
           };
         });
 
-        return json({ data: enriched });
+        return json({ data: enriched, count: enriched.length, status: "ok" });
+      }
+
+      case "tenants.departments.create": {
+        if (!canCreateDepartment(profile.roles)) {
+          return json({ error: "Forbidden" }, 403);
+        }
+        const name = op.name.trim();
+        const departmentType =
+          op.departmentType && op.departmentType.trim().length > 0
+            ? op.departmentType.trim()
+            : null;
+        const workspaceStatus = op.workspaceStatus ?? "active";
+        const headcount =
+          op.headcount != null &&
+          typeof op.headcount === "number" &&
+          Number.isFinite(op.headcount)
+            ? Math.max(0, Math.floor(op.headcount))
+            : null;
+        const leadUserIdInput =
+          typeof op.leadUserId === "string" && op.leadUserId.length > 0
+            ? op.leadUserId
+            : null;
+
+        const { data: created, error: insErr } = await supabase
+          .from("departments")
+          .insert({
+            company_id: companyId,
+            name,
+            lead_user_id: leadUserIdInput,
+            department_type: departmentType,
+            workspace_status: workspaceStatus,
+            headcount,
+          })
+          .select(
+            "id, name, lead_user_id, created_at, updated_at, department_type, workspace_status, headcount, settings, ai_workspace_enabled",
+          )
+          .single();
+        if (insErr) throw insErr;
+
+        const id = created?.id as string;
+        const memberInserts: Array<{
+          company_id: string;
+          department_id: string;
+          profile_id: string;
+          role: string;
+        }> = [];
+        const seen = new Set<string>();
+        const addMember = (pid: string, role: string) => {
+          if (seen.has(pid)) return;
+          seen.add(pid);
+          memberInserts.push({
+            company_id: companyId,
+            department_id: id,
+            profile_id: pid,
+            role,
+          });
+        };
+        addMember(userId, "Manager");
+        if (leadUserIdInput && leadUserIdInput !== userId) {
+          addMember(leadUserIdInput, "Manager");
+        }
+        if (memberInserts.length > 0) {
+          await supabase.from("department_members").insert(memberInserts);
+        }
+
+        await supabase.from("activity_logs").insert({
+          company_id: companyId,
+          event_type: "department.create",
+          actor_user_id: userId,
+          payload: { departmentId: created?.id, name },
+          department_id: id,
+        });
+
+        const leadUserId = (created?.lead_user_id as string | null) ?? null;
+        const ws = normalizeWorkspaceStatus(created?.workspace_status as string | undefined);
+        const hc =
+          typeof created?.headcount === "number" && Number.isFinite(created.headcount)
+            ? Math.max(0, Math.floor(created.headcount))
+            : 0;
+        const settings = created?.settings;
+        const aiCol = created?.ai_workspace_enabled;
+        const deptType =
+          typeof created?.department_type === "string" &&
+          created.department_type.trim()
+            ? created.department_type.trim()
+            : null;
+
+        let leadName: string | null = null;
+        if (leadUserId) {
+          const { data: lp } = await supabase
+            .from("profiles")
+            .select("display_name, email")
+            .eq("id", leadUserId)
+            .maybeSingle();
+          if (lp) {
+            const dn = typeof lp.display_name === "string" ? lp.display_name.trim() : "";
+            const em = typeof lp.email === "string" ? lp.email.trim() : "";
+            leadName = dn || em || null;
+          }
+        }
+
+        const row = {
+          id,
+          name: created?.name as string,
+          leadUserId,
+          leadName,
+          headcount: hc,
+          status: ws,
+          type: deptType,
+          createdAt: created?.created_at as string,
+          updatedAt: created?.updated_at as string,
+          lastUpdated: created?.updated_at as string,
+          metrics: {
+            openTasks: 0,
+            newMessages: readSettingsNumber(settings, "new_messages"),
+            activeMembers: hc > 0 ? hc : readSettingsNumber(settings, "active_members"),
+            lastActivity: (created?.updated_at as string) ?? new Date().toISOString(),
+            kpis: 0,
+            documents: 0,
+          },
+          userRole: resolveDepartmentUserRole(
+            leadUserId,
+            userId,
+            profile.roles,
+            "Manager",
+          ),
+          aiAvailable: readAiWorkspaceEnabledColumn(aiCol, settings),
+        };
+
+        return json({ data: row });
       }
 
       case "department.tasks.create": {

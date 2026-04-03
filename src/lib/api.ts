@@ -125,6 +125,14 @@ export {
 } from "@/api/department-workspace";
 export { fetchTenantDepartmentsDirectory } from "@/lib/department-workspace-api";
 
+/** Department workspace list catalog (`department-workspace-api` tenants.departments.*). */
+export {
+  createTenantDepartmentWorkspace,
+  fetchDepartmentWorkspaceListCatalog,
+  parseWorkspaceDepartmentList,
+  validateDepartmentShape,
+} from "@/api/departments-catalog";
+
 /** Notifications & alerts (Edge Function `notifications-api` + Realtime). */
 export {
   bulkUpdateNotifications,

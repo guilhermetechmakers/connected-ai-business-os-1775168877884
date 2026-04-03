@@ -142,6 +142,10 @@ export interface Database {
           company_id: string;
           name: string;
           lead_user_id: string | null;
+          department_type: string | null;
+          workspace_status: string;
+          headcount: number | null;
+          ai_workspace_enabled: boolean;
           settings: Json;
           created_at: string;
           updated_at: string;
@@ -151,6 +155,10 @@ export interface Database {
           company_id: string;
           name: string;
           lead_user_id?: string | null;
+          department_type?: string | null;
+          workspace_status?: string;
+          headcount?: number | null;
+          ai_workspace_enabled?: boolean;
           settings?: Json;
           created_at?: string;
           updated_at?: string;
@@ -160,9 +168,39 @@ export interface Database {
           company_id?: string;
           name?: string;
           lead_user_id?: string | null;
+          department_type?: string | null;
+          workspace_status?: string;
+          headcount?: number | null;
+          ai_workspace_enabled?: boolean;
           settings?: Json;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      department_members: {
+        Row: {
+          id: string;
+          company_id: string;
+          department_id: string;
+          profile_id: string;
+          role: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          department_id: string;
+          profile_id: string;
+          role?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          department_id?: string;
+          profile_id?: string;
+          role?: string;
+          created_at?: string;
         };
       };
       roles: {

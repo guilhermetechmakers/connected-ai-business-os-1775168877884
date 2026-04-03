@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { z } from "zod";
 
 import { AnimatedPage } from "@/components/animated-page";
@@ -48,13 +48,29 @@ const newTaskSchema = z.object({
 
 type NewTaskValues = z.infer<typeof newTaskSchema>;
 
+const WORKSPACE_TAB_VALUES = new Set([
+  "overview",
+  "metrics",
+  "tasks",
+  "automation",
+  "activity",
+  "reports",
+  "documents",
+  "ai",
+]);
+
 export default function DepartmentWorkspacePage() {
   const { departmentId: deptParam, deptId: legacyDept } = useParams<{
     departmentId?: string;
     deptId?: string;
   }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const departmentId = deptParam ?? legacyDept ?? undefined;
   const isUuid = Boolean(departmentId && UUID_RE.test(departmentId));
+
+  const tabParam = searchParams.get("tab");
+  const activeTab =
+    tabParam && WORKSPACE_TAB_VALUES.has(tabParam) ? tabParam : "overview";
 
   const { profile } = useAuth();
   const roles = Array.isArray(profile?.roles) ? profile.roles : [];
@@ -172,7 +188,18 @@ export default function DepartmentWorkspacePage() {
           </p>
         ) : null}
 
-        <Tabs defaultValue="overview" className="space-y-6">
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => {
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              if (v === "overview") next.delete("tab");
+              else next.set("tab", v);
+              return next;
+            });
+          }}
+          className="space-y-6"
+        >
           <TabsList className="flex h-auto min-h-10 flex-wrap gap-1 bg-surface-inner p-1">
             {(
               [
