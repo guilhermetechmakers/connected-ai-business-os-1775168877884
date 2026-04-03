@@ -165,6 +165,22 @@ export {
   validateWorkflowDefinition,
 } from "@/api/workflows";
 
+/** User profile, tenant RBAC settings, TOTP, avatar (`auth-api` + `profile-avatar`). */
+export {
+  disableTotp,
+  getMfaStatus,
+  getTenantSettingsEnvelope,
+  listTenantUsersEnvelope,
+  patchTenantSettings,
+  startTotpEnrollment,
+  unlinkSsoProvider,
+  uploadProfileAvatar,
+  verifyTotpEnrollment,
+  type AvatarUploadResult,
+  type TenantSettingsRow,
+  type TenantUserRow,
+} from "@/api/user-profile";
+
 /** Internal modules & marketplace (Edge Function `modules-api` + Supabase RLS). */
 export {
   createInternalModule,

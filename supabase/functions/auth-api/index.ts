@@ -1,5 +1,6 @@
 /**
- * Auth API — multi-tenant signup/login, refresh, password reset, email verification, profile, API keys.
+ * Auth API — multi-tenant signup/login, refresh, password reset, email verification, profile, API keys,
+ * tenant settings (admin), team listing, SSO unlink, TOTP enroll/verify/disable.
  * Uses Supabase Auth (GoTrue) for credentials; service role for provisioning and token-backed flows.
  * Client: supabase.functions.invoke('auth-api', { body: { op, ... } }).
  * Secrets: SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_ANON_KEY.
@@ -9,6 +10,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { generateBase32Secret, verifyTotp } from "../_shared/totp.ts";
 
 const MAX_FAILURES = 8;
 const FAILURE_WINDOW_MS = 15 * 60 * 1000;
@@ -84,11 +86,15 @@ const opSchema = z.discriminatedUnion("op", [
     displayName: z.string().min(2).max(200).optional(),
     avatarUrl: z.union([z.string().url(), z.literal("")]).optional(),
     preferences: z.record(z.string(), z.unknown()).optional(),
+    jobTitle: z.string().max(200).optional(),
+    department: z.string().max(200).optional(),
+    contactInfo: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     op: z.literal("apikeys.create"),
     name: z.string().min(2).max(120),
     scopes: z.array(z.string()).optional(),
+    expiresAt: z.string().optional(),
   }),
   z.object({
     op: z.literal("apikeys.list"),
@@ -104,6 +110,32 @@ const opSchema = z.discriminatedUnion("op", [
   }),
   z.object({ op: z.literal("mfa.status") }),
   z.object({ op: z.literal("mfa.verify"), code: z.string().min(4).optional() }),
+  z.object({ op: z.literal("tenant.settings.get") }),
+  z.object({
+    op: z.literal("tenant.settings.patch"),
+    name: z.string().min(2).max(200).optional(),
+    timezone: z.string().min(1).max(80).optional(),
+    currency: z.string().min(1).max(16).optional(),
+    industry: z.string().max(120).nullable().optional(),
+    settings: z.record(z.string(), z.unknown()).optional(),
+    sso_settings: z.record(z.string(), z.unknown()).optional(),
+    password_policy: z.record(z.string(), z.unknown()).optional(),
+    allowed_auth_methods: z.array(z.string()).optional(),
+  }),
+  z.object({ op: z.literal("tenant.users.list") }),
+  z.object({
+    op: z.literal("sso.unlink"),
+    provider: z.enum(["google", "microsoft", "saml", "oidc"]),
+  }),
+  z.object({ op: z.literal("totp.enroll.start") }),
+  z.object({
+    op: z.literal("totp.enroll.verify"),
+    code: z.string().min(6).max(10),
+  }),
+  z.object({
+    op: z.literal("totp.disable"),
+    code: z.string().min(6).max(10),
+  }),
   z.object({ op: z.literal("saml.acs") }),
 ]);
 
@@ -250,11 +282,28 @@ async function logSecurityEvent(
   });
 }
 
+function hasTenantAdminRole(roles: string[]): boolean {
+  const list = Array.isArray(roles) ? roles : [];
+  for (const r of list) {
+    const n = r.toLowerCase().replace(/\s+/g, "_");
+    if (
+      n === "admin" ||
+      n === "owner" ||
+      n === "tenant_admin" ||
+      n === "super_admin" ||
+      r === "Tenant Admin"
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function fetchProfileBundle(admin: SupabaseClient, userId: string) {
   const { data: profile, error: pErr } = await admin
     .from("profiles")
     .select(
-      "id,email,display_name,avatar_url,roles,auth_methods,company_id,preferences,status,created_at",
+      "id,email,display_name,avatar_url,job_title,department,contact_info,totp_enabled,roles,auth_methods,company_id,preferences,status,created_at",
     )
     .eq("id", userId)
     .maybeSingle();
@@ -340,12 +389,21 @@ serve(async (req) => {
           meta: {},
         });
 
-      case "mfa.status":
+      case "mfa.status": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const totpOn = Boolean(
+          bundle.profile && (bundle.profile as Record<string, unknown>).totp_enabled === true,
+        );
         return jsonResponse({
-          data: { enabled: false, factors: [] as string[] },
+          data: {
+            enabled: totpOn,
+            factors: totpOn ? (["totp"] as string[]) : ([] as string[]),
+          },
           error: null,
           meta: {},
         });
+      }
 
       case "mfa.verify":
         return jsonResponse(
@@ -897,21 +955,42 @@ serve(async (req) => {
           .eq("profile_id", userId);
         const keys = await admin
           .from("user_api_keys")
-          .select("id,name,key_prefix,scopes,created_at,last_used_at")
-          .eq("profile_id", userId);
+          .select("id,name,key_prefix,scopes,expires_at,status,created_at,last_used_at")
+          .eq("profile_id", userId)
+          .eq("status", "active");
         const events = await admin
           .from("auth_security_events")
           .select("event_type,payload,created_at")
           .eq("profile_id", userId)
           .order("created_at", { ascending: false })
           .limit(25);
+        const companyId = bundle.profile?.company_id as string | null | undefined;
+        let profileActivity: Record<string, unknown>[] = [];
+        if (companyId) {
+          const logs = await admin
+            .from("activity_logs")
+            .select("event_type,actor_user_id,payload,created_at")
+            .eq("company_id", companyId)
+            .eq("actor_user_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(20);
+          profileActivity = Array.isArray(logs.data) ? (logs.data as Record<string, unknown>[]) : [];
+        }
+        const now = Date.now();
+        const keyRows = Array.isArray(keys.data) ? keys.data : [];
+        const apiKeys = keyRows.filter((k) => {
+          const exp = (k as Record<string, unknown>).expires_at;
+          if (typeof exp !== "string") return true;
+          return new Date(exp).getTime() > now;
+        });
         return jsonResponse({
           data: {
             profile: bundle.profile,
             tenant: bundle.company,
             externalAccounts: Array.isArray(ext.data) ? ext.data : [],
-            apiKeys: Array.isArray(keys.data) ? keys.data : [],
+            apiKeys,
             securityEvents: Array.isArray(events.data) ? events.data : [],
+            profileActivity,
           },
           error: null,
           meta: {},
@@ -926,6 +1005,9 @@ serve(async (req) => {
           patch.avatar_url = parsed.avatarUrl === "" ? null : parsed.avatarUrl;
         }
         if (parsed.preferences !== undefined) patch.preferences = parsed.preferences;
+        if (parsed.jobTitle !== undefined) patch.job_title = parsed.jobTitle.trim() || null;
+        if (parsed.department !== undefined) patch.department = parsed.department.trim() || null;
+        if (parsed.contactInfo !== undefined) patch.contact_info = parsed.contactInfo;
         const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
         if (uErr) {
           return jsonResponse({
@@ -965,6 +1047,13 @@ serve(async (req) => {
           .join("");
         const prefix = raw.slice(0, 12);
         const scopes = Array.isArray(parsed.scopes) ? parsed.scopes : [];
+        let expiresAt: string | null = null;
+        if (parsed.expiresAt && typeof parsed.expiresAt === "string") {
+          const d = new Date(parsed.expiresAt);
+          if (!Number.isNaN(d.getTime()) && d.getTime() > Date.now()) {
+            expiresAt = d.toISOString();
+          }
+        }
         const { data: row, error: kErr } = await admin
           .from("user_api_keys")
           .insert({
@@ -974,8 +1063,10 @@ serve(async (req) => {
             key_prefix: prefix,
             key_hash: hashHex,
             scopes,
+            expires_at: expiresAt,
+            status: "active",
           })
-          .select("id,name,key_prefix,scopes,created_at")
+          .select("id,name,key_prefix,scopes,expires_at,status,created_at")
           .single();
         if (kErr || !row) {
           return jsonResponse({
@@ -998,8 +1089,9 @@ serve(async (req) => {
         const { userId } = await requireUser(req, supabaseUrl, anonKey);
         const { data: list } = await admin
           .from("user_api_keys")
-          .select("id,name,key_prefix,scopes,created_at,last_used_at")
-          .eq("profile_id", userId);
+          .select("id,name,key_prefix,scopes,expires_at,status,created_at,last_used_at")
+          .eq("profile_id", userId)
+          .eq("status", "active");
         return jsonResponse({
           data: { keys: Array.isArray(list) ? list : [] },
           error: null,
@@ -1009,11 +1101,14 @@ serve(async (req) => {
 
       case "apikeys.revoke": {
         const { userId } = await requireUser(req, supabaseUrl, anonKey);
-        const { error: dErr } = await admin
+        const bundle = await fetchProfileBundle(admin, userId);
+        const { data: updated, error: dErr } = await admin
           .from("user_api_keys")
-          .delete()
+          .update({ status: "revoked" })
           .eq("id", parsed.keyId)
-          .eq("profile_id", userId);
+          .eq("profile_id", userId)
+          .select("id")
+          .maybeSingle();
         if (dErr) {
           return jsonResponse({
             data: null,
@@ -1021,6 +1116,289 @@ serve(async (req) => {
             meta: {},
           }, 400);
         }
+        if (!updated) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Key not found" },
+            meta: {},
+          }, 404);
+        }
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "api_key_revoked",
+          { keyId: parsed.keyId },
+        );
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "tenant.settings.get": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const roles = Array.isArray(bundle.profile?.roles) ? bundle.profile!.roles as string[] : [];
+        if (!hasTenantAdminRole(roles)) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Insufficient permissions" },
+            meta: {},
+          }, 403);
+        }
+        return jsonResponse({
+          data: { tenant: bundle.company },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "tenant.settings.patch": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const roles = Array.isArray(bundle.profile?.roles) ? bundle.profile!.roles as string[] : [];
+        if (!hasTenantAdminRole(roles)) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Insufficient permissions" },
+            meta: {},
+          }, 403);
+        }
+        const companyId = bundle.profile?.company_id as string | null | undefined;
+        if (!companyId) {
+          return jsonResponse({ data: null, error: { message: "No tenant" }, meta: {} }, 400);
+        }
+        const { data: co, error: coErr } = await admin
+          .from("companies")
+          .select("settings,sso_settings,password_policy")
+          .eq("id", companyId)
+          .maybeSingle();
+        if (coErr || !co) {
+          return jsonResponse({
+            data: null,
+            error: { message: coErr?.message ?? "Company not found" },
+            meta: {},
+          }, 400);
+        }
+        const rowPatch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+        if (parsed.name !== undefined) rowPatch.name = parsed.name;
+        if (parsed.timezone !== undefined) rowPatch.timezone = parsed.timezone;
+        if (parsed.currency !== undefined) rowPatch.currency = parsed.currency;
+        if (parsed.industry !== undefined) rowPatch.industry = parsed.industry;
+        if (parsed.settings !== undefined) {
+          const prev =
+            co.settings && typeof co.settings === "object" && !Array.isArray(co.settings)
+              ? (co.settings as Record<string, unknown>)
+              : {};
+          rowPatch.settings = { ...prev, ...parsed.settings };
+        }
+        if (parsed.sso_settings !== undefined) {
+          const prev =
+            co.sso_settings && typeof co.sso_settings === "object" && !Array.isArray(co.sso_settings)
+              ? (co.sso_settings as Record<string, unknown>)
+              : {};
+          rowPatch.sso_settings = { ...prev, ...parsed.sso_settings };
+        }
+        if (parsed.password_policy !== undefined) {
+          const prev =
+            co.password_policy && typeof co.password_policy === "object" &&
+              !Array.isArray(co.password_policy)
+              ? (co.password_policy as Record<string, unknown>)
+              : {};
+          rowPatch.password_policy = { ...prev, ...parsed.password_policy };
+        }
+        if (parsed.allowed_auth_methods !== undefined) {
+          rowPatch.allowed_auth_methods = parsed.allowed_auth_methods;
+        }
+        const { error: uCo } = await admin.from("companies").update(rowPatch).eq("id", companyId);
+        if (uCo) {
+          return jsonResponse({ data: null, error: { message: uCo.message }, meta: {} }, 400);
+        }
+        const { data: fresh } = await admin
+          .from("companies")
+          .select(
+            "id,name,domain,industry,timezone,currency,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
+          )
+          .eq("id", companyId)
+          .maybeSingle();
+        await logSecurityEvent(admin, companyId, userId, "tenant_settings_updated", {
+          keys: Object.keys(rowPatch),
+        });
+        return jsonResponse({
+          data: { tenant: fresh },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "tenant.users.list": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const roles = Array.isArray(bundle.profile?.roles) ? bundle.profile!.roles as string[] : [];
+        if (!hasTenantAdminRole(roles)) {
+          return jsonResponse({
+            data: null,
+            error: { message: "Insufficient permissions" },
+            meta: {},
+          }, 403);
+        }
+        const companyId = bundle.profile?.company_id as string | null | undefined;
+        if (!companyId) {
+          return jsonResponse({ data: { users: [] }, error: null, meta: {} });
+        }
+        const { data: users, error: luErr } = await admin
+          .from("profiles")
+          .select("id,email,display_name,roles,status,created_at,job_title,department")
+          .eq("company_id", companyId)
+          .order("created_at", { ascending: true });
+        if (luErr) {
+          return jsonResponse({ data: null, error: { message: luErr.message }, meta: {} }, 400);
+        }
+        return jsonResponse({
+          data: { users: Array.isArray(users) ? users : [] },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "sso.unlink": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        const { error: delErr } = await admin
+          .from("external_accounts")
+          .delete()
+          .eq("profile_id", userId)
+          .eq("provider", parsed.provider);
+        if (delErr) {
+          return jsonResponse({ data: null, error: { message: delErr.message }, meta: {} }, 400);
+        }
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "sso_unlinked",
+          { provider: parsed.provider },
+        );
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "totp.enroll.start": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        if ((bundle.profile as Record<string, unknown> | null)?.totp_enabled === true) {
+          return jsonResponse({
+            data: null,
+            error: { message: "TOTP already enabled" },
+            meta: {},
+          }, 400);
+        }
+        const secret = generateBase32Secret(20);
+        const { error: enErr } = await admin.from("profile_totp_enrollment").upsert({
+          profile_id: userId,
+          secret_b32: secret,
+          created_at: new Date().toISOString(),
+        });
+        if (enErr) {
+          return jsonResponse({ data: null, error: { message: enErr.message }, meta: {} }, 400);
+        }
+        const issuer = typeof bundle.company?.name === "string"
+          ? bundle.company.name
+          : "Connected AI OS";
+        const email =
+          typeof bundle.profile?.email === "string" ? bundle.profile.email : userId;
+        const label = encodeURIComponent(`${issuer}:${email}`);
+        const secretParam = encodeURIComponent(secret);
+        const otpauthUrl =
+          `otpauth://totp/${label}?secret=${secretParam}&issuer=${encodeURIComponent(issuer)}&period=30&digits=6`;
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "totp_enroll_started",
+          {},
+        );
+        return jsonResponse({
+          data: { otpauthUrl, manualSecret: secret },
+          error: null,
+          meta: {},
+        });
+      }
+
+      case "totp.enroll.verify": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const { data: row, error: eErr } = await admin
+          .from("profile_totp_enrollment")
+          .select("secret_b32")
+          .eq("profile_id", userId)
+          .maybeSingle();
+        if (eErr || !row?.secret_b32) {
+          return jsonResponse({
+            data: null,
+            error: { message: "No enrollment in progress" },
+            meta: {},
+          }, 400);
+        }
+        const ok = await verifyTotp(row.secret_b32 as string, parsed.code, 1);
+        if (!ok) {
+          return jsonResponse({ data: null, error: { message: "Invalid code" }, meta: {} }, 400);
+        }
+        await admin.from("profile_totp_enrollment").delete().eq("profile_id", userId);
+        await admin.from("profile_totp_active").upsert({
+          profile_id: userId,
+          secret_b32: row.secret_b32 as string,
+          created_at: new Date().toISOString(),
+        });
+        await admin
+          .from("profiles")
+          .update({ totp_enabled: true, updated_at: new Date().toISOString() })
+          .eq("id", userId);
+        const bundle = await fetchProfileBundle(admin, userId);
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "totp_enabled",
+          {},
+        );
+        return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "totp.disable": {
+        const { userId } = await requireUser(req, supabaseUrl, anonKey);
+        const bundle = await fetchProfileBundle(admin, userId);
+        if ((bundle.profile as Record<string, unknown> | null)?.totp_enabled !== true) {
+          return jsonResponse({
+            data: null,
+            error: { message: "TOTP not enabled" },
+            meta: {},
+          }, 400);
+        }
+        const { data: active, error: aErr } = await admin
+          .from("profile_totp_active")
+          .select("secret_b32")
+          .eq("profile_id", userId)
+          .maybeSingle();
+        if (aErr || !active?.secret_b32) {
+          await admin
+            .from("profiles")
+            .update({ totp_enabled: false, updated_at: new Date().toISOString() })
+            .eq("id", userId);
+          return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+        }
+        const valid = await verifyTotp(active.secret_b32 as string, parsed.code, 1);
+        if (!valid) {
+          return jsonResponse({ data: null, error: { message: "Invalid code" }, meta: {} }, 400);
+        }
+        await admin.from("profile_totp_active").delete().eq("profile_id", userId);
+        await admin
+          .from("profiles")
+          .update({ totp_enabled: false, updated_at: new Date().toISOString() })
+          .eq("id", userId);
+        await logSecurityEvent(
+          admin,
+          (bundle.profile?.company_id as string | null) ?? null,
+          userId,
+          "totp_disabled",
+          {},
+        );
         return jsonResponse({ data: { ok: true }, error: null, meta: {} });
       }
 

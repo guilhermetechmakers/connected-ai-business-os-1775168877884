@@ -41,11 +41,15 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BrandingPanel } from "@/components/settings/branding-panel";
 import {
   AlertRulesTab,
   NotificationSchedulesTab,
   NotificationsPreferencesTab,
 } from "@/components/settings/notifications-alerts-settings";
+import { SettingsUsersRolesPanel } from "@/components/settings/settings-users-roles-panel";
+import { TenantCompanySettingsForm } from "@/components/settings/tenant-company-settings-form";
+import { useTenantSettingsQuery } from "@/hooks/use-tenant-settings";
 import {
   useConnectorsQuery,
   useTenantHealthQuery,
@@ -55,14 +59,6 @@ import {
 import { CONNECTOR_PROVIDERS, getProviderDefinition } from "@/lib/connector-registry";
 import { cn } from "@/lib/utils";
 import type { ConnectorRow } from "@/types/integrations";
-
-const companySchema = z.object({
-  name: z.string().min(2, "Company name is required"),
-  timezone: z.string().min(1),
-  currency: z.string().min(1),
-});
-
-type CompanyForm = z.infer<typeof companySchema>;
 
 const credentialSchema = z.object({
   client_id: z.string().optional(),
@@ -190,6 +186,7 @@ function ConnectorCard({
 }
 
 export default function SettingsPage() {
+  const tenantSettingsQuery = useTenantSettingsQuery();
   const connectorsQuery = useConnectorsQuery();
   const healthQuery = useTenantHealthQuery();
   const upsertCreds = useUpsertCredentialsMutation();
@@ -204,15 +201,6 @@ export default function SettingsPage() {
     () => (Array.isArray(connectorsQuery.data) ? connectorsQuery.data : []),
     [connectorsQuery.data],
   );
-
-  const companyForm = useForm<CompanyForm>({
-    resolver: zodResolver(companySchema),
-    defaultValues: {
-      name: "Connected AI Org",
-      timezone: "UTC",
-      currency: "USD",
-    },
-  });
 
   const credForm = useForm<CredentialForm>({
     resolver: zodResolver(credentialSchema),
@@ -230,12 +218,6 @@ export default function SettingsPage() {
   const providerForDialog = credTarget
     ? getProviderDefinition(credTarget.provider_key)
     : undefined;
-
-  const onSubmitCompany = (values: CompanyForm) => {
-    toast.success("Company profile saved (client draft)", {
-      description: `${values.name} · ${values.timezone} · ${values.currency}`,
-    });
-  };
 
   const onSubmitCredentials = (values: CredentialForm) => {
     if (!credTarget) return;
@@ -284,94 +266,43 @@ export default function SettingsPage() {
         </TabsList>
 
         <TabsContent value="Company">
-          <Card className="border-border/80 bg-card/90">
-            <CardHeader>
-              <CardTitle>Company profile</CardTitle>
-              <CardDescription>
-                Baseline tenant context for dashboards, AI variables, and reporting.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Form {...companyForm}>
-                <form
-                  className="space-y-4 max-w-xl"
-                  onSubmit={companyForm.handleSubmit(onSubmitCompany)}
-                >
-                  <FormField
-                    control={companyForm.control}
-                    name="name"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Legal name</FormLabel>
-                        <FormControl>
-                          <Input className="bg-surface-inner" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={companyForm.control}
-                    name="timezone"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Timezone</FormLabel>
-                        <FormControl>
-                          <Input className="bg-surface-inner" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={companyForm.control}
-                    name="currency"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Currency</FormLabel>
-                        <FormControl>
-                          <Input className="bg-surface-inner" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <Button type="submit" variant="cta" disabled={companyForm.formState.isSubmitting}>
-                    Save company
-                  </Button>
-                </form>
-              </Form>
-            </CardContent>
-          </Card>
+          <TenantCompanySettingsForm
+            tenant={tenantSettingsQuery.data}
+            isLoading={tenantSettingsQuery.isLoading}
+            loadError={tenantSettingsQuery.isError}
+          />
         </TabsContent>
 
         <TabsContent value="Users & roles">
-          <Card className="border-border/80 bg-card/90">
-            <CardHeader>
-              <CardTitle>Users & roles</CardTitle>
-              <CardDescription>
-                Map Tenant Admin, Integrations Lead, and User scopes. Edge Function
-                enforces RBAC on connector operations.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-2">
-              {["Tenant Admin", "Integrations Lead", "Analyst", "User"].map((role) => (
-                <div
-                  key={role}
-                  className="rounded-xl border border-border/60 bg-surface-inner p-4 transition-all duration-150 hover:-translate-y-0.5 hover:border-primary/30"
-                >
-                  <p className="font-semibold text-foreground">{role}</p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Permissions bundle for {role.toLowerCase()} including integration
-                    credentials and sync triggers.
-                  </p>
-                  <Button className="mt-3" size="sm" variant="outline" type="button">
-                    Edit permissions
-                  </Button>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <div className="space-y-6">
+            <SettingsUsersRolesPanel />
+            <Card className="border-border/80 bg-card/90">
+              <CardHeader>
+                <CardTitle>Role templates</CardTitle>
+                <CardDescription>
+                  Map Tenant Admin, Integrations Lead, and User scopes. Edge Functions enforce RBAC on
+                  connector operations.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 md:grid-cols-2">
+                {["Tenant Admin", "Integrations Lead", "Analyst", "User"].map((role) => (
+                  <div
+                    key={role}
+                    className="rounded-xl border border-border/60 bg-surface-inner p-4 transition-all duration-150 hover:-translate-y-0.5 hover:border-primary/30"
+                  >
+                    <p className="font-semibold text-foreground">{role}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Permissions bundle for {role.toLowerCase()} including integration credentials and
+                      sync triggers.
+                    </p>
+                    <Button className="mt-3" size="sm" variant="outline" type="button">
+                      Edit permissions
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="Integrations" className="space-y-6">
@@ -512,15 +443,15 @@ export default function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="Branding">
-          <Card className="border-border/80 bg-card/90">
-            <CardHeader>
-              <CardTitle>Branding</CardTitle>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              Upload logos, set accent usage, and preview emails. Wire to Storage +
-              Edge Functions in production.
-            </CardContent>
-          </Card>
+          {tenantSettingsQuery.isLoading ? (
+            <Skeleton className="h-56 w-full max-w-2xl rounded-xl bg-surface-inner" />
+          ) : tenantSettingsQuery.isError ? (
+            <p className="text-sm text-muted-foreground">
+              Branding settings require tenant administrator access.
+            </p>
+          ) : (
+            <BrandingPanel settings={tenantSettingsQuery.data?.settings} />
+          )}
         </TabsContent>
 
         <TabsContent value="Data policies">

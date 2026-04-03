@@ -39,6 +39,10 @@ export type ProfilePayload = {
   email: string | null;
   display_name: string | null;
   avatar_url?: string | null;
+  job_title?: string | null;
+  department?: string | null;
+  contact_info?: Json;
+  totp_enabled?: boolean;
   roles: string[];
   auth_methods: string[];
   company_id: string | null;
@@ -67,11 +71,19 @@ export type ProfileGetData = {
     name: string;
     key_prefix: string;
     scopes: string[];
+    expires_at?: string | null;
+    status?: string;
     created_at: string;
     last_used_at: string | null;
   }>;
   securityEvents: Array<{
     event_type: string;
+    payload: Json;
+    created_at: string;
+  }>;
+  profileActivity?: Array<{
+    event_type: string;
+    actor_user_id: string | null;
     payload: Json;
     created_at: string;
   }>;

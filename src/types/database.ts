@@ -63,6 +63,10 @@ export interface Database {
           email: string | null;
           display_name: string | null;
           avatar_url: string | null;
+          job_title: string | null;
+          department: string | null;
+          contact_info: Json;
+          totp_enabled: boolean;
           roles: string[];
           auth_methods: string[];
           preferences: Json;
@@ -76,6 +80,10 @@ export interface Database {
           email?: string | null;
           display_name?: string | null;
           avatar_url?: string | null;
+          job_title?: string | null;
+          department?: string | null;
+          contact_info?: Json;
+          totp_enabled?: boolean;
           roles?: string[];
           auth_methods?: string[];
           preferences?: Json;
@@ -89,6 +97,10 @@ export interface Database {
           email?: string | null;
           display_name?: string | null;
           avatar_url?: string | null;
+          job_title?: string | null;
+          department?: string | null;
+          contact_info?: Json;
+          totp_enabled?: boolean;
           roles?: string[];
           auth_methods?: string[];
           preferences?: Json;
@@ -1179,6 +1191,8 @@ export interface Database {
           key_prefix: string;
           key_hash: string;
           scopes: string[];
+          expires_at: string | null;
+          status: string;
           created_at: string;
           last_used_at: string | null;
         };
@@ -1190,6 +1204,8 @@ export interface Database {
           key_prefix: string;
           key_hash: string;
           scopes?: string[];
+          expires_at?: string | null;
+          status?: string;
           created_at?: string;
           last_used_at?: string | null;
         };
@@ -1201,8 +1217,73 @@ export interface Database {
           key_prefix?: string;
           key_hash?: string;
           scopes?: string[];
+          expires_at?: string | null;
+          status?: string;
           created_at?: string;
           last_used_at?: string | null;
+        };
+      };
+      avatar_assets: {
+        Row: {
+          id: string;
+          profile_id: string;
+          company_id: string;
+          url: string;
+          size_bytes: number;
+          mime_type: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          profile_id: string;
+          company_id: string;
+          url: string;
+          size_bytes: number;
+          mime_type: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          profile_id?: string;
+          company_id?: string;
+          url?: string;
+          size_bytes?: number;
+          mime_type?: string;
+          created_at?: string;
+        };
+      };
+      profile_totp_enrollment: {
+        Row: {
+          profile_id: string;
+          secret_b32: string;
+          created_at: string;
+        };
+        Insert: {
+          profile_id: string;
+          secret_b32: string;
+          created_at?: string;
+        };
+        Update: {
+          profile_id?: string;
+          secret_b32?: string;
+          created_at?: string;
+        };
+      };
+      profile_totp_active: {
+        Row: {
+          profile_id: string;
+          secret_b32: string;
+          created_at: string;
+        };
+        Insert: {
+          profile_id: string;
+          secret_b32: string;
+          created_at?: string;
+        };
+        Update: {
+          profile_id?: string;
+          secret_b32?: string;
+          created_at?: string;
         };
       };
       auth_security_events: {
