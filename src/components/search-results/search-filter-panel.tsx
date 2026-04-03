@@ -1,12 +1,11 @@
 import { ChevronDown, Filter } from "lucide-react";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import {
   Sheet,
   SheetContent,
@@ -14,6 +13,9 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { fetchTenantDepartmentsDirectory } from "@/lib/department-workspace-api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import type { GlobalSearchFilters, GlobalSearchHitType } from "@/types/global-search";
 
@@ -33,21 +35,20 @@ const SOURCE_OPTIONS = [
   { id: "report_templates", label: "Reports" },
 ];
 
-export type GlobalSearchFiltersProps = {
-  filters: GlobalSearchFilters;
-  onChange: (next: GlobalSearchFilters) => void;
-  className?: string;
-};
-
-function FiltersForm({
+function FiltersInner({
   filters,
   onChange,
+  departmentRows,
 }: {
   filters: GlobalSearchFilters;
   onChange: (next: GlobalSearchFilters) => void;
+  departmentRows: { id: string; name: string }[];
 }) {
   const types = filters.types ?? [];
   const sources = filters.sources ?? [];
+  const departmentIds = filters.departmentIds ?? [];
+  const ownerFrags = filters.owners ?? [];
+
   const toggleType = (id: GlobalSearchHitType) => {
     const set = new Set(types);
     if (set.has(id)) set.delete(id);
@@ -62,8 +63,45 @@ function FiltersForm({
     onChange({ ...filters, sources: [...set] });
   };
 
+  const toggleDepartment = (id: string) => {
+    const set = new Set(departmentIds);
+    if (set.has(id)) set.delete(id);
+    else set.add(id);
+    onChange({
+      ...filters,
+      departmentIds: [...set],
+      departmentId: undefined,
+    });
+  };
+
+  const toggleOwnerFrag = (frag: string) => {
+    const set = new Set(ownerFrags);
+    if (set.has(frag)) set.delete(frag);
+    else set.add(frag);
+    onChange({ ...filters, owners: [...set] });
+  };
+
   return (
     <div className="space-y-6" role="region" aria-label="Search filters">
+      <div className="flex items-center justify-between rounded-lg border border-border/60 bg-surface-inner/50 px-3 py-2">
+        <div className="space-y-0.5">
+          <Label htmlFor="ai-summarize-toggle" className="text-sm text-foreground">
+            AI summarize (preview)
+          </Label>
+          <p className="text-[10px] text-muted-foreground">
+            When on, selecting a result opens AI-assisted preview by default.
+          </p>
+        </div>
+        <Switch
+          id="ai-summarize-toggle"
+          checked={filters.aiSummarize === true}
+          onCheckedChange={(c) =>
+            onChange({ ...filters, aiSummarize: c ? true : undefined })
+          }
+          aria-label="Toggle AI summarize on result selection"
+        />
+      </div>
+
       <fieldset className="space-y-3">
         <legend className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
           Result type
@@ -106,103 +144,60 @@ function FiltersForm({
         </div>
       </fieldset>
 
+      <fieldset className="space-y-3">
+        <legend className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Departments
+        </legend>
+        {departmentRows.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No departments loaded.</p>
+        ) : (
+          <div className="max-h-40 space-y-2 overflow-y-auto pr-1">
+            {departmentRows.map((d) => (
+              <label
+                key={d.id}
+                className="flex cursor-pointer items-center gap-2 rounded-lg border border-border/60 bg-surface-inner/60 px-3 py-2"
+              >
+                <Checkbox
+                  checked={departmentIds.includes(d.id)}
+                  onCheckedChange={() => toggleDepartment(d.id)}
+                  aria-label={d.name}
+                />
+                <span className="truncate text-sm">{d.name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </fieldset>
+
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="space-y-2">
-          <Label htmlFor="search-dept" className="text-xs text-muted-foreground">
-            Department ID (UUID)
+        <div className="space-y-2 sm:col-span-2">
+          <Label htmlFor="search-owner-frags" className="text-xs text-muted-foreground">
+            Owner contains (add fragments)
           </Label>
+          <div className="flex flex-wrap gap-2">
+            {(["lead", "admin", "exec"] as const).map((frag) => (
+              <Button
+                key={frag}
+                type="button"
+                size="sm"
+                variant={ownerFrags.includes(frag) ? "secondary" : "outline"}
+                className="h-8 text-xs"
+                onClick={() => toggleOwnerFrag(frag)}
+              >
+                {frag}
+              </Button>
+            ))}
+          </div>
           <Input
-            id="search-dept"
-            value={filters.departmentId ?? ""}
-            onChange={(e) =>
-              onChange({
-                ...filters,
-                departmentId: e.target.value || undefined,
-              })
-            }
-            placeholder="Optional"
-            className="bg-surface-inner"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="search-owner" className="text-xs text-muted-foreground">
-            Owner contains
-          </Label>
-          <Input
-            id="search-owner"
+            id="search-owner-frags"
             value={filters.owner ?? ""}
             onChange={(e) =>
               onChange({ ...filters, owner: e.target.value || undefined })
             }
-            placeholder="Email or name fragment"
+            placeholder="Or type a custom substring"
             className="bg-surface-inner"
           />
         </div>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="search-depts-multi" className="text-xs text-muted-foreground">
-          Departments (UUIDs, comma-separated)
-        </Label>
-        <Input
-          id="search-depts-multi"
-          value={(filters.departmentIds ?? []).join(", ")}
-          onChange={(e) => {
-            const raw = e.target.value;
-            const parts = raw
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean);
-            onChange({
-              ...filters,
-              departmentIds: parts.length > 0 ? parts : undefined,
-            });
-          }}
-          placeholder="e.g. uuid-1, uuid-2"
-          className="bg-surface-inner font-mono text-xs"
-        />
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor="search-owners-multi" className="text-xs text-muted-foreground">
-          Additional owner filters (comma-separated substrings)
-        </Label>
-        <Input
-          id="search-owners-multi"
-          value={(filters.owners ?? []).join(", ")}
-          onChange={(e) => {
-            const raw = e.target.value;
-            const parts = raw
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean);
-            onChange({
-              ...filters,
-              owners: parts.length > 0 ? parts : undefined,
-            });
-          }}
-          placeholder="name@company.com, jane"
-          className="bg-surface-inner text-sm"
-        />
-      </div>
-
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-surface-inner/60 px-3 py-3">
-        <div>
-          <p className="text-sm font-medium text-foreground">AI summarize in preview</p>
-          <p className="text-xs text-muted-foreground">
-            When enabled, selecting a result can load an AI summary automatically.
-          </p>
-        </div>
-        <Switch
-          checked={filters.aiSummarize === true}
-          onCheckedChange={(c) =>
-            onChange({
-              ...filters,
-              aiSummarize: c ? true : undefined,
-            })
-          }
-          aria-label="Toggle AI summarize in preview"
-        />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
@@ -253,34 +248,57 @@ function FiltersForm({
   );
 }
 
-export function GlobalSearchFilters({ filters, onChange, className }: GlobalSearchFiltersProps) {
-  const [filtersOpen, setFiltersOpen] = useState(true);
+export type SearchFilterPanelProps = {
+  filters: GlobalSearchFilters;
+  onChange: (next: GlobalSearchFilters) => void;
+  className?: string;
+};
+
+export function SearchFilterPanel({ filters, onChange, className }: SearchFilterPanelProps) {
+  const { data: deptRaw = [] } = useQuery({
+    queryKey: ["tenant-departments-directory", "search-filters"],
+    queryFn: fetchTenantDepartmentsDirectory,
+    enabled: isSupabaseConfigured,
+    staleTime: 60_000,
+  });
+  const departmentRows = (Array.isArray(deptRaw) ? deptRaw : []).map((d) => ({
+    id: d.id,
+    name: typeof d.name === "string" ? d.name : d.id,
+  }));
+
+  const panel = (
+    <FiltersInner
+      filters={filters}
+      onChange={onChange}
+      departmentRows={departmentRows}
+    />
+  );
 
   return (
     <>
       <aside
         className={cn(
-          "hidden w-full max-w-sm shrink-0 rounded-2xl border border-border/70 bg-card/90 shadow-card lg:block",
+          "hidden w-full max-w-sm shrink-0 lg:block",
           className,
         )}
       >
-        <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen}>
-          <div className="flex items-center justify-between border-b border-border/60 p-4">
-            <p className="text-sm font-semibold text-foreground">Filters</p>
-            <CollapsibleTrigger asChild>
-              <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 text-xs">
-                {filtersOpen ? "Collapse" : "Expand"}
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 transition-transform duration-200 motion-reduce:transition-none",
-                    filtersOpen && "rotate-180",
-                  )}
-                />
-              </Button>
-            </CollapsibleTrigger>
-          </div>
-          <CollapsibleContent className="px-6 pb-6 pt-2">
-            <FiltersForm filters={filters} onChange={onChange} />
+        <Collapsible defaultOpen className="rounded-2xl border border-border/70 bg-card/90 shadow-card">
+          <CollapsibleTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              className="flex h-12 w-full items-center justify-between rounded-t-2xl border-b border-border/60 px-4 text-left font-semibold text-foreground hover:bg-muted/40 data-[state=open]:[&>svg:last-child]:rotate-180"
+              aria-expanded
+            >
+              <span className="flex items-center gap-2 text-sm">
+                <Filter className="h-4 w-4 text-primary" />
+                Filters
+              </span>
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200" />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="px-4 py-4 motion-reduce:transition-none data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
+            {panel}
           </CollapsibleContent>
         </Collapsible>
       </aside>
@@ -306,8 +324,8 @@ export function GlobalSearchFilters({ filters, onChange, className }: GlobalSear
             <SheetHeader>
               <SheetTitle>Search filters</SheetTitle>
             </SheetHeader>
-            <div className="mt-6 px-1">
-              <FiltersForm filters={filters} onChange={onChange} />
+            <div className="mt-6 max-h-[calc(100vh-8rem)] overflow-y-auto px-1">
+              {panel}
             </div>
           </SheetContent>
         </Sheet>

@@ -161,9 +161,14 @@ export {
 
 /** Global search & indexed documents (Edge Function `search-api`). */
 export {
+  createSavedSearch,
+  deleteSavedSearch,
+  exportSearchResults,
   fetchGlobalSearch,
   fetchSearchAutosuggest,
   fetchSearchIndexStatus,
+  fetchSearchPreview,
+  listSavedSearches,
   summarizeSearchContext,
   upsertIndexedDocument,
 } from "@/api/search";

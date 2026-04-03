@@ -1884,6 +1884,38 @@ export interface Database {
           created_at?: string;
         };
       };
+      saved_searches: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          name: string;
+          query: string;
+          filters: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          name: string;
+          query?: string;
+          filters?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          name?: string;
+          query?: string;
+          filters?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
       module_templates: {
         Row: {
           id: string;

@@ -14,10 +14,13 @@ const filterSchema = z
     types: z.array(z.enum(["Entity", "Document", "Activity", "Report"])).optional(),
     sources: z.array(z.string()).optional(),
     departmentId: z.string().optional(),
+    departmentIds: z.array(z.string()).optional(),
     dateFrom: z.string().optional(),
     dateTo: z.string().optional(),
     owner: z.string().optional(),
+    owners: z.array(z.string()).optional(),
     permissionScope: z.enum(["all", "restricted"]).optional(),
+    aiSummarize: z.boolean().optional(),
   })
   .optional();
 
@@ -73,6 +76,32 @@ const opSchema = z.discriminatedUnion("op", [
   }),
   z.object({
     op: z.literal("search.indexStatus"),
+  }),
+  z.object({
+    op: z.literal("search.savedList"),
+  }),
+  z.object({
+    op: z.literal("search.savedCreate"),
+    name: z.string().min(1).max(160),
+    query: z.string(),
+    filters: filterSchema.optional(),
+  }),
+  z.object({
+    op: z.literal("search.savedDelete"),
+    id: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("search.preview"),
+    compositeId: z.string().min(3).max(200),
+    generateAi: z.boolean().optional(),
+  }),
+  z.object({
+    op: z.literal("search.export"),
+    query: z.string(),
+    filters: filterSchema.optional(),
+    format: z.enum(["csv", "json"]),
+    fields: z.array(z.string()).max(24).optional(),
+    maxRows: z.number().int().positive().max(500).optional(),
   }),
 ]);
 
@@ -158,6 +187,14 @@ function canMutateIndex(roles: string[]): boolean {
   );
 }
 
+/** AI search summaries: block viewer-only accounts. */
+function canUseSearchAi(roles: string[]): boolean {
+  const r = normalizeRoles(roles);
+  if (r.size === 0) return true;
+  if (r.size === 1 && r.has("viewer")) return false;
+  return true;
+}
+
 function hitTypeFromEntityType(entityType: string): SearchHit["type"] {
   if (entityType === "Document" || entityType === "Activity" || entityType === "Report") {
     return entityType;
@@ -212,13 +249,28 @@ function applyFilters(
     const set = new Set(f.sources.map((s) => s.toLowerCase()));
     out = out.filter((h) => set.has(h.source.toLowerCase()));
   }
+  const deptList = Array.isArray(f.departmentIds)
+    ? f.departmentIds.map((d) => asUuidOrNull(d)).filter((x): x is string => Boolean(x))
+    : [];
   const dept = asUuidOrNull(f.departmentId);
-  if (dept) {
+  if (deptList.length > 0) {
+    const set = new Set(deptList);
+    out = out.filter((h) => (h.departmentId ? set.has(h.departmentId) : false));
+  } else if (dept) {
     out = out.filter((h) => h.departmentId === dept);
   }
   if (f.owner && f.owner.trim()) {
     const o = f.owner.toLowerCase();
     out = out.filter((h) => (h.owner ?? "").toLowerCase().includes(o));
+  }
+  const ownerFrags = Array.isArray(f.owners)
+    ? f.owners.map((x) => String(x).toLowerCase().trim()).filter(Boolean)
+    : [];
+  if (ownerFrags.length > 0) {
+    out = out.filter((h) => {
+      const o = (h.owner ?? "").toLowerCase();
+      return ownerFrags.some((frag) => o.includes(frag));
+    });
   }
   if (f.dateFrom) {
     const from = Date.parse(f.dateFrom);
@@ -269,6 +321,317 @@ function facetsFrom(hits: SearchHit[]): {
   return { types, sources };
 }
 
+async function buildSearchHits(
+  supabase: SupabaseClient,
+  companyId: string,
+  profile: { roles: string[] },
+  q: string,
+  entityDeptFilter: string | null,
+): Promise<SearchHit[]> {
+  const hits: SearchHit[] = [];
+
+  const { data: entities, error: eErr } = await supabase.rpc("search_unified_entities", {
+    p_search: q,
+    p_entity_type: null,
+    p_department_id: entityDeptFilter,
+    p_limit: 55,
+  });
+  if (!eErr && Array.isArray(entities)) {
+    for (const row of entities) {
+      const payload = (row.payload ?? {}) as Record<string, unknown>;
+      const ht = hitTypeFromEntityType(row.entity_type);
+      hits.push({
+        id: row.id,
+        type: ht,
+        subType: ht === "Entity" ? row.entity_type : undefined,
+        title: payloadTitle(payload, row.entity_type),
+        snippet: snippetFrom(JSON.stringify(payload)),
+        source: "unified",
+        date: row.updated_at ?? row.created_at,
+        owner: payloadOwner(payload),
+        departmentId: row.department_id ?? null,
+        permissions: { scope: "tenant" },
+        href:
+          row.department_id
+            ? `/dashboard/departments/${row.department_id}`
+            : "/dashboard/departments",
+      });
+    }
+  }
+
+  const safe = sanitizeIlikePattern(q);
+  const like = safe.length >= 2 ? `%${safe}%` : null;
+  if (like) {
+    const { data: docs, error: dErr } = await supabase
+      .from("indexed_documents")
+      .select("*")
+      .eq("company_id", companyId)
+      .or(`title.ilike.${like},full_text.ilike.${like},snippet.ilike.${like}`)
+      .order("indexed_at", { ascending: false })
+      .limit(40);
+    if (!dErr && Array.isArray(docs)) {
+      for (const d of docs) {
+        if (!docVisible(d.permissions, profile.roles)) continue;
+        hits.push({
+          id: d.id,
+          type: "Document",
+          title: d.title || d.source_provider,
+          snippet: snippetFrom(d.snippet || d.full_text),
+          source: d.source_provider,
+          date: d.indexed_at,
+          departmentId: d.department_id ?? null,
+          permissions: d.permissions,
+          href: undefined,
+        });
+      }
+    }
+  }
+
+  const { data: actsRaw, error: aErr } = await supabase
+    .from("activity_logs")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: false })
+    .limit(120);
+  const ql = q.toLowerCase();
+  const acts = !aErr && Array.isArray(actsRaw)
+    ? actsRaw.filter((a) => {
+        const et = (a.event_type ?? "").toLowerCase();
+        const pj = JSON.stringify(a.payload ?? {}).toLowerCase();
+        return et.includes(ql) || pj.includes(ql);
+      }).slice(0, 22)
+    : [];
+  if (acts.length > 0) {
+    for (const a of acts) {
+      const pl = (a.payload ?? {}) as Record<string, unknown>;
+      hits.push({
+        id: a.id,
+        type: "Activity",
+        title: `${a.event_type}`,
+        snippet: snippetFrom(JSON.stringify(pl)),
+        source: "activity_log",
+        date: a.created_at,
+        owner: undefined,
+        departmentId: (a as { department_id?: string | null }).department_id ?? null,
+        permissions: { scope: "tenant" },
+        href: "/dashboard/activity",
+      });
+    }
+  }
+
+  if (like) {
+    const { data: reps, error: rErr } = await supabase
+      .from("report_templates")
+      .select("*")
+      .eq("company_id", companyId)
+      .ilike("name", like)
+      .order("updated_at", { ascending: false })
+      .limit(18);
+    if (!rErr && Array.isArray(reps)) {
+      for (const r of reps) {
+        hits.push({
+          id: r.id,
+          type: "Report",
+          title: r.name,
+          snippet: snippetFrom(JSON.stringify(r.definition ?? {})),
+          source: "report_templates",
+          date: r.updated_at ?? r.created_at,
+          departmentId: r.department_id ?? null,
+          permissions: { scope: "tenant" },
+          href: "/reports",
+        });
+      }
+    }
+  }
+
+  return hits;
+}
+
+function parseCompositeId(raw: string): { type: SearchHit["type"]; id: string } | null {
+  const idx = raw.indexOf(":");
+  if (idx <= 0) return null;
+  const typeStr = raw.slice(0, idx);
+  const id = raw.slice(idx + 1);
+  if (!UUID_RE.test(id)) return null;
+  const t = typeStr as SearchHit["type"];
+  if (t !== "Entity" && t !== "Document" && t !== "Activity" && t !== "Report") return null;
+  return { type: t, id };
+}
+
+const EXPORT_FIELD_DEFAULTS = [
+  "id",
+  "type",
+  "title",
+  "snippet",
+  "source",
+  "date",
+  "owner",
+  "departmentId",
+] as const;
+
+function exportRowsToCsv(rows: Record<string, unknown>[], keys: string[]): string {
+  const esc = (v: unknown) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [keys.join(",")];
+  for (const row of rows) {
+    lines.push(keys.map((k) => esc(row[k])).join(","));
+  }
+  return lines.join("\n");
+}
+
+async function loadSearchHitForPreview(
+  supabase: SupabaseClient,
+  companyId: string,
+  profile: { roles: string[] },
+  type: SearchHit["type"],
+  id: string,
+): Promise<SearchHit | null> {
+  if (type === "Entity") {
+    const { data: row } = await supabase
+      .from("unified_entities")
+      .select("*")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .eq("is_deleted", false)
+      .maybeSingle();
+    if (!row) return null;
+    const payload = (row.payload ?? {}) as Record<string, unknown>;
+    const ht = hitTypeFromEntityType(row.entity_type);
+    return {
+      id: row.id,
+      type: ht,
+      subType: ht === "Entity" ? row.entity_type : undefined,
+      title: payloadTitle(payload, row.entity_type),
+      snippet: snippetFrom(JSON.stringify(payload)),
+      source: "unified",
+      date: row.updated_at ?? row.created_at,
+      owner: payloadOwner(payload),
+      departmentId: row.department_id ?? null,
+      permissions: { scope: "tenant" },
+      href: row.department_id
+        ? `/dashboard/departments/${row.department_id}`
+        : "/dashboard/departments",
+    };
+  }
+  if (type === "Document") {
+    const { data: doc } = await supabase
+      .from("indexed_documents")
+      .select("*")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (doc) {
+      if (!docVisible(doc.permissions, profile.roles)) return null;
+      return {
+        id: doc.id,
+        type: "Document",
+        title: doc.title || doc.source_provider,
+        snippet: snippetFrom(doc.snippet || doc.full_text),
+        source: doc.source_provider,
+        date: doc.indexed_at,
+        departmentId: doc.department_id ?? null,
+        permissions: doc.permissions,
+        href: undefined,
+      };
+    }
+    const { data: ent } = await supabase
+      .from("unified_entities")
+      .select("*")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .eq("is_deleted", false)
+      .maybeSingle();
+    if (!ent || ent.entity_type !== "Document") return null;
+    const payload = (ent.payload ?? {}) as Record<string, unknown>;
+    return {
+      id: ent.id,
+      type: "Document",
+      title: payloadTitle(payload, "Document"),
+      snippet: snippetFrom(JSON.stringify(payload)),
+      source: "unified",
+      date: ent.updated_at ?? ent.created_at,
+      owner: payloadOwner(payload),
+      departmentId: ent.department_id ?? null,
+      permissions: { scope: "tenant" },
+      href: undefined,
+    };
+  }
+  if (type === "Activity") {
+    const { data: a } = await supabase
+      .from("activity_logs")
+      .select("*")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (!a) return null;
+    const pl = (a.payload ?? {}) as Record<string, unknown>;
+    return {
+      id: a.id,
+      type: "Activity",
+      title: `${a.event_type}`,
+      snippet: snippetFrom(JSON.stringify(pl)),
+      source: "activity_log",
+      date: a.created_at,
+      owner: undefined,
+      departmentId: (a as { department_id?: string | null }).department_id ?? null,
+      permissions: { scope: "tenant" },
+      href: "/dashboard/activity",
+    };
+  }
+  const { data: r } = await supabase
+    .from("report_templates")
+    .select("*")
+    .eq("id", id)
+    .eq("company_id", companyId)
+    .maybeSingle();
+  if (!r) return null;
+  return {
+    id: r.id,
+    type: "Report",
+    title: r.name,
+    snippet: snippetFrom(JSON.stringify(r.definition ?? {})),
+    source: "report_templates",
+    date: r.updated_at ?? r.created_at,
+    departmentId: r.department_id ?? null,
+    permissions: { scope: "tenant" },
+    href: "/reports",
+  };
+}
+
+async function summarizeLinesWithOpenAI(lines: string[]): Promise<{ summary: string; confidence: number }> {
+  const apiKey = Deno.env.get("OPENAI_API_KEY");
+  if (!apiKey) {
+    return {
+      summary:
+        "AI summarization requires OPENAI_API_KEY on the search-api function.\n\n" + lines.join("\n\n"),
+      confidence: 0.35,
+    };
+  }
+  const sys =
+    "Summarize the following tenant-scoped record in 2-4 bullet points. Do not invent facts. Cite the source type in each bullet.";
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: lines.join("\n---\n") },
+      ],
+    }),
+  });
+  const json = await res.json();
+  const text = json?.choices?.[0]?.message?.content ?? "Unable to summarize.";
+  const confidence = typeof json?.choices?.[0]?.finish_reason === "string" ? 0.88 : 0.82;
+  return { summary: typeof text === "string" ? text : String(text), confidence };
+}
+
 async function logActivity(
   supabase: SupabaseClient,
   companyId: string,
@@ -317,122 +680,14 @@ serve(async (req) => {
           );
         }
 
-        const hits: SearchHit[] = [];
-
-        const deptFilter = asUuidOrNull(op.filters?.departmentId);
-        const { data: entities, error: eErr } = await supabase.rpc("search_unified_entities", {
-          p_search: q,
-          p_entity_type: null,
-          p_department_id: deptFilter,
-          p_limit: 55,
-        });
-        if (!eErr && Array.isArray(entities)) {
-          for (const row of entities) {
-            const payload = (row.payload ?? {}) as Record<string, unknown>;
-            const ht = hitTypeFromEntityType(row.entity_type);
-            hits.push({
-              id: row.id,
-              type: ht,
-              subType: ht === "Entity" ? row.entity_type : undefined,
-              title: payloadTitle(payload, row.entity_type),
-              snippet: snippetFrom(JSON.stringify(payload)),
-              source: "unified",
-              date: row.updated_at ?? row.created_at,
-              owner: payloadOwner(payload),
-              departmentId: row.department_id ?? null,
-              permissions: { scope: "tenant" },
-              href:
-                row.department_id
-                  ? `/dashboard/departments/${row.department_id}`
-                  : "/dashboard/departments",
-            });
-          }
-        }
-
-        const safe = sanitizeIlikePattern(q);
-        const like = safe.length >= 2 ? `%${safe}%` : null;
-        if (like) {
-          const { data: docs, error: dErr } = await supabase
-            .from("indexed_documents")
-            .select("*")
-            .eq("company_id", companyId)
-            .or(`title.ilike.${like},full_text.ilike.${like},snippet.ilike.${like}`)
-            .order("indexed_at", { ascending: false })
-            .limit(40);
-          if (!dErr && Array.isArray(docs)) {
-            for (const d of docs) {
-              if (!docVisible(d.permissions, profile.roles)) continue;
-              hits.push({
-                id: d.id,
-                type: "Document",
-                title: d.title || d.source_provider,
-                snippet: snippetFrom(d.snippet || d.full_text),
-                source: d.source_provider,
-                date: d.indexed_at,
-                departmentId: d.department_id ?? null,
-                permissions: d.permissions,
-                href: undefined,
-              });
-            }
-          }
-        }
-
-        const { data: actsRaw, error: aErr } = await supabase
-          .from("activity_logs")
-          .select("*")
-          .eq("company_id", companyId)
-          .order("created_at", { ascending: false })
-          .limit(120);
-        const ql = q.toLowerCase();
-        const acts = !aErr && Array.isArray(actsRaw)
-          ? actsRaw.filter((a) => {
-              const et = (a.event_type ?? "").toLowerCase();
-              const pj = JSON.stringify(a.payload ?? {}).toLowerCase();
-              return et.includes(ql) || pj.includes(ql);
-            }).slice(0, 22)
-          : [];
-        if (acts.length > 0) {
-          for (const a of acts) {
-            const pl = (a.payload ?? {}) as Record<string, unknown>;
-            hits.push({
-              id: a.id,
-              type: "Activity",
-              title: `${a.event_type}`,
-              snippet: snippetFrom(JSON.stringify(pl)),
-              source: "activity_log",
-              date: a.created_at,
-              owner: undefined,
-              departmentId: (a as { department_id?: string | null }).department_id ?? null,
-              permissions: { scope: "tenant" },
-              href: "/dashboard/activity",
-            });
-          }
-        }
-
-        if (like) {
-          const { data: reps, error: rErr } = await supabase
-            .from("report_templates")
-            .select("*")
-            .eq("company_id", companyId)
-            .ilike("name", like)
-            .order("updated_at", { ascending: false })
-            .limit(18);
-          if (!rErr && Array.isArray(reps)) {
-            for (const r of reps) {
-              hits.push({
-                id: r.id,
-                type: "Report",
-                title: r.name,
-                snippet: snippetFrom(JSON.stringify(r.definition ?? {})),
-                source: "report_templates",
-                date: r.updated_at ?? r.created_at,
-                departmentId: r.department_id ?? null,
-                permissions: { scope: "tenant" },
-                href: "/reports",
-              });
-            }
-          }
-        }
+        const entityDeptFilter = asUuidOrNull(op.filters?.departmentId);
+        const hits = await buildSearchHits(
+          supabase,
+          companyId,
+          profile,
+          q,
+          entityDeptFilter,
+        );
 
         const filtered = applyFilters(hits, op.filters, "");
         filtered.sort((a, b) => parseHitDate(b.date) - parseHitDate(a.date));
@@ -516,6 +771,12 @@ serve(async (req) => {
       }
 
       case "search.aiSummarize": {
+        if (!canUseSearchAi(profile.roles)) {
+          return new Response(
+            JSON.stringify({ error: "AI summarization is not available for your role." }),
+            { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
         const lines: string[] = [];
         for (const item of op.contextItems) {
           if (item.type === "Entity") {
@@ -750,6 +1011,183 @@ serve(async (req) => {
               lastIndexTime: lastRow?.indexed_at ?? null,
               recentJobs: jobList,
               errors,
+            },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      case "search.savedList": {
+        const { data, error } = await supabase
+          .from("saved_searches")
+          .select("id, name, query, filters, created_at, updated_at, user_id")
+          .eq("company_id", companyId)
+          .eq("user_id", userId)
+          .order("updated_at", { ascending: false })
+          .limit(80);
+        if (error) throw error;
+        const list = Array.isArray(data) ? data : [];
+        return new Response(JSON.stringify({ data: list }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "search.savedCreate": {
+        const filters = op.filters ?? {};
+        const { data, error } = await supabase
+          .from("saved_searches")
+          .insert({
+            company_id: companyId,
+            user_id: userId,
+            name: op.name.trim(),
+            query: op.query,
+            filters,
+            updated_at: new Date().toISOString(),
+          })
+          .select("id, name, query, filters, created_at, updated_at, user_id")
+          .single();
+        if (error) throw error;
+        await logActivity(supabase, companyId, userId, "search.saved_create", {
+          savedId: data?.id,
+          name: op.name,
+        });
+        return new Response(JSON.stringify({ data: { success: true, savedSearch: data } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "search.savedDelete": {
+        const { error } = await supabase
+          .from("saved_searches")
+          .delete()
+          .eq("id", op.id)
+          .eq("company_id", companyId)
+          .eq("user_id", userId);
+        if (error) throw error;
+        return new Response(JSON.stringify({ data: { success: true } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      case "search.preview": {
+        const ids = parseCompositeId(op.compositeId.trim());
+        if (!ids) {
+          return new Response(JSON.stringify({ error: "Invalid preview id" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const hit = await loadSearchHitForPreview(
+          supabase,
+          companyId,
+          profile,
+          ids.type,
+          ids.id,
+        );
+        if (!hit) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        let aiSummary: string | undefined;
+        let confidence: number | undefined;
+        if (op.generateAi === true) {
+          if (!canUseSearchAi(profile.roles)) {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  result: hit,
+                  aiSummary: undefined,
+                  aiRestricted: true,
+                  provenance: `tenant:${companyId}`,
+                },
+              }),
+              { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            );
+          }
+          const line =
+            `${hit.type} ${hit.id} (${hit.source}): ${hit.title} — ${snippetFrom(hit.snippet, 600)}`;
+          const out = await summarizeLinesWithOpenAI([line]);
+          aiSummary = out.summary;
+          confidence = out.confidence;
+          await supabase.from("ai_search_summary_logs").insert({
+            company_id: companyId,
+            user_id: userId,
+            context_items: [{ id: hit.id, type: hit.type, source: hit.source }],
+            summary: aiSummary,
+            confidence: confidence ?? null,
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            data: {
+              result: hit,
+              aiSummary,
+              confidence,
+              provenance: `${hit.source} · tenant ${companyId}`,
+            },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      case "search.export": {
+        const q = op.query.trim();
+        if (q.length < 2) {
+          const emptyKeys = [...EXPORT_FIELD_DEFAULTS] as string[];
+          const empty = op.format === "json" ? "[]" : exportRowsToCsv([], emptyKeys);
+          return new Response(
+            JSON.stringify({
+              data: {
+                content: empty,
+                filename: `search-export-empty.${op.format}`,
+                mimeType: op.format === "json" ? "application/json" : "text/csv",
+              },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+        const entityDeptFilter = asUuidOrNull(op.filters?.departmentId);
+        const hits = await buildSearchHits(supabase, companyId, profile, q, entityDeptFilter);
+        const filtered = applyFilters(hits, op.filters, "");
+        const maxRows = op.maxRows ?? 500;
+        const slice = filtered.slice(0, maxRows);
+        const allowed = new Set(
+          Array.isArray(op.fields) && op.fields.length > 0
+            ? op.fields.filter((f) => (EXPORT_FIELD_DEFAULTS as readonly string[]).includes(f))
+            : [...EXPORT_FIELD_DEFAULTS],
+        );
+        const keys = [...allowed];
+        const rows: Record<string, unknown>[] = slice.map((h) => {
+          const base: Record<string, unknown> = {};
+          for (const k of keys) {
+            if (k === "id") base.id = h.id;
+            else if (k === "type") base.type = h.type;
+            else if (k === "title") base.title = h.title;
+            else if (k === "snippet") base.snippet = h.snippet;
+            else if (k === "source") base.source = h.source;
+            else if (k === "date") base.date = h.date;
+            else if (k === "owner") base.owner = h.owner ?? "";
+            else if (k === "departmentId") base.departmentId = h.departmentId ?? "";
+          }
+          return base;
+        });
+        const content =
+          op.format === "json"
+            ? JSON.stringify(rows, null, 2)
+            : exportRowsToCsv(rows, keys);
+        const filename = `search-export-${new Date().toISOString().slice(0, 10)}.${op.format}`;
+        await logActivity(supabase, companyId, userId, "search.export", {
+          format: op.format,
+          rowCount: rows.length,
+        });
+        return new Response(
+          JSON.stringify({
+            data: {
+              content,
+              filename,
+              mimeType: op.format === "json" ? "application/json" : "text/csv",
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },

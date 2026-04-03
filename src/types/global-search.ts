@@ -23,10 +23,14 @@ export interface GlobalSearchFilters {
   types?: GlobalSearchHitType[];
   sources?: string[];
   departmentId?: string;
+  departmentIds?: string[];
   dateFrom?: string;
   dateTo?: string;
   owner?: string;
+  owners?: string[];
   permissionScope?: "all" | "restricted";
+  /** Client hint: prefer AI preview when selecting results */
+  aiSummarize?: boolean;
 }
 
 export interface GlobalSearchResponse {

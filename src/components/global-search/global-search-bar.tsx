@@ -47,6 +47,28 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
     const { data: rawSuggestions = [], isFetching } = useSearchAutosuggest(suggestDebounced);
     const suggestions = Array.isArray(rawSuggestions) ? rawSuggestions : [];
 
+    const categorized = (() => {
+      const entities: typeof suggestions = [];
+      const documents: typeof suggestions = [];
+      const activities: typeof suggestions = [];
+      const reports: typeof suggestions = [];
+      for (const s of suggestions) {
+        const t = String(s.type ?? "");
+        if (t === "Document") documents.push(s);
+        else if (t === "Activity") activities.push(s);
+        else if (t === "Report") reports.push(s);
+        else entities.push(s);
+      }
+      return [
+        { label: "Entities", items: entities },
+        { label: "Documents", items: documents },
+        { label: "Activities", items: activities },
+        { label: "Reports", items: reports },
+      ].filter((g) => g.items.length > 0);
+    })();
+
+    const flatIndex = categorized.flatMap((g) => g.items);
+
     const close = useCallback(() => {
       setOpen(false);
       setHighlight(-1);
@@ -85,7 +107,7 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
     }, [ref]);
 
     const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (!showSuggestions || suggestions.length === 0) {
+      if (!showSuggestions || flatIndex.length === 0) {
         if (e.key === "Enter") {
           e.preventDefault();
           onSubmit();
@@ -95,14 +117,14 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setOpen(true);
-        setHighlight((h) => Math.min(h + 1, suggestions.length - 1));
+        setHighlight((h) => Math.min(h + 1, flatIndex.length - 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setHighlight((h) => Math.max(h - 1, 0));
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (open && highlight >= 0 && suggestions[highlight]) {
-          onChange(suggestions[highlight].text);
+        if (open && highlight >= 0 && flatIndex[highlight]) {
+          onChange(flatIndex[highlight].text);
           close();
         }
         onSubmit();
@@ -114,6 +136,7 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
     return (
       <div ref={containerRef} className={cn("relative w-full", className)}>
         <div
+          role="search"
           className={cn(
             "flex gap-2 rounded-xl border border-border/60 bg-surface-inner/90 p-1 shadow-inner transition-all duration-150",
             "focus-within:ring-2 focus-within:ring-primary/20",
@@ -138,7 +161,7 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
             placeholder={placeholder}
             aria-label={ariaLabel}
             aria-autocomplete="list"
-            aria-expanded={open && showSuggestions && suggestions.length > 0}
+            aria-expanded={open && showSuggestions && flatIndex.length > 0}
             aria-controls={listId}
             className={cn(
               "border-0 bg-transparent text-base shadow-none focus-visible:ring-0 md:text-base",
@@ -163,36 +186,56 @@ export const GlobalSearchBar = forwardRef<HTMLInputElement, GlobalSearchBarProps
             Search
           </Button>
         </div>
-        {showSuggestions && open && suggestions.length > 0 ? (
+        {showSuggestions && open && flatIndex.length > 0 ? (
           <ul
             id={listId}
             role="listbox"
-            className="absolute z-50 mt-2 max-h-72 w-full overflow-auto rounded-xl border border-border/60 bg-card py-1 shadow-lg animate-in fade-in-0 zoom-in-95 duration-150 motion-reduce:animate-none"
+            aria-label="Search suggestions by category"
+            className="absolute z-50 mt-2 max-h-80 w-full overflow-auto rounded-xl border border-border/60 bg-card py-2 shadow-lg animate-in fade-in-0 zoom-in-95 duration-150 motion-reduce:animate-none"
           >
-            {(suggestions ?? []).map((s, i) => (
-              <li key={`${s.type}-${s.text}-${i}`} role="presentation">
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={i === highlight}
-                  className={cn(
-                    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm transition-colors duration-150",
-                    i === highlight ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
-                  )}
-                  onMouseEnter={() => setHighlight(i)}
-                  onClick={() => {
-                    onChange(s.text);
-                    close();
-                    onSubmit();
-                  }}
-                >
-                  <span className="truncate">{s.text}</span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    {s.type}
-                  </span>
-                </button>
-              </li>
-            ))}
+            {(() => {
+              let running = 0;
+              return categorized.map((group) => {
+              const start = running;
+              running += group.items.length;
+              return (
+                <li key={group.label} role="presentation" className="px-1">
+                  <p className="px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-primary">
+                    {group.label}
+                  </p>
+                  <ul className="space-y-0.5">
+                    {group.items.map((s, j) => {
+                      const i = start + j;
+                      return (
+                        <li key={`${group.label}-${s.type}-${s.text}-${j}`} role="presentation">
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={i === highlight}
+                            className={cn(
+                              "flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors duration-150",
+                              i === highlight ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
+                            )}
+                            onMouseEnter={() => setHighlight(i)}
+                            onClick={() => {
+                              onChange(s.text);
+                              close();
+                              onSubmit();
+                            }}
+                          >
+                            <span className="truncate">{s.text}</span>
+                            <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+                              {s.type}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              );
+            });
+            })()}
           </ul>
         ) : null}
         <p className="mt-1 text-[10px] text-muted-foreground motion-reduce:opacity-100">

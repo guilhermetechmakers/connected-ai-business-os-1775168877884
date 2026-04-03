@@ -1,9 +1,19 @@
-import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import {
+  createSavedSearch,
+  deleteSavedSearch,
+  exportSearchResults,
   fetchGlobalSearch,
   fetchSearchAutosuggest,
   fetchSearchIndexStatus,
+  fetchSearchPreview,
+  listSavedSearches,
   summarizeSearchContext,
 } from "@/api/search";
 import { isSupabaseConfigured } from "@/lib/supabase";
@@ -15,6 +25,9 @@ export const globalSearchQueryKeys = {
     [...globalSearchQueryKeys.root, "results", q, filterKey, page] as const,
   suggest: (q: string) => [...globalSearchQueryKeys.root, "suggest", q] as const,
   indexStatus: () => [...globalSearchQueryKeys.root, "index-status"] as const,
+  saved: () => [...globalSearchQueryKeys.root, "saved"] as const,
+  preview: (id: string, gen: boolean) =>
+    [...globalSearchQueryKeys.root, "preview", id, gen] as const,
 };
 
 export function useGlobalSearchResults(
@@ -58,6 +71,60 @@ export function useSearchIndexStatusQuery(enabled = false) {
 export function useSearchAiSummarizeMutation() {
   return useMutation({
     mutationFn: summarizeSearchContext,
+  });
+}
+
+export function useSavedSearchesQuery() {
+  return useQuery({
+    queryKey: globalSearchQueryKeys.saved(),
+    queryFn: listSavedSearches,
+    enabled: isSupabaseConfigured,
+  });
+}
+
+export function useSaveSearchMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createSavedSearch,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: globalSearchQueryKeys.saved() });
+    },
+  });
+}
+
+export function useDeleteSavedSearchMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSavedSearch,
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: globalSearchQueryKeys.saved() });
+    },
+  });
+}
+
+export function useSearchPreviewQuery(
+  compositeId: string | null,
+  generateAi: boolean,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: globalSearchQueryKeys.preview(compositeId ?? "", generateAi),
+    queryFn: () =>
+      fetchSearchPreview({
+        compositeId: compositeId ?? "",
+        generateAi,
+      }),
+    enabled:
+      isSupabaseConfigured &&
+      enabled &&
+      Boolean(compositeId && compositeId.includes(":")),
+    staleTime: generateAi ? 60_000 : 30_000,
+  });
+}
+
+export function useSearchExportMutation() {
+  return useMutation({
+    mutationFn: exportSearchResults,
   });
 }
 
