@@ -96,10 +96,12 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
                             ? location.pathname.startsWith("/dashboard/departments") ||
                               location.pathname.startsWith("/departments") ||
                               location.pathname.startsWith("/department/")
-                            : location.pathname === item.to ||
-                              (item.to !== "/reports" &&
-                                item.to !== "/search" &&
-                                location.pathname.startsWith(`${item.to}/`));
+                            : item.to === "/reports"
+                              ? location.pathname === "/reports" ||
+                                location.pathname.startsWith("/reports/")
+                              : location.pathname === item.to ||
+                                (item.to !== "/search" &&
+                                  location.pathname.startsWith(`${item.to}/`));
                 return (
                   <li key={item.to}>
                     <NavLink

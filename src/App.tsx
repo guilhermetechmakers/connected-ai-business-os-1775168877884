@@ -26,6 +26,8 @@ import GlobalDashboardPage from "@/pages/dashboard/global-dashboard-page";
 import ModulesHubPage from "@/pages/dashboard/modules-hub-page";
 import NotificationsPage from "@/pages/dashboard/notifications-page";
 import ProfileSettingsPage from "@/pages/dashboard/settings/profile-settings-page";
+import ReportDetailPage from "@/pages/dashboard/report-detail-page";
+import ReportWizardPage from "@/pages/dashboard/report-wizard-page";
 import ReportsCenterPage from "@/pages/dashboard/reports-center-page";
 import SearchPage from "@/pages/dashboard/search-page";
 import { SettingsLayout } from "@/components/settings/settings-layout";
@@ -150,6 +152,8 @@ export default function App() {
           <Route path="/department/:deptId" element={<LegacyDepartmentRedirect />} />
           <Route path="/reports" element={<DashboardLayout />}>
             <Route index element={<ReportsCenterPage />} />
+            <Route path="new" element={<ReportWizardPage />} />
+            <Route path=":reportId" element={<ReportDetailPage />} />
           </Route>
           <Route path="/search" element={<DashboardLayout />}>
             <Route index element={<SearchPage />} />

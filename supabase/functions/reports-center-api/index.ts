@@ -24,11 +24,14 @@ function canWriteReports(roles: string[]): boolean {
   return (
     r.has("admin") ||
     r.has("company admin") ||
+    r.has("company_admin") ||
     r.has("super_admin") ||
     r.has("owner") ||
     r.has("manager") ||
     r.has("executive") ||
-    r.has("analyst")
+    r.has("analyst") ||
+    r.has("team_member") ||
+    r.has("builder")
   );
 }
 
@@ -37,9 +40,12 @@ function canWriteKpis(roles: string[]): boolean {
   return (
     r.has("admin") ||
     r.has("company admin") ||
+    r.has("company_admin") ||
     r.has("super_admin") ||
     r.has("owner") ||
-    r.has("analyst")
+    r.has("analyst") ||
+    r.has("manager") ||
+    r.has("builder")
   );
 }
 
@@ -717,7 +723,6 @@ serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof Response) return e;
-    console.error("reports-center-api", e);
     return new Response(JSON.stringify({ error: "Internal error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },

@@ -362,3 +362,25 @@ export {
   summarizeBindings,
   updateInternalModule,
 } from "@/api/modules";
+
+/** Reports Center — KPIs, authored reports, schedules, exports (`reports-center-api`). */
+export {
+  cloneReportCenterReport,
+  createKpiMetric,
+  createReportCenterReport,
+  deleteReportCenterReport,
+  enqueueReportExport,
+  fetchKpiMetric,
+  fetchKpiMetricsList,
+  fetchReportAiSummary,
+  fetchReportCenterDetail,
+  fetchReportCenterList,
+  fetchReportExportJobs,
+  fetchReportsCenterDataSources,
+  fetchReportsCenterDepartments,
+  fetchReportSchedulesList,
+  invokeReportsAiSummary,
+  refreshKpiMetric,
+  updateReportCenterReport,
+  upsertReportSchedule as upsertReportCenterSchedule,
+} from "@/api/reports-center";
