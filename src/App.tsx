@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 
 import { AdminRoute } from "@/components/auth/admin-route";
 import { ProtectedRoute } from "@/components/auth/protected-route";
@@ -59,6 +59,11 @@ import SignupInviteAcceptancePage from "@/pages/signup-invite-acceptance-page";
 import SuccessPage from "@/pages/success-page";
 import TermsPage from "@/pages/terms-page";
 
+function LegacyDepartmentRedirect() {
+  const { deptId } = useParams();
+  return <Navigate to={deptId ? `/departments/${deptId}` : "/departments"} replace />;
+}
+
 export default function App() {
   return (
     <AppProviders>
@@ -92,6 +97,10 @@ export default function App() {
         <Route path="/error-500" element={<ServerErrorPage />} />
         <Route path="/server-error" element={<ServerErrorPage />} />
         <Route element={<ProtectedRoute />}>
+          <Route path="/departments" element={<DashboardLayout />}>
+            <Route index element={<DepartmentsListPage />} />
+            <Route path=":departmentId" element={<DepartmentWorkspacePage />} />
+          </Route>
           <Route path="/dashboard" element={<DashboardLayout />}>
             <Route index element={<Navigate to="global" replace />} />
             <Route path="global" element={<GlobalDashboardPage />} />
@@ -102,7 +111,7 @@ export default function App() {
             <Route path="modules/new" element={<CreateModulePage />} />
             <Route path="modules/:moduleId/manage" element={<EditModulePage />} />
             <Route path="departments" element={<DepartmentsListPage />} />
-            <Route path="departments/:deptId" element={<DepartmentWorkspacePage />} />
+            <Route path="departments/:departmentId" element={<DepartmentWorkspacePage />} />
             <Route path="ai" element={<AIWorkspacePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="activity" element={<ActivityLogPage />} />
@@ -137,9 +146,7 @@ export default function App() {
               </Route>
             </Route>
           </Route>
-          <Route path="/department/:deptId" element={<DashboardLayout />}>
-            <Route index element={<DepartmentWorkspacePage />} />
-          </Route>
+          <Route path="/department/:deptId" element={<LegacyDepartmentRedirect />} />
           <Route path="/reports" element={<DashboardLayout />}>
             <Route index element={<ReportsCenterPage />} />
           </Route>

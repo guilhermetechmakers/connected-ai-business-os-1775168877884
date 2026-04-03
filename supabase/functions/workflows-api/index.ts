@@ -46,13 +46,19 @@ const workflowDefinitionSchema = z.object({
 });
 
 const opSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("workflows.list"), status: z.string().optional(), search: z.string().optional() }),
+  z.object({
+    op: z.literal("workflows.list"),
+    status: z.string().optional(),
+    search: z.string().optional(),
+    departmentId: z.string().uuid().optional(),
+  }),
   z.object({ op: z.literal("workflows.get"), id: z.string().uuid() }),
   z.object({
     op: z.literal("workflows.create"),
     name: z.string().min(1).max(200),
     definition: workflowDefinitionSchema,
     status: z.enum(["draft", "active", "paused", "Draft", "Active", "Paused"]).optional(),
+    departmentId: z.string().uuid().nullable().optional(),
   }),
   z.object({
     op: z.literal("workflows.update"),
@@ -60,6 +66,7 @@ const opSchema = z.discriminatedUnion("op", [
     name: z.string().min(1).max(200).optional(),
     definition: workflowDefinitionSchema.optional(),
     status: z.enum(["draft", "active", "paused", "Draft", "Active", "Paused"]).optional(),
+    departmentId: z.string().uuid().nullable().optional(),
   }),
   z.object({ op: z.literal("workflows.delete"), id: z.string().uuid() }),
   z.object({
@@ -71,6 +78,7 @@ const opSchema = z.discriminatedUnion("op", [
     workflowId: z.string().uuid(),
     testMode: z.boolean().optional(),
     correlationId: z.string().max(200).optional(),
+    departmentId: z.string().uuid().optional(),
   }),
   z.object({
     op: z.literal("workflowRuns.list"),
@@ -503,7 +511,7 @@ async function handleOp(
       let q = supabase
         .from("workflows")
         .select(
-          "id, company_id, name, definition, status, owner_user_id, created_at, updated_at",
+          "id, company_id, name, definition, status, owner_user_id, department_id, created_at, updated_at",
         )
         .eq("company_id", companyId)
         .order("updated_at", { ascending: false });
@@ -514,11 +522,18 @@ async function handleOp(
       if (error) return json({ error: error.message }, 400);
       const rows = Array.isArray(data) ? data : [];
       const search = body.search?.trim().toLowerCase();
+      let scoped = rows;
+      if (body.departmentId) {
+        scoped = rows.filter((r) => {
+          const did = r.department_id as string | null | undefined;
+          return did === body.departmentId || did === null || did === undefined;
+        });
+      }
       const filtered = search
-        ? rows.filter((r) =>
+        ? scoped.filter((r) =>
           String(r.name ?? "").toLowerCase().includes(search)
         )
-        : rows;
+        : scoped;
       return json({ data: filtered });
     }
     case "workflows.get": {
@@ -540,6 +555,20 @@ async function handleOp(
       if (!v.valid) {
         return json({ error: "Invalid definition", details: v.errors }, 422);
       }
+      let deptId: string | null = null;
+      if (body.departmentId !== undefined && body.departmentId !== null) {
+        const { data: drow } = await supabase
+          .from("departments")
+          .select("id")
+          .eq("id", body.departmentId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (!drow?.id) {
+          return json({ error: "Department not found in tenant" }, 400);
+        }
+        deptId = body.departmentId;
+      }
+
       const { data, error } = await supabase
         .from("workflows")
         .insert({
@@ -548,6 +577,7 @@ async function handleOp(
           definition: parsedDef as unknown as Record<string, unknown>,
           status,
           owner_user_id: userId,
+          department_id: deptId,
         })
         .select("*")
         .single();
@@ -563,6 +593,22 @@ async function handleOp(
       const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (body.name !== undefined) patch.name = body.name;
       if (body.status !== undefined) patch.status = normalizeStatus(body.status);
+      if (body.departmentId !== undefined) {
+        if (body.departmentId === null) {
+          patch.department_id = null;
+        } else {
+          const { data: drow } = await supabase
+            .from("departments")
+            .select("id")
+            .eq("id", body.departmentId)
+            .eq("company_id", companyId)
+            .maybeSingle();
+          if (!drow?.id) {
+            return json({ error: "Department not found in tenant" }, 400);
+          }
+          patch.department_id = body.departmentId;
+        }
+      }
       if (body.definition !== undefined) {
         const parsedDef = workflowDefinitionSchema.parse(body.definition);
         const v = validateGraph(parsedDef);
@@ -609,12 +655,20 @@ async function handleOp(
       if (!mutate) return json({ error: "Forbidden" }, 403);
       const { data: wf, error: wfErr } = await supabase
         .from("workflows")
-        .select("id, definition, status")
+        .select("id, definition, status, department_id")
         .eq("id", body.workflowId)
         .eq("company_id", companyId)
         .maybeSingle();
       if (wfErr) return json({ error: wfErr.message }, 400);
       if (!wf) return json({ error: "Workflow not found" }, 404);
+
+      const wfDept = wf.department_id as string | null | undefined;
+      if (wfDept && body.departmentId && wfDept !== body.departmentId) {
+        return json({ error: "Workflow is not in this department scope" }, 403);
+      }
+      if (wfDept && !body.departmentId) {
+        return json({ error: "departmentId required for department-scoped workflow" }, 400);
+      }
 
       const rawDef = wf.definition;
       const parsedDef = workflowDefinitionSchema.safeParse(rawDef);

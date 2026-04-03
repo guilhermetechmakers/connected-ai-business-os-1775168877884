@@ -65,7 +65,15 @@ export async function fetchDepartmentSnapshot(
     departmentId,
   });
   if (error || !data) return null;
-  return data;
+  const snap = data as DepartmentWorkspaceSnapshot;
+  return {
+    department: snap.department ?? null,
+    entities: Array.isArray(snap.entities) ? snap.entities : [],
+    tasks: Array.isArray(snap.tasks) ? snap.tasks : [],
+    documents: Array.isArray(snap.documents) ? snap.documents : [],
+    kpis: Array.isArray(snap.kpis) ? snap.kpis : [],
+    workflows: Array.isArray(snap.workflows) ? snap.workflows : [],
+  };
 }
 
 export async function fetchSearchResults(params: {

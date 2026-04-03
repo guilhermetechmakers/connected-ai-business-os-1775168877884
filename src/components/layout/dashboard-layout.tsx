@@ -90,10 +90,18 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
                       ? location.pathname.startsWith("/dashboard/admin")
                       : item.to === "/dashboard/settings"
                         ? location.pathname.startsWith("/dashboard/settings")
-                    : location.pathname === item.to ||
-                      (item.to !== "/reports" &&
-                        item.to !== "/search" &&
-                        location.pathname.startsWith(`${item.to}/`));
+                        : item.to === "/dashboard/departments"
+                          ? location.pathname.startsWith("/dashboard/departments") ||
+                            location.pathname.startsWith("/departments") ||
+                            location.pathname.startsWith("/department/")
+                    : item.to === "/dashboard/departments"
+                      ? location.pathname.startsWith("/dashboard/departments") ||
+                        location.pathname.startsWith("/departments") ||
+                        location.pathname.startsWith("/department/")
+                      : location.pathname === item.to ||
+                        (item.to !== "/reports" &&
+                          item.to !== "/search" &&
+                          location.pathname.startsWith(`${item.to}/`));
                 return (
                   <li key={item.to}>
                     <NavLink

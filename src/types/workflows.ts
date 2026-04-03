@@ -38,6 +38,7 @@ export interface WorkflowRow {
   definition: WorkflowDefinition | Json;
   status: string;
   owner_user_id: string | null;
+  department_id?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -110,6 +110,15 @@ export {
   fetchUnifiedEntities,
 } from "@/api/unified-data";
 
+/** Department workspace — unified tasks, `department-ai-generate` Edge Function, directory (Supabase client). */
+export {
+  createDepartmentTask,
+  generateDepartmentAiResponse,
+  type DepartmentAiGenerateParams,
+  type DepartmentAiGenerateResult,
+} from "@/api/department-workspace";
+export { fetchTenantDepartmentsDirectory } from "@/lib/department-workspace-api";
+
 /** Notifications & alerts (Edge Function `notifications-api` + Realtime). */
 export {
   bulkUpdateNotifications,

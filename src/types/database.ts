@@ -418,6 +418,7 @@ export interface Database {
           company_id: string;
           name: string;
           owner_user_id: string | null;
+          department_id: string | null;
           definition: Json;
           status: string;
           created_at: string;
@@ -428,6 +429,7 @@ export interface Database {
           company_id: string;
           name?: string;
           owner_user_id?: string | null;
+          department_id?: string | null;
           definition?: Json;
           status?: string;
           created_at?: string;
@@ -438,6 +440,7 @@ export interface Database {
           company_id?: string;
           name?: string;
           owner_user_id?: string | null;
+          department_id?: string | null;
           definition?: Json;
           status?: string;
           created_at?: string;
@@ -911,6 +914,7 @@ export interface Database {
           mode: string;
           title: string | null;
           metadata: Json;
+          department_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -923,6 +927,7 @@ export interface Database {
           mode?: string;
           title?: string | null;
           metadata?: Json;
+          department_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -935,6 +940,7 @@ export interface Database {
           mode?: string;
           title?: string | null;
           metadata?: Json;
+          department_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };

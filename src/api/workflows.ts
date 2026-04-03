@@ -57,11 +57,13 @@ function asWorkflowDefinition(raw: unknown): WorkflowDefinition {
 export async function fetchWorkflows(params?: {
   status?: string;
   search?: string;
+  departmentId?: string;
 }): Promise<WorkflowRow[]> {
   const { data, error } = await invokeWorkflowsApi<WorkflowRow[]>({
     op: "workflows.list",
     status: params?.status,
     search: params?.search,
+    departmentId: params?.departmentId,
   });
   if (error) return [];
   const list = Array.isArray(data) ? data : [];
@@ -87,12 +89,14 @@ export async function createWorkflow(payload: {
   name: string;
   definition: WorkflowDefinition;
   status?: string;
+  departmentId?: string | null;
 }): Promise<WorkflowRow | null> {
   const { data, error } = await invokeWorkflowsApi<WorkflowRow>({
     op: "workflows.create",
     name: payload.name,
     definition: payload.definition,
     status: payload.status,
+    departmentId: payload.departmentId,
   });
   if (error || !data) return null;
   return {
@@ -106,6 +110,7 @@ export async function updateWorkflow(payload: {
   name?: string;
   definition?: WorkflowDefinition;
   status?: string;
+  departmentId?: string | null;
 }): Promise<WorkflowRow | null> {
   const { data, error } = await invokeWorkflowsApi<WorkflowRow>({
     op: "workflows.update",
@@ -113,6 +118,7 @@ export async function updateWorkflow(payload: {
     name: payload.name,
     definition: payload.definition,
     status: payload.status,
+    departmentId: payload.departmentId,
   });
   if (error || !data) return null;
   return {
@@ -148,12 +154,14 @@ export async function runWorkflow(payload: {
   workflowId: string;
   testMode?: boolean;
   correlationId?: string;
+  departmentId?: string;
 }): Promise<WorkflowRunRow | null> {
   const { data, error } = await invokeWorkflowsApi<WorkflowRunRow>({
     op: "workflows.run",
     workflowId: payload.workflowId,
     testMode: payload.testMode,
     correlationId: payload.correlationId,
+    departmentId: payload.departmentId,
   });
   if (error || !data) return null;
   return data;

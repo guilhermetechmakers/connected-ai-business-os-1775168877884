@@ -163,6 +163,7 @@ export type DepartmentWorkspaceSnapshot = {
   tasks: UnifiedEntityRow[];
   documents: UnifiedEntityRow[];
   kpis: UnifiedEntityRow[];
+  workflows: UnifiedEntityRow[];
 };
 
 export type ActivityLogRow = {

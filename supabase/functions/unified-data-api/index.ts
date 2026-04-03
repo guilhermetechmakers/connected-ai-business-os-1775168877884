@@ -867,6 +867,7 @@ serve(async (req) => {
         const tasks = list.filter((x) => x.entity_type === "Task");
         const docs = list.filter((x) => x.entity_type === "Document");
         const kpis = list.filter((x) => x.entity_type === "KPI");
+        const workflows = list.filter((x) => x.entity_type === "Workflow");
 
         return new Response(
           JSON.stringify({
@@ -876,6 +877,7 @@ serve(async (req) => {
               tasks,
               documents: docs,
               kpis,
+              workflows,
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },
