@@ -2077,6 +2077,114 @@ export interface Database {
           created_at?: string;
         };
       };
+      marketing_pricing_tiers: {
+        Row: {
+          id: string;
+          slug: string | null;
+          name: string;
+          display_price: string;
+          period: string;
+          features: string[];
+          cta_label: string;
+          cta_href: string | null;
+          is_highlighted: boolean;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          slug?: string | null;
+          name: string;
+          display_price: string;
+          period?: string;
+          features?: string[];
+          cta_label?: string;
+          cta_href?: string | null;
+          is_highlighted?: boolean;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          slug?: string | null;
+          name?: string;
+          display_price?: string;
+          period?: string;
+          features?: string[];
+          cta_label?: string;
+          cta_href?: string | null;
+          is_highlighted?: boolean;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      marketing_feature_highlights: {
+        Row: {
+          id: string;
+          icon_key: string;
+          title: string;
+          description: string;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          icon_key?: string;
+          title: string;
+          description: string;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          icon_key?: string;
+          title?: string;
+          description?: string;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      marketing_testimonials: {
+        Row: {
+          id: string;
+          logo_url: string | null;
+          quote: string;
+          author: string;
+          role: string;
+          company_key: string | null;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          logo_url?: string | null;
+          quote: string;
+          author: string;
+          role: string;
+          company_key?: string | null;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          logo_url?: string | null;
+          quote?: string;
+          author?: string;
+          role?: string;
+          company_key?: string | null;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
     Views: {
       v_dashboard_entity_rollups: {

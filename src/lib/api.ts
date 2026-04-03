@@ -1,5 +1,13 @@
 import { supabase } from "@/lib/supabase";
 
+/** Public marketing content (native fetch, no auth). */
+export {
+  fetchLogoAssets,
+  fetchMarketingFeatureHighlights,
+  fetchMarketingPricingTiers,
+  fetchMarketingTestimonials,
+} from "@/lib/public-content-fetch";
+
 const getBaseUrl = () =>
   import.meta.env.VITE_API_URL ?? "http://localhost:3000/api";
 

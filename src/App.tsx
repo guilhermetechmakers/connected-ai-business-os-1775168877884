@@ -53,6 +53,7 @@ export default function App() {
     <AppProviders>
       <Routes>
         <Route path="/" element={<LandingPage />} />
+        <Route path="/404" element={<NotFoundPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
         <Route path="/onboarding/signup" element={<SignupInviteAcceptancePage />} />
@@ -121,6 +122,7 @@ export default function App() {
             <Route index element={<SearchPage />} />
           </Route>
         </Route>
+        <Route path="/404" element={<NotFoundPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppProviders>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" fill="none" viewBox="0 0 200 40" role="img" aria-label="Connected AI Business OS">
+  <rect width="36" height="36" x="0" y="2" fill="rgb(154 208 255)" rx="10" opacity="0.2"/>
+  <path fill="rgb(21 78 120)" d="M10 12h16v3H10v-3Zm0 6.5h12v3H10v-3Zm0 6.5h14v3H10v-3Z"/>
+  <text x="44" y="27" fill="rgb(8 16 23)" font-family="system-ui,sans-serif" font-size="15" font-weight="800">Connected</text>
+  <text x="128" y="27" fill="rgb(21 78 120)" font-family="system-ui,sans-serif" font-size="15" font-weight="800">AI</text>
+  <text x="148" y="27" fill="rgb(8 16 23)" font-family="system-ui,sans-serif" font-size="15" font-weight="800">OS</text>
+</svg>
