@@ -6,9 +6,9 @@ import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/animated-page";
-import { ActivitySnapshot } from "@/components/profile/activity-snapshot";
-import { ApiKeysPanel } from "@/components/profile/api-keys-panel";
-import { ConnectedAccountsPanel } from "@/components/profile/connected-accounts-panel";
+import { ActivitySnapshotCard } from "./activity-snapshot-card";
+import { ApiKeysCard } from "./api-keys-card";
+import { ConnectedAccountsCard } from "./connected-accounts-card";
 import { SsoLinkingPanel } from "@/components/profile/sso-linking-panel";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
@@ -17,8 +17,10 @@ import { Form } from "@/components/ui/form";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { restPatchTenantUserProfile } from "@/api/tenant-user-profile-rest";
 import { useAuth } from "@/contexts/auth-context";
 import { invokeAuthApi } from "@/lib/auth-api";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 import { AuthenticationMethodsCard } from "./authentication-methods-card";
 import { NotificationPreferencesCard } from "./notification-preferences-card";
@@ -65,6 +67,9 @@ export function UserProfilePage() {
         },
   });
 
+  const tenantIdForRest = profileBundle?.profile?.company_id ?? "";
+  const userIdForRest = profileBundle?.profile?.id ?? user?.id ?? "";
+
   const updateMutation = useMutation({
     mutationFn: async (vals: ProfileEditorForm) => {
       const basePrefs =
@@ -92,6 +97,18 @@ export function UserProfilePage() {
         phone: vals.phone?.trim() ?? "",
         address: vals.address?.trim() ?? "",
       };
+      if (isSupabaseConfigured && tenantIdForRest && userIdForRest) {
+        await restPatchTenantUserProfile(tenantIdForRest, userIdForRest, {
+          displayName: vals.displayName,
+          avatarUrl: vals.avatarUrl,
+          preferences,
+          jobTitle: vals.jobTitle?.trim() ?? "",
+          department: vals.department?.trim() ?? "",
+          contactInfo,
+          bio: vals.bio?.trim() ?? "",
+        });
+        return;
+      }
       await invokeAuthApi<{ profile: unknown }>({
         op: "profile.update",
         displayName: vals.displayName,
@@ -115,8 +132,8 @@ export function UserProfilePage() {
   const securityEvents = profileBundle?.securityEvents ?? [];
   const profileActivity = profileBundle?.profileActivity ?? [];
 
-  const tenantId = profileBundle?.profile?.company_id ?? "";
-  const userId = profileBundle?.profile?.id ?? user?.id ?? "";
+  const tenantId = tenantIdForRest;
+  const userId = userIdForRest;
 
   return (
     <AnimatedPage className="space-y-8">
@@ -183,7 +200,11 @@ export function UserProfilePage() {
           </TabsContent>
 
           <TabsContent value="security" className="space-y-6">
-            <AuthenticationMethodsCard onRefresh={refreshProfileBundle} />
+            <AuthenticationMethodsCard
+              tenantId={tenantId}
+              userId={userId}
+              onRefresh={refreshProfileBundle}
+            />
           </TabsContent>
 
           <TabsContent value="access" className="space-y-6">
@@ -193,7 +214,7 @@ export function UserProfilePage() {
               </CardHeader>
               <CardContent className="space-y-6">
                 <SsoLinkingPanel />
-                <ConnectedAccountsPanel
+                <ConnectedAccountsCard
                   accounts={externalAccounts}
                   onChanged={refreshProfileBundle}
                 />
@@ -204,7 +225,7 @@ export function UserProfilePage() {
                 <CardTitle className="text-base">API keys</CardTitle>
               </CardHeader>
               <CardContent>
-                <ApiKeysPanel keys={apiKeys} onChanged={refreshProfileBundle} />
+                <ApiKeysCard keys={apiKeys} onChanged={refreshProfileBundle} />
               </CardContent>
             </Card>
           </TabsContent>
@@ -215,7 +236,7 @@ export function UserProfilePage() {
                 <CardTitle className="text-base">Activity snapshot</CardTitle>
               </CardHeader>
               <CardContent>
-                <ActivitySnapshot
+                <ActivitySnapshotCard
                   securityEvents={securityEvents}
                   profileActivity={profileActivity}
                   tenantId={tenantId}

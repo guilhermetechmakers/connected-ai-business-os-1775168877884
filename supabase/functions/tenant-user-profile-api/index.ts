@@ -95,6 +95,10 @@ function parsePath(raw: string): PathCtx | null {
   if (m2) {
     return { method: "GET", tenantId: m2[1], userId: m2[2] };
   }
+  const m2p = /^PATCH\s+\/tenants\/([^/]+)\/users\/([^/]+)\/auth-methods$/i.exec(s);
+  if (m2p) {
+    return { method: "PATCH", tenantId: m2p[1], userId: m2p[2] };
+  }
   const m3 =
     /^(GET|PATCH)\s+\/tenants\/([^/]+)\/users\/([^/]+)\/notifications$/i.exec(s);
   if (m3) {
@@ -237,6 +241,21 @@ serve(async (req) => {
       }
     }
 
+    if (/auth-methods$/i.test(path) && method === "PATCH") {
+      const raw = body.authMethods;
+      const authMethods = Array.isArray(raw)
+        ? raw.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+        : [];
+      if (authMethods.length === 0) {
+        return json({ error: "authMethods must be a non-empty string array" }, 400);
+      }
+      const fwd = await forwardAuthApi(supabaseUrl, anonKey, authHeader, {
+        op: "profile.update",
+        authMethods,
+      });
+      return json(fwd.data, fwd.status);
+    }
+
     if (/auth-methods$/i.test(path) && method === "GET") {
       const methods = Array.isArray(profile.auth_methods)
         ? (profile.auth_methods as string[])
@@ -244,7 +263,9 @@ serve(async (req) => {
       return json({
         data: {
           passwordEnabled: methods.map((m) => m.toLowerCase()).includes("password"),
-          oauthEnabled: methods.some((m) => ["oauth", "google", "microsoft"].includes(m.toLowerCase())),
+          oauthEnabled: methods.some((m) =>
+            ["oauth", "google", "microsoft", "saml", "oidc"].includes(m.toLowerCase()),
+          ),
           methods,
           mfa: { totpEnabled: profile.totp_enabled === true },
         },

@@ -22,6 +22,10 @@ function pathAuthMethodsGet(tenantId: string, userId: string) {
   return `GET /tenants/${tenantId}/users/${userId}/auth-methods`;
 }
 
+function pathAuthMethodsPatch(tenantId: string, userId: string) {
+  return `PATCH /tenants/${tenantId}/users/${userId}/auth-methods`;
+}
+
 function pathNotificationsGet(tenantId: string, userId: string) {
   return `GET /tenants/${tenantId}/users/${userId}/notifications`;
 }
@@ -102,6 +106,22 @@ export async function restGetAuthMethods(
     ...data,
     methods,
   };
+}
+
+export async function restPatchAuthMethods(
+  tenantId: string,
+  userId: string,
+  authMethods: string[],
+): Promise<unknown> {
+  const list = Array.isArray(authMethods)
+    ? authMethods.filter((s) => typeof s === "string" && s.trim().length > 0)
+    : [];
+  const { data, error } = await invokeTenantUserProfileRest<unknown>({
+    path: pathAuthMethodsPatch(tenantId, userId),
+    body: { authMethods: list },
+  });
+  if (error) throw new Error(error);
+  return data;
 }
 
 export async function restGetNotificationEnvelope(

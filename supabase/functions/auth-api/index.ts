@@ -110,6 +110,7 @@ const opSchema = z.discriminatedUnion("op", [
     department: z.string().max(200).optional(),
     contactInfo: z.record(z.string(), z.unknown()).optional(),
     bio: z.string().max(8000).optional(),
+    authMethods: z.array(z.string().min(1).max(64)).min(1).max(16).optional(),
   }),
   z.object({
     op: z.literal("apikeys.create"),
@@ -439,6 +440,38 @@ function hasTenantAdminRole(roles: string[]): boolean {
     }
   }
   return false;
+}
+
+function validateAuthMethodsForProfile(
+  requested: string[],
+  allowedCompanyMethods: string[] | null | undefined,
+): { ok: true; value: string[] } | { ok: false; message: string } {
+  const allow = Array.isArray(allowedCompanyMethods)
+    ? allowedCompanyMethods.map((a) => String(a).toLowerCase())
+    : [];
+  const hasPassword = allow.some((a) => a === "email" || a === "password");
+  const hasOAuth = allow.some((a) =>
+    ["google", "microsoft", "oauth", "saml", "oidc"].includes(a),
+  );
+  const out = new Set<string>();
+  for (const r of requested) {
+    const x = String(r).toLowerCase();
+    if (x === "password" && hasPassword) out.add("password");
+    if (
+      (x === "oauth" || x === "google" || x === "microsoft" || x === "saml" || x === "oidc") &&
+      hasOAuth
+    ) {
+      out.add("oauth");
+    }
+  }
+  const arr = [...out];
+  if (arr.length === 0) {
+    return {
+      ok: false,
+      message: "At least one sign-in method allowed by your organization must remain enabled",
+    };
+  }
+  return { ok: true, value: arr };
 }
 
 async function fetchProfileBundle(admin: SupabaseClient, userId: string) {
@@ -1252,6 +1285,18 @@ serve(async (req) => {
         if (parsed.department !== undefined) patch.department = parsed.department.trim() || null;
         if (parsed.contactInfo !== undefined) patch.contact_info = parsed.contactInfo;
         if (parsed.bio !== undefined) patch.bio = parsed.bio.trim() || null;
+        if (parsed.authMethods !== undefined) {
+          const bundle = await fetchProfileBundle(admin, userId);
+          const allowed = bundle.company?.allowed_auth_methods as string[] | undefined;
+          const checked = validateAuthMethodsForProfile(parsed.authMethods, allowed);
+          if (!checked.ok) {
+            return jsonResponse(
+              { data: null, error: { message: checked.message }, meta: {} },
+              400,
+            );
+          }
+          patch.auth_methods = checked.value;
+        }
         const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
         if (uErr) {
           return jsonResponse({

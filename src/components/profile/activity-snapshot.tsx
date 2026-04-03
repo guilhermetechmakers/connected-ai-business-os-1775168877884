@@ -150,8 +150,12 @@ export function ActivitySnapshot({
   }, [merged, rangeCutoff, deferredType]);
 
   const chartData = useMemo(
-    () => bucketLast7Days(securityEvents, profileActivity ?? []),
-    [securityEvents, profileActivity],
+    () =>
+      bucketLast7Days(securityEvents, [
+        ...(Array.isArray(profileActivity) ? profileActivity : []),
+        ...(Array.isArray(apiActivity) ? apiActivity : []),
+      ]),
+    [securityEvents, profileActivity, apiActivity],
   );
 
   const eventTypeOptions = useMemo(() => {
@@ -296,7 +300,7 @@ export function ActivitySnapshot({
                     borderRadius: 8,
                   }}
                 />
-                <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="count" fill="#00D27A" radius={[4, 4, 0, 0]} maxBarSize={28} />
               </BarChart>
             </ResponsiveContainer>
           </div>

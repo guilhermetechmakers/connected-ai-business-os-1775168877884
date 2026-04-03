@@ -25,6 +25,11 @@ export type TenantAuthMethodsPayload = {
   mfa: { totpEnabled: boolean };
 };
 
+/** PATCH /auth-methods body (tenant-user-profile-api). */
+export type TenantAuthMethodsPatchBody = {
+  authMethods: string[];
+};
+
 export type TenantActivitiesQuery = {
   userId?: string;
   range?: "7d" | "30d" | "90d" | "all";
