@@ -93,6 +93,9 @@ const opSchema = z.discriminatedUnion("op", [
   }),
   z.object({ op: z.literal("onboarding.templates.adminList") }),
   z.object({
+    op: z.literal("onboarding.integrations.suggestions"),
+  }),
+  z.object({
     op: z.literal("onboarding.company.apply"),
     legalName: z.string().min(1).max(200),
     displayName: z.string().min(1).max(200),
@@ -102,6 +105,14 @@ const opSchema = z.discriminatedUnion("op", [
     departmentNames: z.array(z.string().min(1).max(120)).min(1).max(40),
     templateId: z.string().uuid().optional(),
     suggestedIntegrationKeys: z.array(z.string().max(80)).max(20).optional(),
+    addressLine1: z.string().max(200).optional(),
+    addressLine2: z.string().max(200).optional(),
+    city: z.string().max(120).optional(),
+    region: z.string().max(120).optional(),
+    postalCode: z.string().max(32).optional(),
+    website: z.string().max(500).optional(),
+    logoUrl: z.string().max(2000).optional(),
+    taxId: z.string().max(80).optional(),
   }),
 ]);
 
@@ -461,8 +472,98 @@ async function handleOp(
       const list = Array.isArray(data) ? data : [];
       return json({ data: list });
     }
+    case "onboarding.integrations.suggestions": {
+      const catalog: {
+        provider: string;
+        label: string;
+        type: "OAuth" | "APIKey";
+        sampleMappings: Record<string, string>;
+      }[] = [
+        {
+          provider: "slack",
+          label: "Slack",
+          type: "OAuth",
+          sampleMappings: { "channel.id": "Conversation.externalId", "message.text": "Message.body" },
+        },
+        {
+          provider: "hubspot",
+          label: "HubSpot",
+          type: "OAuth",
+          sampleMappings: { "contact.email": "Contact.email", "deal.dealstage": "Opportunity.stage" },
+        },
+        {
+          provider: "google_drive",
+          label: "Google Drive",
+          type: "OAuth",
+          sampleMappings: { "file.id": "Document.externalId", "file.name": "Document.title" },
+        },
+        {
+          provider: "salesforce",
+          label: "Salesforce",
+          type: "OAuth",
+          sampleMappings: { "Account.Id": "Account.externalId", "Opportunity.StageName": "Opportunity.stage" },
+        },
+        {
+          provider: "quickbooks",
+          label: "QuickBooks",
+          type: "APIKey",
+          sampleMappings: { "Invoice.Id": "Document.externalId", "Line.Amount": "Opportunity.amount" },
+        },
+      ];
+      const [{ data: intRows }, { data: connRows }] = await Promise.all([
+        supabase.from("integrations").select("provider, status").eq("company_id", companyId),
+        supabase.from("connectors").select("provider_key, status").eq("company_id", companyId),
+      ]);
+      const connected = new Set<string>();
+      for (const r of Array.isArray(connRows) ? connRows : []) {
+        const row = r as { provider_key?: string; status?: string };
+        const st = String(row.status ?? "").toLowerCase();
+        if (["connected", "healthy", "active"].includes(st)) {
+          if (row.provider_key) connected.add(row.provider_key);
+        }
+      }
+      for (const r of Array.isArray(intRows) ? intRows : []) {
+        const row = r as { provider?: string; status?: string };
+        const st = String(row.status ?? "").toLowerCase();
+        if (["connected", "healthy", "active", "ok"].includes(st)) {
+          if (row.provider) connected.add(row.provider);
+        }
+      }
+      const data = catalog.map((c) => ({
+        provider: c.provider,
+        label: c.label,
+        type: c.type,
+        status: connected.has(c.provider) ? "connected" : "not_connected",
+        sampleMappings: c.sampleMappings,
+      }));
+      return json({ data });
+    }
     case "onboarding.company.apply": {
       if (!isCompanyAdmin(roles)) return json({ error: "Forbidden" }, 403);
+      const { data: existingCo, error: loadErr } = await supabase.from("companies").select("settings").eq(
+        "id",
+        companyId,
+      ).maybeSingle();
+      if (loadErr) return json({ error: loadErr.message }, 400);
+      const prevSettings =
+        existingCo?.settings &&
+          typeof existingCo.settings === "object" &&
+          !Array.isArray(existingCo.settings)
+          ? (existingCo.settings as Record<string, unknown>)
+          : {};
+      const onboardingProfile: Record<string, unknown> = {};
+      if (body.addressLine1 !== undefined) onboardingProfile.addressLine1 = body.addressLine1;
+      if (body.addressLine2 !== undefined) onboardingProfile.addressLine2 = body.addressLine2;
+      if (body.city !== undefined) onboardingProfile.city = body.city;
+      if (body.region !== undefined) onboardingProfile.region = body.region;
+      if (body.postalCode !== undefined) onboardingProfile.postalCode = body.postalCode;
+      if (body.website !== undefined) onboardingProfile.website = body.website;
+      if (body.logoUrl !== undefined) onboardingProfile.logoUrl = body.logoUrl;
+      if (body.taxId !== undefined) onboardingProfile.taxId = body.taxId;
+      const mergedSettings = {
+        ...prevSettings,
+        onboarding_profile: onboardingProfile,
+      };
       const patch = {
         legal_name: body.legalName,
         display_name: body.displayName,
@@ -470,6 +571,7 @@ async function handleOp(
         country: body.country ?? null,
         timezone: body.timezone,
         currency: body.currency,
+        settings: mergedSettings,
         onboarding_completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -610,6 +712,13 @@ serve(async (req) => {
         roles,
         body,
       );
+    }
+
+    if (body.op === "onboarding.integrations.suggestions") {
+      if (!company_id) {
+        return json({ error: "Profile missing company" }, 400);
+      }
+      return await handleOp(supabase, userId, company_id, roles, body);
     }
 
     if (!company_id) {

@@ -756,6 +756,38 @@ export interface Database {
           updated_at?: string;
         };
       };
+      email_templates: {
+        Row: {
+          id: string;
+          company_id: string;
+          template_key: string;
+          subject: string;
+          body: string;
+          placeholders: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          template_key: string;
+          subject: string;
+          body: string;
+          placeholders?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          template_key?: string;
+          subject?: string;
+          body?: string;
+          placeholders?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
       ai_conversations: {
         Row: {
           id: string;

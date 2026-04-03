@@ -44,6 +44,7 @@ import PasswordResetPage from "@/pages/password-reset-page";
 import PrivacyPage from "@/pages/privacy-page";
 import ServerErrorPage from "@/pages/server-error-page";
 import SignupPage from "@/pages/signup-page";
+import SignupInviteAcceptancePage from "@/pages/signup-invite-acceptance-page";
 import SuccessPage from "@/pages/success-page";
 import TermsPage from "@/pages/terms-page";
 
@@ -54,6 +55,7 @@ export default function App() {
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/onboarding/signup" element={<SignupInviteAcceptancePage />} />
         <Route path="/password-reset" element={<PasswordResetPage />} />
         <Route path="/verify-email" element={<EmailVerificationPage />} />
         <Route path="/onboarding/company" element={<CompanySetupPage />} />

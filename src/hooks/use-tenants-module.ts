@@ -10,6 +10,7 @@ import {
   createTenantAdminModule,
   deleteOnboardingTemplateAdmin,
   deprovisionTenantAdmin,
+  fetchOnboardingIntegrationSuggestions,
   fetchOnboardingTemplates,
   fetchOnboardingTemplatesAdmin,
   fetchTenantAdminDetail,
@@ -35,6 +36,8 @@ export const tenancyQueryKeys = {
     [...tenancyQueryKeys.root, "onboarding-templates", type ?? "all"] as const,
   integrationMonitor: (companyId: string) =>
     [...tenancyQueryKeys.root, "integration-monitor", companyId] as const,
+  integrationSuggestions: () =>
+    [...tenancyQueryKeys.root, "integration-suggestions"] as const,
 };
 
 export function useTenantsAdminListQuery(params: {
@@ -129,6 +132,15 @@ export function useOnboardingTemplatesQuery(
     queryKey: tenancyQueryKeys.onboardingTemplates(templateType),
     queryFn: () => fetchOnboardingTemplates({ templateType }),
     enabled: enabled && isSupabaseConfigured,
+    retry: false,
+  });
+}
+
+export function useOnboardingIntegrationSuggestionsQuery(enabled = true) {
+  return useQuery({
+    queryKey: tenancyQueryKeys.integrationSuggestions(),
+    queryFn: fetchOnboardingIntegrationSuggestions,
+    enabled,
     retry: false,
   });
 }

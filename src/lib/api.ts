@@ -190,6 +190,16 @@ export {
   fetchAdminCrossTenantActivity,
 } from "@/lib/admin-console-api";
 
+/** Transactional email templates (Edge Function `transactional-email-api`). */
+export {
+  cloneEmailTemplate,
+  fetchEmailTemplatesList,
+  previewEmailTemplate,
+  upsertEmailTemplate,
+  type EmailTemplateBuiltin,
+  type EmailTemplateRow,
+} from "@/api/transactional-email";
+
 /** Multi-tenant company module (Edge Function `tenants-api` + Supabase RLS). */
 export {
   applyOnboardingCompany,

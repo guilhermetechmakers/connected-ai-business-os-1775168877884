@@ -42,6 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BrandingPanel } from "@/components/settings/branding-panel";
+import { EmailTemplatesManager } from "@/components/settings/email-templates-manager";
 import {
   AlertRulesTab,
   NotificationSchedulesTab,
@@ -75,6 +76,7 @@ type CredentialForm = z.infer<typeof credentialSchema>;
 const sections = [
   "Company",
   "Users & roles",
+  "Email templates",
   "Integrations",
   "Notifications",
   "Alert rules",
@@ -303,6 +305,10 @@ export default function SettingsPage() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="Email templates">
+          <EmailTemplatesManager />
         </TabsContent>
 
         <TabsContent value="Integrations" className="space-y-6">

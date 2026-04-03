@@ -1,4 +1,5 @@
 import { invokeTenantsApi } from "@/lib/tenants-api";
+import type { OnboardingIntegrationSuggestion } from "@/types/onboarding-domain";
 import type {
   OnboardingTemplateRow,
   TenantCompanyRecord,
@@ -250,6 +251,67 @@ export async function deleteOnboardingTemplateAdmin(
   return !error && data !== null;
 }
 
+function asIntegrationSuggestions(raw: unknown): OnboardingIntegrationSuggestion[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is OnboardingIntegrationSuggestion => {
+    if (!x || typeof x !== "object") return false;
+    const o = x as Record<string, unknown>;
+    return typeof o.provider === "string" && typeof o.label === "string";
+  });
+}
+
+const STATIC_INTEGRATION_SUGGESTIONS: OnboardingIntegrationSuggestion[] = [
+  {
+    provider: "slack",
+    label: "Slack",
+    type: "OAuth",
+    status: "not_connected",
+    sampleMappings: { "channel.id": "Conversation.externalId" },
+  },
+  {
+    provider: "hubspot",
+    label: "HubSpot",
+    type: "OAuth",
+    status: "not_connected",
+    sampleMappings: { "contact.email": "Contact.email" },
+  },
+  {
+    provider: "google_drive",
+    label: "Google Drive",
+    type: "OAuth",
+    status: "not_connected",
+    sampleMappings: { "file.id": "Document.externalId" },
+  },
+  {
+    provider: "salesforce",
+    label: "Salesforce",
+    type: "OAuth",
+    status: "not_connected",
+    sampleMappings: { "Account.Id": "Account.externalId" },
+  },
+  {
+    provider: "quickbooks",
+    label: "QuickBooks",
+    type: "APIKey",
+    status: "not_connected",
+    sampleMappings: { "Invoice.Id": "Document.externalId" },
+  },
+];
+
+export async function fetchOnboardingIntegrationSuggestions(): Promise<
+  OnboardingIntegrationSuggestion[]
+> {
+  const { data, error } = await invokeTenantsApi<{ data?: unknown }>({
+    op: "onboarding.integrations.suggestions",
+  });
+  if (error || !data || typeof data !== "object") {
+    return STATIC_INTEGRATION_SUGGESTIONS;
+  }
+  const list = (data as { data?: unknown }).data;
+  const parsed = asIntegrationSuggestions(list);
+  return parsed.length > 0 ? parsed : STATIC_INTEGRATION_SUGGESTIONS;
+}
+
 export async function applyOnboardingCompany(payload: {
   legalName: string;
   displayName: string;
@@ -259,6 +321,14 @@ export async function applyOnboardingCompany(payload: {
   departmentNames: string[];
   templateId?: string;
   suggestedIntegrationKeys?: string[];
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  website?: string;
+  logoUrl?: string;
+  taxId?: string;
 }): Promise<{ departmentsCreated: number } | null> {
   const { data, error } = await invokeTenantsApi<{ data?: unknown }>({
     op: "onboarding.company.apply",
@@ -270,6 +340,14 @@ export async function applyOnboardingCompany(payload: {
     departmentNames: payload.departmentNames,
     templateId: payload.templateId,
     suggestedIntegrationKeys: payload.suggestedIntegrationKeys,
+    addressLine1: payload.addressLine1,
+    addressLine2: payload.addressLine2,
+    city: payload.city,
+    region: payload.region,
+    postalCode: payload.postalCode,
+    website: payload.website,
+    logoUrl: payload.logoUrl,
+    taxId: payload.taxId,
   });
   if (error || !data || typeof data !== "object") return null;
   const inner = (data as { data?: unknown }).data;

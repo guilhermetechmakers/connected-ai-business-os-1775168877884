@@ -1,66 +1,59 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Link, useNavigate } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import { toast } from "sonner";
-import { z } from "zod";
 
 import { AnimatedPage } from "@/components/animated-page";
-import { DepartmentRow } from "@/components/tenancy/department-row";
+import { CompanyProfileForm } from "@/components/onboarding/company-profile-form";
+import { CurrencySelector } from "@/components/onboarding/currency-selector";
+import {
+  DepartmentsTemplateEditor,
+  type DefaultDepartmentTemplate,
+} from "@/components/onboarding/departments-template-editor";
+import { IntegrationsSuggestions } from "@/components/onboarding/integrations-suggestions";
+import { OnboardingActionBar } from "@/components/onboarding/onboarding-action-bar";
+import { OnboardingProgressPanel } from "@/components/onboarding/onboarding-progress-panel";
 import { OnboardingWizardStep } from "@/components/tenancy/onboarding-wizard-step";
 import { PillTag } from "@/components/tenancy/pill-tag";
 import { PublicChrome } from "@/components/layout/public-chrome";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card";
+import { Form } from "@/components/ui/form";
 import { useAuth } from "@/contexts/auth-context";
 import {
   useApplyOnboardingCompanyMutation,
+  useOnboardingIntegrationSuggestionsQuery,
   useOnboardingTemplatesQuery,
+  useUpsertTenantConfigMutation,
 } from "@/hooks/use-tenants-module";
+import {
+  companySetupFormSchema,
+  type CompanySetupFormValues,
+} from "@/lib/company-setup-form-schema";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { cn } from "@/lib/utils";
 import type { OnboardingTemplateRow } from "@/types/tenancy";
+import { TimezoneSelector } from "@/components/onboarding/timezone-selector";
 
-const TOTAL_STEPS = 5;
+const DRAFT_STORAGE_KEY = "caibos.onboarding.company.v1";
 
-const departmentSchema = z.object({ name: z.string().min(1, "Required") });
-
-const formSchema = z.object({
-  legalName: z.string().min(2),
-  displayName: z.string().min(2),
-  country: z.string().max(120).optional(),
-  timezone: z.string(),
-  currency: z.string(),
-  departments: z.array(departmentSchema).min(1, "Add at least one department"),
-  templateId: z.string().uuid().optional(),
-});
-
-type FormValues = z.infer<typeof formSchema>;
-
-const DEFAULT_INTEGRATIONS = [
-  { key: "slack", label: "Slack" },
-  { key: "hubspot", label: "HubSpot" },
-  { key: "google", label: "Google Drive / Calendar" },
-  { key: "quickbooks", label: "QuickBooks" },
+const STEP_LABELS = [
+  "Company profile",
+  "Locale",
+  "Departments",
+  "Integrations",
+  "Templates",
+  "Review",
 ] as const;
+
+const TOTAL_STEPS = STEP_LABELS.length;
+
+const DEFAULT_DEPARTMENT_TEMPLATES: DefaultDepartmentTemplate[] = [
+  { id: "revenue", name: "Revenue", order: 0 },
+  { id: "product", name: "Product", order: 1 },
+  { id: "operations", name: "Operations", order: 2 },
+  { id: "people", name: "People", order: 3 },
+];
 
 function templateIntegrationKeys(tpl: OnboardingTemplateRow | undefined): string[] {
   if (!tpl || !tpl.data || typeof tpl.data !== "object") return [];
@@ -72,6 +65,14 @@ function templateIntegrationKeys(tpl: OnboardingTemplateRow | undefined): string
   return [];
 }
 
+function buildInitialEnabledTemplates(): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const t of DEFAULT_DEPARTMENT_TEMPLATES) {
+    out[t.id] = true;
+  }
+  return out;
+}
+
 export default function CompanySetupPage() {
   const navigate = useNavigate();
   const { session, tenant } = useAuth();
@@ -80,18 +81,32 @@ export default function CompanySetupPage() {
     "slack",
     "hubspot",
   ]);
+  const [enabledTemplateIds, setEnabledTemplateIds] = useState<Record<string, boolean>>(
+    buildInitialEnabledTemplates,
+  );
 
   const templatesQuery = useOnboardingTemplatesQuery("onboarding", true);
   const templates = Array.isArray(templatesQuery.data) ? templatesQuery.data : [];
+  const suggestionsQuery = useOnboardingIntegrationSuggestionsQuery(true);
+  const suggestions = Array.isArray(suggestionsQuery.data) ? suggestionsQuery.data : [];
 
   const applyMutation = useApplyOnboardingCompanyMutation();
+  const upsertDraftMutation = useUpsertTenantConfigMutation();
 
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
+  const form = useForm<CompanySetupFormValues>({
+    resolver: zodResolver(companySetupFormSchema),
     defaultValues: {
       legalName: "",
       displayName: "",
       country: "",
+      addressLine1: "",
+      addressLine2: "",
+      city: "",
+      region: "",
+      postalCode: "",
+      website: "",
+      logoUrl: "",
+      taxId: "",
       timezone: "America/New_York",
       currency: "USD",
       departments: [{ name: "Revenue" }, { name: "Product" }, { name: "Operations" }],
@@ -110,7 +125,86 @@ export default function CompanySetupPage() {
     [templates, templateId],
   );
 
-  const progress = Math.round(((step + 1) / TOTAL_STEPS) * 100);
+  const persistDraftLocal = useCallback(
+    (
+      values: Partial<CompanySetupFormValues>,
+      stepIndex: number,
+      keys: string[],
+      tplEnabled: Record<string, boolean>,
+    ) => {
+      try {
+        const payload = {
+          step: stepIndex,
+          values,
+          integrationKeys: keys,
+          enabledTemplateIds: tplEnabled,
+          savedAt: new Date().toISOString(),
+        };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(payload));
+      } catch {
+        /* ignore quota */
+      }
+    },
+    [],
+  );
+
+  const draftLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (draftLoadedRef.current) return;
+    draftLoadedRef.current = true;
+    try {
+      const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        step?: number;
+        values?: Partial<CompanySetupFormValues>;
+        integrationKeys?: string[];
+        enabledTemplateIds?: Record<string, boolean>;
+      };
+      if (typeof parsed.step === "number" && parsed.step >= 0 && parsed.step < TOTAL_STEPS) {
+        setStep(parsed.step);
+      }
+      if (parsed.values && typeof parsed.values === "object") {
+        form.reset({ ...form.getValues(), ...parsed.values });
+      }
+      if (Array.isArray(parsed.integrationKeys)) {
+        setIntegrationKeys(parsed.integrationKeys);
+      }
+      if (parsed.enabledTemplateIds && typeof parsed.enabledTemplateIds === "object") {
+        setEnabledTemplateIds({ ...buildInitialEnabledTemplates(), ...parsed.enabledTemplateIds });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [form]);
+
+  const saveDraft = useCallback(async () => {
+    const values = form.getValues();
+    persistDraftLocal(values, step, integrationKeys, enabledTemplateIds);
+    if (isSupabaseConfigured && session) {
+      await upsertDraftMutation.mutateAsync({
+        configKey: "onboarding.wizard.draft",
+        configValue: {
+          step,
+          formSnapshot: values,
+          integrationKeys,
+          enabledTemplateIds,
+        },
+      });
+    }
+    toast.success("Draft saved", {
+      description: "Resume anytime from this device or your tenant config.",
+    });
+  }, [
+    form,
+    step,
+    integrationKeys,
+    enabledTemplateIds,
+    persistDraftLocal,
+    session,
+    upsertDraftMutation,
+  ]);
 
   const toggleIntegration = (key: string, on: boolean) => {
     setIntegrationKeys((prev) => {
@@ -138,10 +232,22 @@ export default function CompanySetupPage() {
     }
   };
 
-  const submitFinal = form.handleSubmit(async (values) => {
-    const departmentNames = (values.departments ?? [])
+  const mergeDepartmentNames = (values: CompanySetupFormValues): string[] => {
+    const fromTemplates = DEFAULT_DEPARTMENT_TEMPLATES.filter(
+      (t) => enabledTemplateIds[t.id] !== false,
+    ).map((t) => t.name);
+    const fromFields = (values.departments ?? [])
       .map((d) => d.name.trim())
       .filter((n) => n.length > 0);
+    return Array.from(new Set([...fromTemplates, ...fromFields]));
+  };
+
+  const submitFinal = form.handleSubmit(async (values) => {
+    const departmentNames = mergeDepartmentNames(values);
+    if (departmentNames.length === 0) {
+      toast.error("Add at least one department");
+      return;
+    }
     const res = await applyMutation.mutateAsync({
       legalName: values.legalName.trim(),
       displayName: values.displayName.trim(),
@@ -151,6 +257,14 @@ export default function CompanySetupPage() {
       departmentNames,
       templateId: values.templateId,
       suggestedIntegrationKeys: integrationKeys,
+      addressLine1: values.addressLine1?.trim() || undefined,
+      addressLine2: values.addressLine2?.trim() || undefined,
+      city: values.city?.trim() || undefined,
+      region: values.region?.trim() || undefined,
+      postalCode: values.postalCode?.trim() || undefined,
+      website: values.website?.trim() || undefined,
+      logoUrl: values.logoUrl?.trim() || undefined,
+      taxId: values.taxId?.trim() || undefined,
     });
     if (!res) {
       toast.error("Could not save company setup", {
@@ -158,29 +272,78 @@ export default function CompanySetupPage() {
       });
       return;
     }
+    try {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
     toast.success("Company setup complete", {
-      description: `${res.departmentsCreated} new department(s) added.`,
+      description: `${res.departmentsCreated} new department(s) added. Next: connect integrations.`,
     });
-    navigate("/onboarding/integrations", { replace: true });
+    navigate("/onboarding/integrations?welcome=1", { replace: true });
   });
 
   const needsAuth = isSupabaseConfigured && !session;
 
+  const fieldsByStep: (keyof CompanySetupFormValues)[][] = useMemo(
+    () => [
+      [
+        "legalName",
+        "displayName",
+        "addressLine1",
+        "addressLine2",
+        "city",
+        "region",
+        "postalCode",
+        "country",
+        "website",
+        "logoUrl",
+        "taxId",
+      ],
+      ["timezone", "currency"],
+      ["departments"],
+      [],
+      [],
+      [],
+    ],
+    [],
+  );
+
+  const onFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (step < TOTAL_STEPS - 1) {
+      const toValidate = fieldsByStep[step] ?? [];
+      const ok =
+        toValidate.length === 0 ||
+        (await form.trigger(toValidate as never));
+      if (ok) setStep((s) => Math.min(TOTAL_STEPS - 1, s + 1));
+      return;
+    }
+    void submitFinal();
+  };
+
   return (
     <PublicChrome>
-      <AnimatedPage className="px-6 py-16 lg:px-24">
-        <div className="mx-auto max-w-4xl space-y-8">
+      <AnimatedPage className="relative overflow-hidden px-6 py-16 lg:px-24">
+        <div
+          className="pointer-events-none absolute inset-0 opacity-[0.35]"
+          aria-hidden
+        >
+          <div className="absolute left-1/2 top-0 h-[480px] w-[480px] -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgb(7,18,40)_0%,rgb(11,26,42)_45%,transparent_70%)] blur-2xl" />
+        </div>
+        <div className="relative mx-auto max-w-6xl space-y-8">
           <div className="grid gap-8 lg:grid-cols-12 lg:items-start">
             <div className="space-y-4 lg:col-span-7">
               <p className="text-xs font-semibold uppercase tracking-widest text-primary">
                 Onboarding
               </p>
-              <h1 className="font-display text-4xl font-bold tracking-tight text-foreground md:text-5xl">
+              <h1 className="font-display text-4xl font-extrabold tracking-tight text-foreground md:text-5xl lg:text-6xl">
                 Company <span className="text-primary">setup</span>
               </h1>
-              <p className="max-w-xl text-base leading-relaxed text-muted-foreground">
-                Configure your tenant profile, operating context, and department
-                structure. Suggested integrations prepare the next connect step.
+              <p className="max-w-xl text-base leading-relaxed text-muted-foreground md:text-lg">
+                Configure your tenant profile, operating context, departments, and
+                integration priorities. Save a draft anytime—progress is restored on
+                return.
               </p>
               <div className="flex flex-wrap gap-2">
                 <PillTag variant="accent">Tenant-scoped</PillTag>
@@ -190,40 +353,10 @@ export default function CompanySetupPage() {
                 ) : null}
               </div>
             </div>
-            <Card className="border-border/80 bg-card/95 shadow-card lg:col-span-5">
-              <CardHeader>
-                <CardTitle className="text-lg">Progress</CardTitle>
-                <CardDescription>
-                  Complete all steps before connecting integrations.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Progress value={progress} className="h-2 bg-surface-inner" />
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  {[
-                    "Company profile",
-                    "Locale",
-                    "Departments",
-                    "Templates & connectors",
-                    "Review",
-                  ].map((label, i) => (
-                    <li
-                      key={label}
-                      className={cn(
-                        "flex items-center gap-2",
-                        i === step && "font-medium text-primary",
-                        i < step && "text-success",
-                      )}
-                    >
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full border border-border/60 text-[10px]">
-                        {i < step ? "✓" : i + 1}
-                      </span>
-                      {label}
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
+            <OnboardingProgressPanel
+              stepLabels={[...STEP_LABELS]}
+              currentStep={step}
+            />
           </div>
 
           {needsAuth ? (
@@ -232,85 +365,27 @@ export default function CompanySetupPage() {
                 <p className="text-sm text-muted-foreground">
                   Sign in to save company setup to your tenant.
                 </p>
-                <Button className="mt-4" variant="cta" asChild>
-                  <Link to="/login">Go to login</Link>
-                </Button>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <Button variant="cta" asChild>
+                    <Link to="/login">Go to login</Link>
+                  </Button>
+                  <Button variant="outline" asChild>
+                    <Link to="/onboarding/signup">Create workspace</Link>
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ) : (
             <Form {...form}>
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  if (step < TOTAL_STEPS - 1) {
-                    const fieldsByStep: (keyof FormValues)[][] = [
-                      ["legalName", "displayName", "country"],
-                      ["timezone", "currency"],
-                      ["departments"],
-                      [],
-                      [],
-                    ];
-                    const toValidate = fieldsByStep[step] ?? [];
-                    const ok =
-                      toValidate.length === 0 ||
-                      (await form.trigger(toValidate as never));
-                    if (ok) setStep((s) => s + 1);
-                    return;
-                  }
-                  void submitFinal();
-                }}
-                className="space-y-6"
-              >
+              <form onSubmit={onFormSubmit} className="space-y-6" noValidate>
                 {step === 0 ? (
                   <OnboardingWizardStep
                     step={1}
                     total={TOTAL_STEPS}
                     title="Company profile"
-                    description="Legal and display names establish your tenant record and executive dashboards."
+                    description="Legal entity, address, brand, and tax identifiers feed executive dashboards and compliance."
                   >
-                    <FormField
-                      control={form.control}
-                      name="legalName"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Legal company name</FormLabel>
-                          <FormControl>
-                            <Input className="bg-surface-inner border-border/60" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="displayName"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Display name</FormLabel>
-                          <FormControl>
-                            <Input className="bg-surface-inner border-border/60" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="country"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Country (optional)</FormLabel>
-                          <FormControl>
-                            <Input
-                              className="bg-surface-inner border-border/60"
-                              placeholder="e.g. United States"
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
+                    <CompanyProfileForm control={form.control} />
                   </OnboardingWizardStep>
                 ) : null}
 
@@ -321,63 +396,14 @@ export default function CompanySetupPage() {
                     title="Timezone & currency"
                     description="Operating context for schedules, billing views, and workflow SLAs."
                   >
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <FormField
+                    <div className="grid gap-6 md:grid-cols-2">
+                      <TimezoneSelector<CompanySetupFormValues>
                         control={form.control}
                         name="timezone"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Timezone</FormLabel>
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value}
-                            >
-                              <FormControl>
-                                <SelectTrigger className="bg-surface-inner border-border/60">
-                                  <SelectValue placeholder="Select timezone" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                <SelectItem value="America/New_York">
-                                  America/New_York
-                                </SelectItem>
-                                <SelectItem value="Europe/London">
-                                  Europe/London
-                                </SelectItem>
-                                <SelectItem value="Asia/Singapore">
-                                  Asia/Singapore
-                                </SelectItem>
-                                <SelectItem value="UTC">UTC</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <FormMessage />
-                          </FormItem>
-                        )}
                       />
-                      <FormField
+                      <CurrencySelector<CompanySetupFormValues>
                         control={form.control}
                         name="currency"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Currency</FormLabel>
-                            <Select
-                              onValueChange={field.onChange}
-                              value={field.value}
-                            >
-                              <FormControl>
-                                <SelectTrigger className="bg-surface-inner border-border/60">
-                                  <SelectValue placeholder="Select currency" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                <SelectItem value="USD">USD</SelectItem>
-                                <SelectItem value="EUR">EUR</SelectItem>
-                                <SelectItem value="GBP">GBP</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <FormMessage />
-                          </FormItem>
-                        )}
                       />
                     </div>
                   </OnboardingWizardStep>
@@ -388,30 +414,22 @@ export default function CompanySetupPage() {
                     step={3}
                     total={TOTAL_STEPS}
                     title="Departments"
-                    description="Seed department workspaces; duplicates are skipped automatically."
+                    description="Enable template workspaces and add custom departments. Duplicates are merged on save."
                   >
-                    <div className="space-y-2">
-                      {fields.map((f, index) => (
-                        <DepartmentRow
-                          key={f.id}
-                          index={index}
-                          value={form.watch(`departments.${index}.name`)}
-                          onChange={(v) =>
-                            form.setValue(`departments.${index}.name`, v)
-                          }
-                          onRemove={() => remove(index)}
-                          canRemove={fields.length > 1}
-                        />
-                      ))}
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="border-primary/30"
-                      onClick={() => append({ name: "" })}
-                    >
-                      Add department
-                    </Button>
+                    <DepartmentsTemplateEditor
+                      fields={fields}
+                      append={append}
+                      remove={remove}
+                      watchDepartmentName={(i) => form.watch(`departments.${i}.name`)}
+                      setDepartmentName={(i, v) =>
+                        form.setValue(`departments.${i}.name`, v)
+                      }
+                      defaultTemplates={DEFAULT_DEPARTMENT_TEMPLATES}
+                      enabledTemplateIds={enabledTemplateIds}
+                      onToggleTemplate={(id, checked) =>
+                        setEnabledTemplateIds((prev) => ({ ...prev, [id]: checked }))
+                      }
+                    />
                   </OnboardingWizardStep>
                 ) : null}
 
@@ -419,19 +437,31 @@ export default function CompanySetupPage() {
                   <OnboardingWizardStep
                     step={4}
                     total={TOTAL_STEPS}
-                    title="Templates & suggested integrations"
-                    description="Apply an onboarding template to pre-fill departments and connector priorities."
+                    title="Core integrations"
+                    description="Prioritize connectors for the integration wizard. Status reflects live tenant connections."
+                  >
+                    <IntegrationsSuggestions
+                      items={suggestions}
+                      isLoading={suggestionsQuery.isLoading}
+                      selectedProviders={integrationKeys}
+                      onToggleProvider={toggleIntegration}
+                    />
+                  </OnboardingWizardStep>
+                ) : null}
+
+                {step === 4 ? (
+                  <OnboardingWizardStep
+                    step={5}
+                    total={TOTAL_STEPS}
+                    title="Onboarding templates"
+                    description="Optional accelerants from your platform catalog."
                   >
                     <div className="space-y-3">
-                      <p className="text-sm text-muted-foreground">
-                        Templates (optional)
-                      </p>
                       {templatesQuery.isLoading ? (
                         <p className="text-sm text-muted-foreground">Loading…</p>
                       ) : templates.length === 0 ? (
                         <p className="text-sm text-muted-foreground">
-                          No templates published yet. Continue with defaults
-                          below.
+                          No templates published yet. Continue with your selections.
                         </p>
                       ) : (
                         <div className="grid gap-2">
@@ -460,43 +490,21 @@ export default function CompanySetupPage() {
                         </div>
                       )}
                     </div>
-                    <div className="space-y-3 border-t border-border/60 pt-4">
-                      <p className="text-sm font-medium text-foreground">
-                        Suggested integrations
+                    {selectedTemplate ? (
+                      <p className="text-xs text-muted-foreground">
+                        Template recommends:{" "}
+                        {templateIntegrationKeys(selectedTemplate).join(", ") || "—"}
                       </p>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        {DEFAULT_INTEGRATIONS.map((item) => (
-                          <label
-                            key={item.key}
-                            className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/60 bg-surface-inner/50 p-3 transition-all duration-150 hover:border-primary/30"
-                          >
-                            <Checkbox
-                              checked={integrationKeys.includes(item.key)}
-                              onCheckedChange={(c) =>
-                                toggleIntegration(item.key, c === true)
-                              }
-                            />
-                            <span className="text-sm">{item.label}</span>
-                          </label>
-                        ))}
-                      </div>
-                      {selectedTemplate ? (
-                        <p className="text-xs text-muted-foreground">
-                          Template also recommends:{" "}
-                          {templateIntegrationKeys(selectedTemplate).join(", ") ||
-                            "—"}
-                        </p>
-                      ) : null}
-                    </div>
+                    ) : null}
                   </OnboardingWizardStep>
                 ) : null}
 
-                {step === 4 ? (
+                {step === 5 ? (
                   <OnboardingWizardStep
-                    step={5}
+                    step={6}
                     total={TOTAL_STEPS}
                     title="Review & confirm"
-                    description="Writes company profile, seeds new departments, and stores integration suggestions for the connect wizard."
+                    description="Writes company profile, onboarding profile JSON, departments, and integration priorities."
                   >
                     <ul className="rounded-xl border border-border/60 bg-surface-inner/40 p-4 text-sm text-muted-foreground">
                       <li>
@@ -508,51 +516,45 @@ export default function CompanySetupPage() {
                         {form.watch("displayName")}
                       </li>
                       <li>
+                        <strong className="text-foreground">Address:</strong>{" "}
+                        {[form.watch("addressLine1"), form.watch("city"), form.watch("country")]
+                          .filter(Boolean)
+                          .join(", ") || "—"}
+                      </li>
+                      <li>
+                        <strong className="text-foreground">Website:</strong>{" "}
+                        {form.watch("website") || "—"}
+                      </li>
+                      <li>
                         <strong className="text-foreground">Locale:</strong>{" "}
                         {form.watch("timezone")} · {form.watch("currency")}
                       </li>
                       <li>
                         <strong className="text-foreground">Departments:</strong>{" "}
-                        {(form.watch("departments") ?? [])
-                          .map((d) => d.name)
-                          .join(", ")}
+                        {mergeDepartmentNames(form.getValues()).join(", ")}
                       </li>
                       <li>
                         <strong className="text-foreground">Integrations:</strong>{" "}
-                        {integrationKeys.join(", ")}
+                        {integrationKeys.length > 0 ? integrationKeys.join(", ") : "—"}
                       </li>
                     </ul>
                   </OnboardingWizardStep>
                 ) : null}
 
-                <div className="flex flex-wrap gap-3">
-                  {step > 0 ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="border-border/60"
-                      onClick={() => setStep((s) => Math.max(0, s - 1))}
-                    >
-                      Back
-                    </Button>
-                  ) : null}
-                  {step < TOTAL_STEPS - 1 ? (
-                    <Button type="submit" variant="cta">
-                      Continue
-                    </Button>
-                  ) : (
-                    <Button
-                      type="submit"
-                      variant="cta"
-                      disabled={applyMutation.isPending}
-                    >
-                      {applyMutation.isPending ? "Saving…" : "Finish setup"}
-                    </Button>
-                  )}
-                  <Button type="button" variant="ghost" asChild>
-                    <Link to="/onboarding/integrations">Skip to integrations</Link>
-                  </Button>
-                </div>
+                <OnboardingActionBar
+                  showBack={step > 0}
+                  onBack={() => setStep((s) => Math.max(0, s - 1))}
+                  isLastStep={step === TOTAL_STEPS - 1}
+                  onSaveDraft={() => void saveDraft()}
+                  isSubmitting={applyMutation.isPending}
+                  continueLabel={
+                    step === TOTAL_STEPS - 1
+                      ? applyMutation.isPending
+                        ? "Saving…"
+                        : "Complete onboarding"
+                      : "Continue"
+                  }
+                />
               </form>
             </Form>
           )}
