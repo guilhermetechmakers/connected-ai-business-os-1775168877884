@@ -101,8 +101,18 @@ export type ExecutiveBriefResult = {
   };
 };
 
+/** Date window applied across dashboard widgets (query keys + future adapter filters). */
+export type DashboardDateRange = {
+  preset: "7d" | "30d" | "90d" | "custom";
+  fromIso: string;
+  toIso: string;
+};
+
 export type DataAdapterContext = {
   companyId: string | null;
   userId: string | null;
   roles: string[];
+  /** Optional scoping for unified rollups / activity when APIs support it. */
+  departmentId?: string | null;
+  dateRange?: DashboardDateRange | null;
 };

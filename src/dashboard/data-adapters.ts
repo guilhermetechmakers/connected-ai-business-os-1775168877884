@@ -15,7 +15,9 @@ const cache = new Map<string, { expires: number; value: unknown }>();
 const DEFAULT_TTL_MS = 30_000;
 
 function cacheKey(adapterKey: string, ctx: DataAdapterContext): string {
-  return `${adapterKey}:${ctx.companyId ?? "none"}:${ctx.userId ?? "none"}`;
+  const dr = ctx.dateRange;
+  const range = dr ? `${dr.preset}:${dr.fromIso}:${dr.toIso}` : "";
+  return `${adapterKey}:${ctx.companyId ?? "none"}:${ctx.userId ?? "none"}:${ctx.departmentId ?? ""}:${range}`;
 }
 
 async function withCache<T>(

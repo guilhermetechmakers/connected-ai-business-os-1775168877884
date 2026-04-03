@@ -71,6 +71,11 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     op: z.literal("dashboard.aiSummary"),
   }),
   z.object({
+    op: z.literal("dashboard.insights"),
+    roleView: z.string().max(64).optional(),
+    datePreset: z.enum(["7d", "30d", "90d"]).optional(),
+  }),
+  z.object({
     op: z.literal("dashboard.executiveBrief"),
     timeframe: z.enum(["7d", "30d", "90d"]).optional(),
   }),
@@ -744,6 +749,97 @@ serve(async (req) => {
               tokenTotals7d: { prompt: promptSum, completion: completionSum, samples: usage.length },
               recentActions: Array.isArray(actRows) ? actRows : [],
               recentPermissionDenials: Array.isArray(denyRows) ? denyRows : [],
+            },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+      case "dashboard.insights": {
+        const apiKey = Deno.env.get("OPENAI_API_KEY");
+        const preset = op.datePreset ?? "7d";
+        const lens = (op.roleView ?? "profile").trim().slice(0, 64);
+        const userRoles = normalizeRoles(profile.roles);
+        const permitted = permittedActionsForRoles(userRoles);
+        const allowedActionIds = permitted.map((a) => a.id);
+
+        const query =
+          `Dashboard insight. Role lens: ${lens}. Window: ${preset}. Summarize operational signals only from provided context.`;
+        const { contextText, citations } = await retrieveRagContext(
+          supabase,
+          companyId,
+          "global",
+          query,
+          12,
+        );
+
+        const id = crypto.randomUUID();
+        let content = "";
+
+        if (!contextText.trim()) {
+          content =
+            "No tenant-grounded context is indexed yet. Connect integrations, sync unified entities, and add documents — then refresh for RAG-backed insights.";
+        } else if (!apiKey) {
+          content =
+            `Indexed context is available (${citations.length} citation(s)). Open AI Workspace for a full conversation; configure OPENAI_API_KEY on ai-api for auto-generated dashboard insights.`;
+        } else {
+          const model = "gpt-4o-mini";
+          const sys =
+            `You summarize internal operations for the Connected AI Business OS. ` +
+            `Output ONLY valid JSON with key "insight" (string, max 3 short sentences). ` +
+            `Use only facts present in the user message context; do not invent metrics. ` +
+            `If context is thin, say what is missing instead of guessing.`;
+          const userPayload = `Role lens: ${lens}. Time window label: ${preset}.\n\nContext:\n${contextText.slice(0, 10000)}`;
+
+          const res = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              response_format: { type: "json_object" },
+              messages: [
+                { role: "system", content: sys },
+                { role: "user", content: userPayload },
+              ],
+            }),
+          });
+          const raw = await res.json() as {
+            choices?: { message?: { content?: string } }[];
+          };
+          const rawContent = raw?.choices?.[0]?.message?.content ?? "{}";
+          try {
+            const parsed = JSON.parse(rawContent) as { insight?: string };
+            content = typeof parsed.insight === "string" ? parsed.insight : rawContent;
+          } catch {
+            content = rawContent;
+          }
+        }
+
+        const citationRefs = citations
+          .map((c) => (typeof c.reference === "string" ? c.reference : c.source))
+          .filter((x): x is string => typeof x === "string" && x.length > 0);
+
+        await supabase.from("activity_logs").insert({
+          company_id: companyId,
+          event_type: "ai.dashboard.insights.served",
+          actor_user_id: user.id,
+          payload: { lens, preset, citationCount: citationRefs.length },
+        });
+
+        return new Response(
+          JSON.stringify({
+            data: {
+              outputs: [
+                {
+                  id,
+                  type: "insight",
+                  content,
+                  citations: citationRefs,
+                  allowedActions: allowedActionIds,
+                },
+              ],
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },

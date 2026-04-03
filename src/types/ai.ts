@@ -59,6 +59,15 @@ export type AiDashboardSummary = {
   }[];
 };
 
+/** Single AI output row for global dashboard (`dashboard.insights` op). */
+export type AiDashboardInsightOutput = {
+  id: string;
+  type: "summary" | "insight" | "action";
+  content: string;
+  citations: string[];
+  allowedActions: string[];
+};
+
 export type AiStreamEvent =
   | { citations: AiSourceCitation[] }
   | { c: string }

@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import type {
   AiChatMode,
   AiConversationRow,
+  AiDashboardInsightOutput,
   AiDashboardSummary,
   AiMessageRow,
   AiPermittedAction,
@@ -134,6 +135,20 @@ export async function executeAiAction(params: {
 
 export async function fetchAiDashboardSummary(): Promise<AiDashboardSummary> {
   return postAiJson<AiDashboardSummary>({ op: "dashboard.aiSummary" });
+}
+
+/** Tenant-scoped dashboard insights with citations + permission-filtered action ids (Edge Function `ai-api`). */
+export async function fetchAiDashboardInsights(params?: {
+  roleView?: string;
+  datePreset?: "7d" | "30d" | "90d";
+}): Promise<AiDashboardInsightOutput[]> {
+  const data = await postAiJson<{ outputs: AiDashboardInsightOutput[] }>({
+    op: "dashboard.insights",
+    roleView: params?.roleView,
+    datePreset: params?.datePreset,
+  });
+  const outputs = data?.outputs;
+  return Array.isArray(outputs) ? outputs : [];
 }
 
 export async function fetchExecutiveBrief(params?: {

@@ -112,6 +112,7 @@ export {
   createAiConversation,
   executeAiAction,
   fetchAiContexts,
+  fetchAiDashboardInsights,
   fetchAiDashboardSummary,
   fetchAiPermissions,
   getAiConversation,
