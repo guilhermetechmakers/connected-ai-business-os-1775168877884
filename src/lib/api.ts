@@ -90,6 +90,9 @@ export class ApiError extends Error {
 
 export { integrationsClient } from "@/lib/integrations-client";
 
+/** Integrations onboarding & connector CRUD (Edge Function `integrations-api`). */
+export { integrationsManagerApi } from "@/lib/integrations-manager-api";
+
 /** Sign-up / invite onboarding (native fetch to `auth-api` for domain suggestions). */
 export {
   fetchDomainSuggestions,

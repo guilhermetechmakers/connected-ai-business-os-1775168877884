@@ -16,9 +16,43 @@ export type ConnectorRow = {
   config_hash: string | null;
   status: string;
   last_sync_at: string | null;
+  last_error_message?: string | null;
+  last_error_remediation?: string | null;
   sync_interval_minutes: number;
   created_at: string;
   updated_at: string;
+};
+
+/** Catalog entry for onboarding / settings (maps to REST catalog concept). */
+export type ProviderCatalogItem = {
+  id: string;
+  name: string;
+  description: string;
+  logoUrl: string | null;
+  supportsOAuth: boolean;
+  supportsApiKey: boolean;
+};
+
+/** Field mapping rule with optional transform (persisted as connector_field_mappings). */
+export type MappingRule = {
+  sourceField: string;
+  targetField: string;
+  targetEntity: string;
+  transformation?: string;
+  required: boolean;
+  sampleValue?: string;
+};
+
+/** Sync job shape (connector_sync_runs + log summary). */
+export type SyncJob = {
+  id: string;
+  integrationId: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  rowsProcessed: number;
+  errors: unknown;
 };
 
 export type ConnectorSyncRun = {
@@ -55,10 +89,15 @@ export type FieldMappingRow = {
 
 export type IntegrationOp =
   | { op: "connectors.list" }
+  | { op: "catalog.list" }
   | {
       op: "connectors.create";
       providerKey: string;
       displayName?: string;
+    }
+  | {
+      op: "connectors.remove";
+      connectorId: string;
     }
   | {
       op: "connectors.update";
@@ -66,6 +105,10 @@ export type IntegrationOp =
       status?: string;
       config?: Record<string, unknown>;
       syncIntervalMinutes?: number;
+    }
+  | {
+      op: "connection.test";
+      connectorId: string;
     }
   | {
       op: "credentials.upsert";

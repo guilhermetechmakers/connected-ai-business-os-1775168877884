@@ -1,7 +1,21 @@
+import { CONNECTOR_PROVIDERS } from "@/lib/connector-registry";
+import { integrationsMock } from "@/lib/integrations-mock";
 import { supabase } from "@/lib/supabase";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { integrationsMock } from "@/lib/integrations-mock";
-import type { IntegrationOp } from "@/types/integrations";
+import type { IntegrationOp, ProviderCatalogItem } from "@/types/integrations";
+
+function mockCatalogList(): { catalog: ProviderCatalogItem[] } {
+  const raw = Array.isArray(CONNECTOR_PROVIDERS) ? CONNECTOR_PROVIDERS : [];
+  const catalog: ProviderCatalogItem[] = raw.map((p) => ({
+    id: p.key,
+    name: p.label,
+    description: p.description,
+    logoUrl: null,
+    supportsOAuth: p.auth === "oauth2" || p.auth === "both",
+    supportsApiKey: p.auth === "api_key" || p.auth === "both",
+  }));
+  return { catalog };
+}
 
 type InvokeResult<T> = T & { error?: string };
 
@@ -25,6 +39,8 @@ async function invokeIntegrations<T>(body: IntegrationOp): Promise<T> {
 
 function simulateIntegrations<T>(body: IntegrationOp): T {
   switch (body.op) {
+    case "catalog.list":
+      return mockCatalogList() as T;
     case "connectors.list":
       return integrationsMock.connectorsList() as T;
     case "health.tenant":
@@ -37,6 +53,14 @@ function simulateIntegrations<T>(body: IntegrationOp): T {
       return integrationsMock.adminOverview() as T;
     case "admin.tenants":
       return integrationsMock.adminTenants() as T;
+    case "connectors.remove":
+      return { ok: true } as T;
+    case "connection.test":
+      return {
+        ok: true,
+        checkedAt: new Date().toISOString(),
+        note: "Local mock — credentials accepted",
+      } as T;
     case "connectors.create":
       return {
         connector: {
@@ -49,6 +73,8 @@ function simulateIntegrations<T>(body: IntegrationOp): T {
           config_hash: null,
           status: "disconnected",
           last_sync_at: null,
+          last_error_message: null,
+          last_error_remediation: null,
           sync_interval_minutes: 360,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -89,6 +115,8 @@ function simulateIntegrations<T>(body: IntegrationOp): T {
           config_hash: null,
           status: body.status ?? "connected",
           last_sync_at: null,
+          last_error_message: null,
+          last_error_remediation: null,
           sync_interval_minutes: body.syncIntervalMinutes ?? 360,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),

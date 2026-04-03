@@ -14,6 +14,56 @@ import {
 import { runProviderSyncStub } from "../_shared/provider-sync-stubs.ts";
 import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
 
+/** Static catalog — keep in sync with `src/lib/connector-registry.ts` provider keys. */
+const PROVIDER_CATALOG: {
+  id: string;
+  name: string;
+  description: string;
+  supportsOAuth: boolean;
+  supportsApiKey: boolean;
+}[] = [
+  {
+    id: "slack",
+    name: "Slack",
+    description:
+      "Post messages, ingest channel events, and attach conversations for AI retrieval.",
+    supportsOAuth: true,
+    supportsApiKey: true,
+  },
+  {
+    id: "google_drive",
+    name: "Google Drive",
+    description:
+      "Index files and metadata into unified Document entities for RAG and dashboards.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "salesforce",
+    name: "Salesforce",
+    description:
+      "Sync Accounts, Contacts, Opportunities, and custom objects with CRUD where permitted.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "hubspot",
+    name: "HubSpot",
+    description:
+      "Ingest contacts, companies, deals, and activities; push updates from workflows.",
+    supportsOAuth: true,
+    supportsApiKey: true,
+  },
+  {
+    id: "quickbooks",
+    name: "QuickBooks Online",
+    description:
+      "Sync customers, invoices, and ledger activity into unified finance entities.",
+    supportsOAuth: false,
+    supportsApiKey: true,
+  },
+];
+
 const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("connectors.list") }),
   z.object({
@@ -65,6 +115,15 @@ const opSchema = z.discriminatedUnion("op", [
   }),
   z.object({
     op: z.literal("mappings.list"),
+    connectorId: z.string().uuid(),
+  }),
+  z.object({ op: z.literal("catalog.list") }),
+  z.object({
+    op: z.literal("connection.test"),
+    connectorId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("connectors.remove"),
     connectorId: z.string().uuid(),
   }),
   z.object({ op: z.literal("admin.tenants") }),
@@ -150,6 +209,18 @@ async function handleOp(
   const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
 
   switch (body.op) {
+    case "catalog.list": {
+      const items = PROVIDER_CATALOG.map((p) => ({
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        logoUrl: null as string | null,
+        supportsOAuth: p.supportsOAuth,
+        supportsApiKey: p.supportsApiKey,
+      }));
+      return json({ catalog: items });
+    }
+
     case "connectors.list": {
       const { data, error } = await supabase
         .from("connectors")
@@ -193,6 +264,118 @@ async function handleOp(
       return json({ connector: data });
     }
 
+    case "connectors.remove": {
+      const { error } = await supabase
+        .from("connectors")
+        .delete()
+        .eq("id", body.connectorId)
+        .eq("company_id", companyId);
+      if (error) return json({ error: error.message }, 400);
+      return json({ ok: true });
+    }
+
+    case "connection.test": {
+      if (!masterKey) {
+        return json({ error: "Server missing CREDENTIALS_MASTER_KEY" }, 500);
+      }
+      const { data: conn, error: cErr } = await supabase
+        .from("connectors")
+        .select("id, provider_key, status")
+        .eq("id", body.connectorId)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (cErr || !conn) return json({ error: "Connector not found" }, 404);
+
+      const catalogItem = PROVIDER_CATALOG.find((p) => p.id === conn.provider_key);
+      const supportsOAuth = catalogItem?.supportsOAuth ?? true;
+      const supportsApiKey = catalogItem?.supportsApiKey ?? false;
+
+      const { data: cred } = await supabase
+        .from("connector_credentials")
+        .select("encrypted_payload")
+        .eq("connector_id", body.connectorId)
+        .maybeSingle();
+
+      let decrypted: Record<string, unknown> = {};
+      if (cred?.encrypted_payload) {
+        try {
+          decrypted = await decryptCredentialsJson(cred.encrypted_payload, masterKey);
+        } catch {
+          decrypted = {};
+        }
+      }
+
+      const hasOAuth =
+        typeof decrypted.client_id === "string" &&
+        decrypted.client_id.length > 0 &&
+        typeof decrypted.client_secret === "string" &&
+        decrypted.client_secret.length > 0;
+      const hasApiKey =
+        typeof decrypted.api_key === "string" && decrypted.api_key.length > 0;
+
+      let ok = false;
+      let message = "";
+      let remediation = "";
+
+      if (supportsOAuth && supportsApiKey) {
+        ok = hasOAuth || hasApiKey;
+        if (!ok) {
+          message = "Missing credentials for this connector.";
+          remediation =
+            "Provide OAuth client ID and secret, or a valid API key, then test again.";
+        }
+      } else if (supportsOAuth) {
+        ok = hasOAuth;
+        if (!ok) {
+          message = "OAuth client credentials incomplete.";
+          remediation =
+            "Enter both Client ID and Client secret from your provider app registration.";
+        }
+      } else {
+        ok = hasApiKey;
+        if (!ok) {
+          message = "API key missing.";
+          remediation = "Paste a valid API key or token from your provider dashboard.";
+        }
+      }
+
+      const now = new Date().toISOString();
+      if (ok) {
+        await supabase
+          .from("connectors")
+          .update({
+            status: "connected",
+            last_error_message: null,
+            last_error_remediation: null,
+            updated_at: now,
+          })
+          .eq("id", body.connectorId)
+          .eq("company_id", companyId);
+        return json({
+          ok: true,
+          checkedAt: now,
+          note: "Stub validation only — no live provider call in template.",
+        });
+      }
+
+      await supabase
+        .from("connectors")
+        .update({
+          status: "error",
+          last_error_message: message,
+          last_error_remediation: remediation,
+          updated_at: now,
+        })
+        .eq("id", body.connectorId)
+        .eq("company_id", companyId);
+
+      return json({
+        ok: false,
+        message,
+        remediation,
+      });
+    }
+
     case "credentials.upsert": {
       if (!masterKey) {
         return json({ error: "Server missing CREDENTIALS_MASTER_KEY" }, 500);
@@ -228,7 +411,12 @@ async function handleOp(
 
       await supabase
         .from("connectors")
-        .update({ status: "connected", updated_at: new Date().toISOString() })
+        .update({
+          status: "connected",
+          last_error_message: null,
+          last_error_remediation: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", body.connectorId);
 
       return json({ ok: true, masked: { note: "Credentials stored encrypted" } });
@@ -328,7 +516,13 @@ async function handleOp(
 
       await supabase
         .from("connectors")
-        .update({ last_sync_at: ended, status: "healthy", updated_at: ended })
+        .update({
+          last_sync_at: ended,
+          status: "healthy",
+          last_error_message: null,
+          last_error_remediation: null,
+          updated_at: ended,
+        })
         .eq("id", body.connectorId);
 
       const syncPayload = {
@@ -430,6 +624,15 @@ async function handleOp(
           .insert(rows);
         if (insErr) return json({ error: insErr.message }, 400);
       }
+      await supabase
+        .from("connectors")
+        .update({
+          last_error_message: null,
+          last_error_remediation: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", body.connectorId)
+        .eq("company_id", companyId);
       return json({ ok: true, count: rows.length });
     }
 

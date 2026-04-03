@@ -1128,6 +1128,8 @@ export interface Database {
           config_hash: string | null;
           status: string;
           last_sync_at: string | null;
+          last_error_message: string | null;
+          last_error_remediation: string | null;
           sync_interval_minutes: number;
           created_at: string;
           updated_at: string;
@@ -1142,6 +1144,8 @@ export interface Database {
           config_hash?: string | null;
           status?: string;
           last_sync_at?: string | null;
+          last_error_message?: string | null;
+          last_error_remediation?: string | null;
           sync_interval_minutes?: number;
           created_at?: string;
           updated_at?: string;
@@ -1156,6 +1160,8 @@ export interface Database {
           config_hash?: string | null;
           status?: string;
           last_sync_at?: string | null;
+          last_error_message?: string | null;
+          last_error_remediation?: string | null;
           sync_interval_minutes?: number;
           created_at?: string;
           updated_at?: string;

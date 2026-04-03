@@ -122,6 +122,40 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     ],
   },
   {
+    key: "quickbooks",
+    label: "QuickBooks Online",
+    description:
+      "Sync customers, invoices, and ledger lines into unified finance KPIs and reports.",
+    capabilities: ["api_key", "rate_limited", "read"],
+    auth: "api_key",
+    defaultMappings: [
+      {
+        sourceField: "customer.id",
+        targetEntity: "Account",
+        targetField: "externalId",
+        dataType: "string",
+      },
+      {
+        sourceField: "customer.displayName",
+        targetEntity: "Account",
+        targetField: "name",
+        dataType: "string",
+      },
+      {
+        sourceField: "invoice.id",
+        targetEntity: "Document",
+        targetField: "externalId",
+        dataType: "string",
+      },
+      {
+        sourceField: "invoice.totalAmt",
+        targetEntity: "Opportunity",
+        targetField: "amount",
+        dataType: "number",
+      },
+    ],
+  },
+  {
     key: "hubspot",
     label: "HubSpot",
     description:

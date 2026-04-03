@@ -11,7 +11,7 @@ import {
   DepartmentsTemplateEditor,
   type DefaultDepartmentTemplate,
 } from "@/components/onboarding/departments-template-editor";
-import { IntegrationsSuggestions } from "@/components/onboarding/integrations-suggestions";
+import { CompanySetupOnboardingPanel } from "@/components/integrations/onboarding/company-setup-onboarding-panel";
 import { OnboardingActionBar } from "@/components/onboarding/onboarding-action-bar";
 import { OnboardingProgressPanel } from "@/components/onboarding/onboarding-progress-panel";
 import { OnboardingWizardStep } from "@/components/tenancy/onboarding-wizard-step";
@@ -212,6 +212,17 @@ export default function CompanySetupPage() {
       if (on) return cur.includes(key) ? cur : [...cur, key];
       return cur.filter((k) => k !== key);
     });
+  };
+
+  const applySuggestedIntegrationStack = () => {
+    const keysFromApi = suggestions
+      .map((s) => s.provider)
+      .filter((k): k is string => typeof k === "string" && k.length > 0);
+    setIntegrationKeys((prev) => {
+      const cur = Array.isArray(prev) ? prev : [];
+      return Array.from(new Set([...cur, ...keysFromApi]));
+    });
+    toast.success("Suggested integrations added to priorities");
   };
 
   const onApplyTemplate = (id: string | undefined) => {
@@ -440,11 +451,16 @@ export default function CompanySetupPage() {
                     title="Core integrations"
                     description="Prioritize connectors for the integration wizard. Status reflects live tenant connections."
                   >
-                    <IntegrationsSuggestions
-                      items={suggestions}
-                      isLoading={suggestionsQuery.isLoading}
+                    <CompanySetupOnboardingPanel
+                      companyDisplayName={form.watch("displayName")}
+                      timezone={form.watch("timezone")}
+                      currency={form.watch("currency")}
+                      departmentCount={mergeDepartmentNames(form.getValues()).length}
+                      suggestedIntegrations={suggestions}
+                      isSuggestionsLoading={suggestionsQuery.isLoading}
                       selectedProviders={integrationKeys}
                       onToggleProvider={toggleIntegration}
+                      onApplySuggestions={applySuggestedIntegrationStack}
                     />
                   </OnboardingWizardStep>
                 ) : null}

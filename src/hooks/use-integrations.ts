@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { integrationsManagerApi } from "@/lib/integrations-manager-api";
 import { integrationsClient } from "@/lib/integrations-client";
 import type {
   ConnectorRow,
@@ -9,6 +10,7 @@ import type {
 } from "@/types/integrations";
 
 const qk = {
+  catalog: ["integrations", "catalog"] as const,
   connectors: ["integrations", "connectors"] as const,
   health: ["integrations", "health"] as const,
   syncs: (id: string) => ["integrations", "syncs", id] as const,
@@ -17,6 +19,16 @@ const qk = {
   adminTenants: ["integrations", "admin", "tenants"] as const,
   adminOverview: ["integrations", "admin", "overview"] as const,
 };
+
+export function useIntegrationCatalogQuery() {
+  return useQuery({
+    queryKey: qk.catalog,
+    queryFn: async () => {
+      const list = await integrationsManagerApi.fetchCatalog();
+      return Array.isArray(list) ? list : [];
+    },
+  });
+}
 
 export function useConnectorsQuery() {
   return useQuery({
@@ -102,15 +114,43 @@ export function useMappingsQuery(connectorId: string | undefined) {
 export function useCreateConnectorMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { providerKey: string; displayName?: string }) =>
-      integrationsClient.invoke<{ connector: ConnectorRow }>({
-        op: "connectors.create",
+    mutationFn: async (input: { providerKey: string; displayName?: string }) => {
+      const connector = await integrationsManagerApi.createOrUpdateIntegration({
         providerKey: input.providerKey,
         displayName: input.displayName,
-      }),
+      });
+      return { connector };
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: qk.connectors });
       void qc.invalidateQueries({ queryKey: qk.health });
+    },
+  });
+}
+
+export function useRemoveConnectorMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectorId: string) =>
+      integrationsManagerApi.removeIntegration(connectorId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qk.connectors });
+      void qc.invalidateQueries({ queryKey: qk.health });
+    },
+  });
+}
+
+export function useTestConnectionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectorId: string) =>
+      integrationsManagerApi.testConnection(connectorId),
+    onSettled: (_d, _e, connectorId) => {
+      void qc.invalidateQueries({ queryKey: qk.connectors });
+      void qc.invalidateQueries({ queryKey: qk.health });
+      if (connectorId) {
+        void qc.invalidateQueries({ queryKey: qk.mappings(connectorId) });
+      }
     },
   });
 }
@@ -172,6 +212,7 @@ export function useReplaceMappingsMutation() {
       }),
     onSuccess: (_d, vars) => {
       void qc.invalidateQueries({ queryKey: qk.mappings(vars.connectorId) });
+      void qc.invalidateQueries({ queryKey: qk.connectors });
     },
   });
 }

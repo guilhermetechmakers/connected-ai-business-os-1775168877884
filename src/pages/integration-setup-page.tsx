@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/animated-page";
-import { IntegrationConnectionWizard } from "@/components/onboarding/integration-connection-wizard";
+import { IntegrationConnectionSetup } from "@/components/integrations-setup/integration-connection-setup";
 import { PublicChrome } from "@/components/layout/public-chrome";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2 } from "lucide-react";
@@ -50,7 +50,7 @@ export default function IntegrationSetupPage() {
             </div>
           </div>
 
-          <IntegrationConnectionWizard />
+          <IntegrationConnectionSetup />
 
           <div className="flex items-start gap-3 rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-foreground">
             <CheckCircle2 className="mt-0.5 h-5 w-5 text-success" aria-hidden />
