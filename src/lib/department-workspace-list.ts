@@ -98,3 +98,15 @@ export function validateDepartmentShape(
           : new Date().toISOString(),
   };
 }
+
+export function parseWorkspaceDepartmentList(
+  raw: unknown,
+): DepartmentWorkspaceListItem[] {
+  const list = Array.isArray(raw) ? raw : [];
+  const out: DepartmentWorkspaceListItem[] = [];
+  for (const row of list) {
+    const v = validateDepartmentShape(row);
+    if (v) out.push(v);
+  }
+  return out;
+}

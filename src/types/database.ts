@@ -453,6 +453,176 @@ export interface Database {
           created_at?: string;
         };
       };
+      kpi_metrics: {
+        Row: {
+          id: string;
+          company_id: string;
+          name: string;
+          definition: Json;
+          cached_value: Json | null;
+          schedule: Json | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          name?: string;
+          definition?: Json;
+          cached_value?: Json | null;
+          schedule?: Json | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          name?: string;
+          definition?: Json;
+          cached_value?: Json | null;
+          schedule?: Json | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      report_center_reports: {
+        Row: {
+          id: string;
+          company_id: string;
+          department_id: string | null;
+          owner_user_id: string | null;
+          name: string;
+          description: string;
+          status: string;
+          tags: string[];
+          data_source_refs: string[];
+          kpi_refs: string[];
+          visuals: Json;
+          schedule_ids: string[];
+          export_targets: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          department_id?: string | null;
+          owner_user_id?: string | null;
+          name: string;
+          description?: string;
+          status?: string;
+          tags?: string[];
+          data_source_refs?: string[];
+          kpi_refs?: string[];
+          visuals?: Json;
+          schedule_ids?: string[];
+          export_targets?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          department_id?: string | null;
+          owner_user_id?: string | null;
+          name?: string;
+          description?: string;
+          status?: string;
+          tags?: string[];
+          data_source_refs?: string[];
+          kpi_refs?: string[];
+          visuals?: Json;
+          schedule_ids?: string[];
+          export_targets?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      report_center_schedules: {
+        Row: {
+          id: string;
+          company_id: string;
+          report_id: string;
+          cadence: string;
+          cron_expression: string | null;
+          recipients: Json;
+          delivery_modes: Json;
+          export_formats: string[];
+          active: boolean;
+          next_run_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          report_id: string;
+          cadence?: string;
+          cron_expression?: string | null;
+          recipients?: Json;
+          delivery_modes?: Json;
+          export_formats?: string[];
+          active?: boolean;
+          next_run_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          report_id?: string;
+          cadence?: string;
+          cron_expression?: string | null;
+          recipients?: Json;
+          delivery_modes?: Json;
+          export_formats?: string[];
+          active?: boolean;
+          next_run_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      report_export_jobs: {
+        Row: {
+          id: string;
+          company_id: string;
+          report_id: string;
+          format: string;
+          destination: Json;
+          status: string;
+          error_message: string | null;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          report_id: string;
+          format?: string;
+          destination?: Json;
+          status?: string;
+          error_message?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          report_id?: string;
+          format?: string;
+          destination?: Json;
+          status?: string;
+          error_message?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
       workflows: {
         Row: {
           id: string;

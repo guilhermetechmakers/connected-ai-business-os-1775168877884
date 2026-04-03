@@ -1,17 +1,25 @@
-import { fetchTenantDepartmentsDirectory } from "@/lib/department-workspace-api";
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { normalizeDepartmentDirectory } from "@/components/department-workspace";
+import {
+  fetchTenantDepartmentsDirectory,
+  invokeDepartmentWorkspaceApi,
+} from "@/lib/department-workspace-api";
+import {
+  parseWorkspaceDepartmentList,
+  toDepartmentWorkspaceListItem,
+  validateDepartmentShape,
+} from "@/lib/department-workspace-list";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import type {
   DepartmentWorkspaceListItem,
-  DepartmentWorkspaceListMetrics,
   DepartmentWorkspaceStatus,
-  DepartmentWorkspaceUserRole,
-} from "@/types/department-workspace-list";
+} from "@/types/department-workspace";
 
 const DEMO_DEPARTMENTS: DepartmentWorkspaceListItem[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",
     name: "Revenue",
     leadName: "Alex Chen",
+    leadUserId: null,
     headcount: 18,
     status: "active",
     type: "Sales",
@@ -31,6 +39,7 @@ const DEMO_DEPARTMENTS: DepartmentWorkspaceListItem[] = [
     id: "00000000-0000-4000-8000-000000000002",
     name: "Product",
     leadName: "Jordan Lee",
+    leadUserId: null,
     headcount: 22,
     status: "active",
     type: "Ops",
@@ -50,6 +59,7 @@ const DEMO_DEPARTMENTS: DepartmentWorkspaceListItem[] = [
     id: "00000000-0000-4000-8000-000000000003",
     name: "Operations",
     leadName: "Sam Rivera",
+    leadUserId: null,
     headcount: 14,
     status: "paused",
     type: "Ops",
@@ -67,176 +77,7 @@ const DEMO_DEPARTMENTS: DepartmentWorkspaceListItem[] = [
   },
 ];
 
-function parseWorkspaceStatus(raw: unknown): DepartmentWorkspaceStatus {
-  const s = typeof raw === "string" ? raw.toLowerCase() : "active";
-  if (s === "paused" || s === "inactive") return s;
-  return "active";
-}
-
-function parseUserRole(raw: unknown): DepartmentWorkspaceUserRole {
-  if (raw === "Manager" || raw === "Member" || raw === "Guest") return raw;
-  return "Member";
-}
-
-function parseMetrics(raw: unknown): DepartmentWorkspaceListMetrics {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return {
-      openTasks: 0,
-      newMessages: 0,
-      activeMembers: 0,
-      lastActivity: new Date().toISOString(),
-      kpis: 0,
-      documents: 0,
-    };
-  }
-  const m = raw as Record<string, unknown>;
-  return {
-    openTasks: typeof m.openTasks === "number" ? m.openTasks : 0,
-    newMessages: typeof m.newMessages === "number" ? m.newMessages : 0,
-    activeMembers: typeof m.activeMembers === "number" ? m.activeMembers : 0,
-    lastActivity:
-      typeof m.lastActivity === "string"
-        ? m.lastActivity
-        : new Date().toISOString(),
-    kpis: typeof m.kpis === "number" ? m.kpis : 0,
-    documents: typeof m.documents === "number" ? m.documents : 0,
-  };
-}
-
-/** Runtime guard for API / edge list payloads. */
-export function validateDepartmentShape(
-  raw: unknown,
-): DepartmentWorkspaceListItem | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const id = typeof o.id === "string" ? o.id : "";
-  const name = typeof o.name === "string" ? o.name : "";
-  if (!id || !name) return null;
-  const leadName =
-    o.leadName === null
-      ? null
-      : typeof o.leadName === "string"
-        ? o.leadName
-        : null;
-  const headcount =
-    typeof o.headcount === "number" && Number.isFinite(o.headcount)
-      ? Math.max(0, Math.floor(o.headcount))
-      : 0;
-  const type =
-    o.type === null
-      ? null
-      : typeof o.type === "string" && o.type.trim()
-        ? o.type.trim()
-        : null;
-  const lastUpdated =
-    typeof o.lastUpdated === "string"
-      ? o.lastUpdated
-      : typeof o.updatedAt === "string"
-        ? o.updatedAt
-        : new Date().toISOString();
-  return {
-    id,
-    name,
-    leadName,
-    headcount,
-    status: parseWorkspaceStatus(o.status),
-    type,
-    metrics: parseMetrics(o.metrics),
-    userRole: parseUserRole(o.userRole),
-    aiAvailable: o.aiAvailable !== false,
-    lastUpdated,
-  };
-}
-
-export function parseWorkspaceDepartmentList(raw: unknown): DepartmentWorkspaceListItem[] {
-  const list = Array.isArray(raw) ? raw : [];
-  const out: DepartmentWorkspaceListItem[] = [];
-  for (const row of list) {
-    const v = validateDepartmentShape(row);
-    if (v) out.push(v);
-  }
-  return out;
-}
-
-async function invokeDepartmentWorkspaceApi<T>(
-  body: Record<string, unknown>,
-): Promise<{ data: T | null; error: string | null }> {
-  if (!isSupabaseConfigured) {
-    return {
-      data: null,
-      error:
-        "Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.",
-    };
-  }
-
-  const { data: sessionData } = await supabase.auth.getSession();
-  const token = sessionData.session?.access_token;
-  if (!token) {
-    return { data: null, error: "Not signed in" };
-  }
-
-  const { data, error } = await supabase.functions.invoke<unknown>(
-    "department-workspace-api",
-    {
-      body,
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  );
-
-  if (error) {
-    return { data: null, error: error.message };
-  }
-
-  if (data && typeof data === "object" && "error" in data) {
-    const err = (data as { error?: unknown }).error;
-    if (err !== undefined && err !== null) {
-      return { data: null, error: String(err) };
-    }
-  }
-
-  if (data && typeof data === "object" && "data" in data) {
-    return { data: (data as { data: T }).data ?? null, error: null };
-  }
-
-  return { data: data as T, error: null };
-}
-
-async function mapDirectoryFallbackToCatalog(
-  userId: string | null,
-): Promise<DepartmentWorkspaceListItem[]> {
-  const rows = await fetchTenantDepartmentsDirectory();
-  const safeRows = Array.isArray(rows) ? rows : [];
-  const out: DepartmentWorkspaceListItem[] = [];
-  for (const d of safeRows) {
-    if (!d?.id || !d.name) continue;
-    const leadName = d.leadUserId
-      ? `User ${d.leadUserId.slice(0, 8)}…`
-      : null;
-    const m = d.metrics ?? { openTasks: 0, kpis: 0, documents: 0 };
-    const userRole: DepartmentWorkspaceUserRole =
-      userId && d.leadUserId === userId ? "Manager" : "Member";
-    out.push({
-      id: d.id,
-      name: d.name,
-      leadName,
-      headcount: 0,
-      status: d.status === "archived" ? "inactive" : "active",
-      type: null,
-      metrics: {
-        openTasks: m.openTasks ?? 0,
-        newMessages: 0,
-        activeMembers: 0,
-        lastActivity: d.updatedAt ?? new Date().toISOString(),
-        kpis: m.kpis ?? 0,
-        documents: m.documents ?? 0,
-      },
-      userRole,
-      aiAvailable: true,
-      lastUpdated: d.updatedAt ?? new Date().toISOString(),
-    });
-  }
-  return out;
-}
+export { parseWorkspaceDepartmentList, validateDepartmentShape } from "@/lib/department-workspace-list";
 
 /**
  * Workspace directory: Edge Function `tenants.departments.list` with guarded parsing;
@@ -249,10 +90,7 @@ export async function fetchDepartmentWorkspaceListCatalog(): Promise<
     return [...DEMO_DEPARTMENTS];
   }
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user?.id ?? null;
-
-  const { data, error } = await invokeDepartmentWorkspaceApi<unknown[]>({
+  const { data, error } = await invokeDepartmentWorkspaceApi<unknown>({
     op: "tenants.departments.list",
   });
 
@@ -261,8 +99,11 @@ export async function fetchDepartmentWorkspaceListCatalog(): Promise<
     if (parsed.length > 0) return parsed;
   }
 
-  const fallback = await mapDirectoryFallbackToCatalog(userId);
-  if (fallback.length > 0) return fallback;
+  const rows = await fetchTenantDepartmentsDirectory();
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (safeRows.length > 0) {
+    return safeRows.map((d) => toDepartmentWorkspaceListItem(d));
+  }
 
   return [...DEMO_DEPARTMENTS];
 }
@@ -299,6 +140,16 @@ export async function createTenantDepartmentWorkspace(
   if (error) {
     return { data: null, error };
   }
-  const item = validateDepartmentShape(data);
-  return { data: item, error: item ? null : "Invalid department response" };
+  const direct = validateDepartmentShape(data);
+  if (direct) {
+    return { data: direct, error: null };
+  }
+  const rows = normalizeDepartmentDirectory(
+    Array.isArray(data) ? data : data != null ? [data] : [],
+  );
+  const first = rows[0];
+  if (!first) {
+    return { data: null, error: "Invalid department response" };
+  }
+  return { data: toDepartmentWorkspaceListItem(first), error: null };
 }

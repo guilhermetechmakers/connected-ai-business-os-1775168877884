@@ -42,7 +42,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/auth-context";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useDepartments } from "@/hooks/use-departments";
-import { createTenantDepartment } from "@/lib/departments-list-api";
+import { createTenantDepartmentWorkspace } from "@/lib/departments-workspace-list-api";
 import { cn } from "@/lib/utils";
 import type { DepartmentWorkspaceListItem } from "@/types/department-workspace";
 
@@ -127,7 +127,7 @@ export function DepartmentWorkspaceListPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: createTenantDepartment,
+    mutationFn: createTenantDepartmentWorkspace,
     onSuccess: (res) => {
       if (res.error) {
         toast.error(res.error);
