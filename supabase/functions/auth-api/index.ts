@@ -117,6 +117,8 @@ const opSchema = z.discriminatedUnion("op", [
     timezone: z.string().min(1).max(80).optional(),
     currency: z.string().min(1).max(16).optional(),
     industry: z.string().max(120).nullable().optional(),
+    address: z.string().max(2000).nullable().optional(),
+    contact_email: z.string().max(320).nullable().optional(),
     settings: z.record(z.string(), z.unknown()).optional(),
     sso_settings: z.record(z.string(), z.unknown()).optional(),
     password_policy: z.record(z.string(), z.unknown()).optional(),
@@ -314,7 +316,7 @@ async function fetchProfileBundle(admin: SupabaseClient, userId: string) {
     const { data: co } = await admin
       .from("companies")
       .select(
-        "id,name,domain,industry,timezone,currency,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
+        "id,name,domain,industry,timezone,currency,address,contact_email,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
       )
       .eq("id", companyId)
       .maybeSingle();
@@ -1183,6 +1185,8 @@ serve(async (req) => {
         if (parsed.timezone !== undefined) rowPatch.timezone = parsed.timezone;
         if (parsed.currency !== undefined) rowPatch.currency = parsed.currency;
         if (parsed.industry !== undefined) rowPatch.industry = parsed.industry;
+        if (parsed.address !== undefined) rowPatch.address = parsed.address;
+        if (parsed.contact_email !== undefined) rowPatch.contact_email = parsed.contact_email;
         if (parsed.settings !== undefined) {
           const prev =
             co.settings && typeof co.settings === "object" && !Array.isArray(co.settings)
@@ -1215,7 +1219,7 @@ serve(async (req) => {
         const { data: fresh } = await admin
           .from("companies")
           .select(
-            "id,name,domain,industry,timezone,currency,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
+            "id,name,domain,industry,timezone,currency,address,contact_email,sso_settings,password_policy,allowed_auth_methods,settings,created_at",
           )
           .eq("id", companyId)
           .maybeSingle();

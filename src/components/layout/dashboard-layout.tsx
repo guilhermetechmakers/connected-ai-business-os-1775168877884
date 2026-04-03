@@ -88,6 +88,8 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
                       location.pathname === "/dashboard/global"
                     : item.to === "/dashboard/admin"
                       ? location.pathname.startsWith("/dashboard/admin")
+                      : item.to === "/dashboard/settings"
+                        ? location.pathname.startsWith("/dashboard/settings")
                     : location.pathname === item.to ||
                       (item.to !== "/reports" &&
                         item.to !== "/search" &&

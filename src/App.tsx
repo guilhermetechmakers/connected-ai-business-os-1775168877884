@@ -28,7 +28,18 @@ import NotificationsPage from "@/pages/dashboard/notifications-page";
 import ProfilePage from "@/pages/dashboard/profile-page";
 import ReportsCenterPage from "@/pages/dashboard/reports-center-page";
 import SearchPage from "@/pages/dashboard/search-page";
-import SettingsPage from "@/pages/dashboard/settings-page";
+import { SettingsLayout } from "@/components/settings/settings-layout";
+import SettingsAiPage from "@/pages/dashboard/settings/ai-page";
+import SettingsAuditPage from "@/pages/dashboard/settings/audit-page";
+import SettingsBrandingPage from "@/pages/dashboard/settings/branding-page";
+import SettingsCompanyPage from "@/pages/dashboard/settings/company-page";
+import SettingsDataPoliciesPage from "@/pages/dashboard/settings/data-policies-page";
+import SettingsEmailTemplatesPage from "@/pages/dashboard/settings/email-templates-page";
+import SettingsFlagsPage from "@/pages/dashboard/settings/flags-page";
+import SettingsIntegrationsPage from "@/pages/dashboard/settings/integrations-page";
+import SettingsNotificationsPage from "@/pages/dashboard/settings/notifications-page";
+import SettingsRolesPage from "@/pages/dashboard/settings/roles-page";
+import SettingsUsersPage from "@/pages/dashboard/settings/users-page";
 import WorkflowDetailPage from "@/pages/dashboard/workflow-detail-page";
 import WorkflowsPage from "@/pages/dashboard/workflows-page";
 import CookiesPage from "@/pages/cookies-page";
@@ -94,7 +105,20 @@ export default function App() {
             <Route path="ai" element={<AIWorkspacePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="activity" element={<ActivityLogPage />} />
-            <Route path="settings" element={<SettingsPage />} />
+            <Route path="settings" element={<SettingsLayout />}>
+              <Route index element={<Navigate to="company" replace />} />
+              <Route path="company" element={<SettingsCompanyPage />} />
+              <Route path="users" element={<SettingsUsersPage />} />
+              <Route path="roles" element={<SettingsRolesPage />} />
+              <Route path="integrations" element={<SettingsIntegrationsPage />} />
+              <Route path="ai" element={<SettingsAiPage />} />
+              <Route path="branding" element={<SettingsBrandingPage />} />
+              <Route path="data-policies" element={<SettingsDataPoliciesPage />} />
+              <Route path="notifications" element={<SettingsNotificationsPage />} />
+              <Route path="audit" element={<SettingsAuditPage />} />
+              <Route path="flags" element={<SettingsFlagsPage />} />
+              <Route path="email-templates" element={<SettingsEmailTemplatesPage />} />
+            </Route>
             <Route path="profile" element={<ProfilePage />} />
             <Route path="admin" element={<AdminRoute />}>
               <Route element={<AdminDashboardShell />}>

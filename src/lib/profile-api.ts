@@ -9,6 +9,8 @@ export type TenantSettingsRow = {
   industry?: string | null;
   timezone?: string;
   currency?: string;
+  address?: string | null;
+  contact_email?: string | null;
   sso_settings?: Json;
   password_policy?: Json;
   allowed_auth_methods?: string[];

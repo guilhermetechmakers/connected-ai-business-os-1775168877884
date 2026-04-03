@@ -211,6 +211,34 @@ export {
   type EmailTemplateRow,
 } from "@/api/transactional-email";
 
+/** Settings / preferences hub (Edge Function `settings-api`). */
+export {
+  settingsHubAuditAppend,
+  settingsHubAuditList,
+  settingsHubBuilderKeyCreate,
+  settingsHubBuilderKeyRevoke,
+  settingsHubBuilderKeysList,
+  settingsHubDataPolicyGet,
+  settingsHubDataPolicyPatch,
+  settingsHubProfileRoleIds,
+  settingsHubProfileRolesListAll,
+  settingsHubProfileRolesListTenant,
+  settingsHubProfileRolesReplace,
+  settingsHubRoleCreate,
+  settingsHubRoleDelete,
+  settingsHubRolePatch,
+  settingsHubRolesList,
+  settingsHubTenantFlagUpsert,
+  settingsHubTenantFlagsList,
+  type BuilderApiKeyCreatedRow,
+  type BuilderApiKeyPublicRow,
+  type ProfileRoleAssignmentPair,
+  type SettingsAuditRow,
+  type SettingsRoleRow,
+  type TenantDataPolicyRow,
+  type TenantFeatureFlagRow,
+} from "@/lib/settings-hub-api";
+
 /** Multi-tenant company module (Edge Function `tenants-api` + Supabase RLS). */
 export {
   applyOnboardingCompany,

@@ -25,6 +25,8 @@ const companySchema = z.object({
   timezone: z.string().min(1),
   currency: z.string().min(1),
   industry: z.string().max(120).optional(),
+  address: z.string().max(2000).optional(),
+  contact_email: z.string().max(320).optional(),
 });
 
 type CompanyForm = z.infer<typeof companySchema>;
@@ -47,6 +49,8 @@ export function TenantCompanySettingsForm({
       timezone: tenant?.timezone ?? "UTC",
       currency: tenant?.currency ?? "USD",
       industry: tenant?.industry ?? "",
+      address: tenant?.address ?? "",
+      contact_email: tenant?.contact_email ?? "",
     },
   });
 
@@ -57,6 +61,8 @@ export function TenantCompanySettingsForm({
       timezone: tenant.timezone ?? "UTC",
       currency: tenant.currency ?? "USD",
       industry: tenant.industry ?? "",
+      address: tenant.address ?? "",
+      contact_email: tenant.contact_email ?? "",
     });
   }, [tenant, form]);
 
@@ -94,6 +100,8 @@ export function TenantCompanySettingsForm({
                   timezone: vals.timezone,
                   currency: vals.currency,
                   industry: vals.industry?.trim() ? vals.industry.trim() : null,
+                  address: vals.address?.trim() ? vals.address.trim() : null,
+                  contact_email: vals.contact_email?.trim() ? vals.contact_email.trim() : null,
                 },
                 {
                   onSuccess: () => toast.success("Company profile saved"),
@@ -149,6 +157,32 @@ export function TenantCompanySettingsForm({
                   <FormLabel>Industry</FormLabel>
                   <FormControl>
                     <Input className="bg-surface-inner" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="address"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Business address</FormLabel>
+                  <FormControl>
+                    <Input className="bg-surface-inner" placeholder="Street, city, region" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="contact_email"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Primary contact email</FormLabel>
+                  <FormControl>
+                    <Input className="bg-surface-inner" type="email" autoComplete="email" {...field} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
