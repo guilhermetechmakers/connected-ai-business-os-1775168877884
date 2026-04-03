@@ -1873,6 +1873,175 @@ export interface Database {
           created_at?: string;
         };
       };
+      dashboard_widget_definitions: {
+        Row: {
+          id: string;
+          company_id: string | null;
+          name: string;
+          type: string;
+          default_config: Json;
+          visibility_rules: Json;
+          data_adapter_key: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id?: string | null;
+          name: string;
+          type: string;
+          default_config?: Json;
+          visibility_rules?: Json;
+          data_adapter_key?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string | null;
+          name?: string;
+          type?: string;
+          default_config?: Json;
+          visibility_rules?: Json;
+          data_adapter_key?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      dashboard_layouts: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          name: string;
+          dashboard_kind: string;
+          layout_json: Json;
+          version: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          name?: string;
+          dashboard_kind: string;
+          layout_json?: Json;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          name?: string;
+          dashboard_kind?: string;
+          layout_json?: Json;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      dashboard_widget_instances: {
+        Row: {
+          id: string;
+          layout_id: string;
+          widget_definition_id: string | null;
+          widget_type: string;
+          config: Json;
+          is_visible: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          layout_id: string;
+          widget_definition_id?: string | null;
+          widget_type: string;
+          config?: Json;
+          is_visible?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          layout_id?: string;
+          widget_definition_id?: string | null;
+          widget_type?: string;
+          config?: Json;
+          is_visible?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      dashboard_export_schedules: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          layout_id: string | null;
+          target_type: string;
+          target_value: string;
+          cron_expression: string;
+          last_run_at: string | null;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          layout_id?: string | null;
+          target_type: string;
+          target_value: string;
+          cron_expression?: string;
+          last_run_at?: string | null;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          layout_id?: string | null;
+          target_type?: string;
+          target_value?: string;
+          cron_expression?: string;
+          last_run_at?: string | null;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      dashboard_audit_events: {
+        Row: {
+          id: string;
+          company_id: string;
+          actor_user_id: string | null;
+          event_type: string;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          actor_user_id?: string | null;
+          event_type: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          actor_user_id?: string | null;
+          event_type?: string;
+          payload?: Json;
+          created_at?: string;
+        };
+      };
     };
     Views: {
       v_dashboard_entity_rollups: {

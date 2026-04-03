@@ -71,6 +71,10 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     op: z.literal("dashboard.aiSummary"),
   }),
   z.object({
+    op: z.literal("dashboard.executiveBrief"),
+    timeframe: z.enum(["7d", "30d", "90d"]).optional(),
+  }),
+  z.object({
     op: z.literal("complete.chat"),
     conversationId: z.string().uuid().optional(),
     mode: z.enum(["Ask", "Analyze", "Report", "Action"]).optional(),
@@ -113,6 +117,11 @@ const ACTION_DEFS = [
 function normalizeRoles(roles: string[] | null | undefined): string[] {
   const r = Array.isArray(roles) ? roles : [];
   return r.map((x) => String(x).toLowerCase());
+}
+
+function canAccessExecutiveBrief(roles: string[] | null | undefined): boolean {
+  const r = new Set(normalizeRoles(roles));
+  return ["admin", "executive", "manager", "company admin"].some((x) => r.has(x));
 }
 
 function roleMatches(defRoles: readonly string[], userRoles: string[]): boolean {
@@ -735,6 +744,129 @@ serve(async (req) => {
               tokenTotals7d: { prompt: promptSum, completion: completionSum, samples: usage.length },
               recentActions: Array.isArray(actRows) ? actRows : [],
               recentPermissionDenials: Array.isArray(denyRows) ? denyRows : [],
+            },
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+      case "dashboard.executiveBrief": {
+        if (!canAccessExecutiveBrief(profile.roles)) {
+          return new Response(JSON.stringify({ error: "Forbidden" }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const apiKey = Deno.env.get("OPENAI_API_KEY");
+        if (!apiKey) {
+          return new Response(JSON.stringify({ error: "Server misconfigured" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const tf = op.timeframe ?? "7d";
+        const { data: rollupRows } = await supabase
+          .from("unified_entities")
+          .select("entity_type")
+          .eq("company_id", companyId)
+          .eq("is_deleted", false)
+          .limit(500);
+        const rollups = Array.isArray(rollupRows) ? rollupRows : [];
+        const counts: Record<string, number> = {};
+        for (const row of rollups) {
+          const t = typeof row.entity_type === "string" ? row.entity_type : "unknown";
+          counts[t] = (counts[t] ?? 0) + 1;
+        }
+        const { data: deptRows } = await supabase
+          .from("departments")
+          .select("id, name, settings")
+          .eq("company_id", companyId)
+          .limit(50);
+        const depts = Array.isArray(deptRows) ? deptRows : [];
+        const { contextText, citations } = await retrieveRagContext(
+          supabase,
+          companyId,
+          "executive",
+          `executive briefing timeframe ${tf}`,
+          8,
+        );
+        const model = "gpt-4o-mini";
+        const sys =
+          `You are an executive briefing assistant for the Connected AI Business OS. ` +
+          `Tenant timeframe label: ${tf}. Output ONLY valid JSON with keys: ` +
+          `"brief" (string, 2-3 short paragraphs), "actionItems" (array of strings, max 5, concrete next steps). ` +
+          `Do not invent precise financial numbers if not in context; use qualitative language when uncertain.`;
+        const userPayload = JSON.stringify({
+          entityCounts: counts,
+          departments: depts.map((d) => ({ name: d.name, settings: d.settings })),
+          ragContext: contextText || "",
+        }).slice(0, 12000);
+
+        const started = performance.now();
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: sys },
+              {
+                role: "user",
+                content: `Synthesize an executive brief from this tenant snapshot:\n${userPayload}`,
+              },
+            ],
+          }),
+        });
+        const raw = await res.json() as {
+          choices?: { message?: { content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        const content = raw?.choices?.[0]?.message?.content ?? "{}";
+        let brief = "";
+        let actionItems: string[] = [];
+        try {
+          const parsed = JSON.parse(content) as {
+            brief?: string;
+            actionItems?: unknown;
+          };
+          brief = typeof parsed.brief === "string" ? parsed.brief : content;
+          const ai = parsed.actionItems;
+          actionItems = Array.isArray(ai)
+            ? ai.filter((x): x is string => typeof x === "string").slice(0, 8)
+            : [];
+        } catch {
+          brief = content;
+        }
+        const latency = Math.round(performance.now() - started);
+
+        await supabase.from("ai_usage_telemetry").insert({
+          company_id: companyId,
+          user_id: user.id,
+          model,
+          prompt_tokens: raw.usage?.prompt_tokens ?? null,
+          completion_tokens: raw.usage?.completion_tokens ?? null,
+          latency_ms: latency,
+          conversation_id: null,
+        });
+
+        await supabase.from("activity_logs").insert({
+          company_id: companyId,
+          event_type: "ai.executive_brief.generated",
+          actor_user_id: user.id,
+          payload: { timeframe: tf, latencyMs: latency },
+        });
+
+        return new Response(
+          JSON.stringify({
+            data: {
+              brief,
+              actionItems,
+              citations,
+              timeframe: tf,
+              usage: { ...raw.usage, latencyMs: latency, model },
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },

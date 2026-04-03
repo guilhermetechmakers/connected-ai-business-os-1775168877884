@@ -89,3 +89,23 @@
     background-size: 48px 48px;
   }
 }
+
+/* react-grid-layout — dashboard framework (design tokens) */
+.dashboard-grid-root .react-grid-item {
+  transition: transform 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-grid-root .react-grid-item {
+    transition: none;
+  }
+}
+
+.dashboard-grid-root .react-grid-placeholder {
+  background: rgb(154 208 255 / 0.12);
+  border-radius: 0.75rem;
+}
+
+.dashboard-grid-root .react-resizable-handle::after {
+  border-color: rgb(154 208 255 / 0.35) !important;
+}

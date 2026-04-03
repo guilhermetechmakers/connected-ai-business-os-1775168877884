@@ -9,6 +9,7 @@ import type {
   AiSourceCitation,
   AiStreamEvent,
 } from "@/types/ai";
+import type { ExecutiveBriefResult } from "@/types/dashboard";
 
 const fnUrl = (name: string) => {
   const base = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "") ?? "";
@@ -133,6 +134,15 @@ export async function executeAiAction(params: {
 
 export async function fetchAiDashboardSummary(): Promise<AiDashboardSummary> {
   return postAiJson<AiDashboardSummary>({ op: "dashboard.aiSummary" });
+}
+
+export async function fetchExecutiveBrief(params?: {
+  timeframe?: "7d" | "30d" | "90d";
+}): Promise<ExecutiveBriefResult> {
+  return postAiJson<ExecutiveBriefResult>({
+    op: "dashboard.executiveBrief",
+    timeframe: params?.timeframe,
+  });
 }
 
 export async function completeAiChat(params: {

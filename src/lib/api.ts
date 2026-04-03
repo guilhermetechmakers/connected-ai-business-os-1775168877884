@@ -197,6 +197,21 @@ export {
   upsertTenantConfig,
 } from "@/api/tenants";
 
+/** Dashboard framework (Edge Function `dashboard-api` + Supabase RLS). */
+export {
+  createDashboardExportSchedule,
+  ensureDashboardLayout,
+  fetchAvailableDashboardWidgets,
+  fetchDashboardDefinitions,
+  getDashboardExportSchedule,
+  getDashboardLayout,
+  listDashboardExportSchedules,
+  patchDashboardWidgetInstance,
+  registerDashboardWidgetDefinition,
+  saveDashboardLayout,
+  triggerDashboardExportSchedule,
+} from "@/api/dashboard";
+
 /** Internal modules & marketplace (Edge Function `modules-api` + Supabase RLS). */
 export {
   createInternalModule,

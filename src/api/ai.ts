@@ -8,6 +8,7 @@ export {
   executeAiAction,
   fetchAiContexts,
   fetchAiDashboardSummary,
+  fetchExecutiveBrief,
   fetchAiPermissions,
   getAiConversation,
   listAiConversations,
