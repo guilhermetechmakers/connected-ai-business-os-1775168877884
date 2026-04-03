@@ -1,3 +1,4 @@
+import { fetchExecutiveDashboardSnapshot } from "@/api/executive-dashboard";
 import {
   fetchDashboardRollups,
   fetchRecentActivity,
@@ -114,13 +115,30 @@ const riskSampleAdapter: AdapterFn = async () => {
   ];
 };
 
-const execMetricsAdapter: AdapterFn = async () => {
-  return [
-    { label: "Net retention", value: "112%", delta: "+3.1%", trend: "up" as const },
-    { label: "Pipeline coverage", value: "3.4x", delta: "+0.2x", trend: "up" as const },
-    { label: "Cash runway", value: "18 mo", delta: "stable", trend: "neutral" as const },
-    { label: "Integration SLA", value: "99.2%", delta: "-0.1%", trend: "down" as const },
-  ];
+const execMetricsAdapter: AdapterFn = async (_config, ctx) => {
+  const key = cacheKey("exec_metrics_snapshot", ctx);
+  return withCache(key, DEFAULT_TTL_MS, async () => {
+    const snap = await fetchExecutiveDashboardSnapshot();
+    const kpis = Array.isArray(snap.kpis) ? snap.kpis : [];
+    if (kpis.length === 0) {
+      return [
+        { label: "Net retention", value: "112%", delta: "+3.1%", trend: "up" as const },
+        { label: "Pipeline coverage", value: "3.4x", delta: "+0.2x", trend: "up" as const },
+        { label: "Cash runway", value: "18 mo", delta: "stable", trend: "neutral" as const },
+        { label: "Integration SLA", value: "99.2%", delta: "-0.1%", trend: "down" as const },
+      ];
+    }
+    return kpis.map((k) => ({
+      label: k.name,
+      value: k.valueText,
+      delta: k.delta ?? "",
+      trend: k.trend,
+    }));
+  });
+};
+
+const executiveSnapshotAdapter: AdapterFn = async () => {
+  return fetchExecutiveDashboardSnapshot();
 };
 
 const registry: Record<string, AdapterFn> = {
@@ -132,6 +150,7 @@ const registry: Record<string, AdapterFn> = {
   throughput_sample: throughputSampleAdapter,
   risk_sample: riskSampleAdapter,
   exec_metrics: execMetricsAdapter,
+  executive_snapshot: executiveSnapshotAdapter,
   ai_insight: async () => null,
   quick_actions: async () => [],
   none: async () => null,

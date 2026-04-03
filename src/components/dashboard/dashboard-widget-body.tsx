@@ -6,9 +6,6 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,6 +13,9 @@ import {
 } from "recharts";
 import { toast } from "sonner";
 
+import { CrossDepartmentHeatmap } from "@/components/executive-dashboard/cross-department-heatmap";
+import { DepartmentDrilldownPanel } from "@/components/executive-dashboard/department-drilldown-panel";
+import { RiskScoreboard } from "@/components/executive-dashboard/risk-scoreboard";
 import { GlobalSearchBar } from "@/components/global-search/global-search-bar";
 import { ActivityStream } from "@/components/unified-data/activity-stream";
 import { AlertPanel } from "@/components/unified-data/alert-panel";
@@ -35,9 +35,12 @@ import { completeAiChat, fetchExecutiveBrief } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type { DashboardWidgetDefinitionRow } from "@/types/dashboard";
 import type { DataAdapterContext } from "@/types/dashboard";
+import {
+  normalizeExecutiveSnapshot,
+  type ExecutiveDepartmentHeatCell,
+} from "@/types/executive-dashboard";
 import type { DashboardEntityRollup, DashboardKpiSnapshot } from "@/types/unified";
 import { mapActivityLogsToFeed, mapUnifiedEntityRows } from "@/types/unified";
-import type { Json } from "@/types/database";
 
 export type DashboardWidgetBodyProps = {
   widgetType: string;
@@ -47,24 +50,56 @@ export type DashboardWidgetBodyProps = {
   onDashSearchChange: (v: string) => void;
 };
 
+function ExecutiveRiskFromSnapshot({ dataContext }: { dataContext: DataAdapterContext }) {
+  const q = useDashboardWidgetData("executive_snapshot", {}, dataContext, true);
+  const snap = normalizeExecutiveSnapshot(q.data);
+  const risks = Array.isArray(snap.risks) ? snap.risks : [];
+  return <RiskScoreboard risks={risks} isLoading={q.isLoading} />;
+}
+
+function ExecutiveHeatmapFromSnapshot({ dataContext }: { dataContext: DataAdapterContext }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState<ExecutiveDepartmentHeatCell | null>(null);
+  const q = useDashboardWidgetData("executive_snapshot", {}, dataContext, true);
+  const snap = normalizeExecutiveSnapshot(q.data);
+  const cells = Array.isArray(snap.departments) ? snap.departments : ([] as ExecutiveDepartmentHeatCell[]);
+
+  if (q.isLoading) {
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4" aria-busy="true">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-24 rounded-xl" />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <CrossDepartmentHeatmap
+        cells={cells}
+        onCellActivate={(cell) => {
+          setActive(cell);
+          setOpen(true);
+        }}
+      />
+      <DepartmentDrilldownPanel
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v);
+          if (!v) setActive(null);
+        }}
+        departmentId={active?.departmentId ?? null}
+        departmentName={active?.name ?? null}
+      />
+    </>
+  );
+}
+
 function isKpiSnapshot(
   row: DashboardEntityRollup | DashboardKpiSnapshot,
 ): row is DashboardKpiSnapshot {
   return "last_activity_at" in row && row.last_activity_at !== undefined;
-}
-
-function readPayloadName(payload: Json, fallback: string): string {
-  if (!payload || typeof payload !== "object") return fallback;
-  const p = payload as Record<string, unknown>;
-  const n = p.name ?? p.title ?? p.label;
-  return typeof n === "string" && n.trim() ? n : fallback;
-}
-
-function readHealthScore(payload: Json): number {
-  if (!payload || typeof payload !== "object") return 72;
-  const p = payload as Record<string, unknown>;
-  const s = p.healthScore ?? p.score ?? p.health;
-  return typeof s === "number" && !Number.isNaN(s) ? Math.min(100, Math.max(0, s)) : 72;
 }
 
 export function DashboardWidgetBody({
@@ -106,23 +141,11 @@ export function DashboardWidgetBody({
     dataContext,
     widgetType === "throughput_chart",
   );
-  const riskQ = useDashboardWidgetData(
-    widgetType === "risk_pie" ? "risk_sample" : null,
-    {},
-    dataContext,
-    widgetType === "risk_pie",
-  );
   const metricsQ = useDashboardWidgetData(
     widgetType === "exec_metrics" ? "exec_metrics" : null,
     {},
     dataContext,
     widgetType === "exec_metrics",
-  );
-  const deptQ = useDashboardWidgetData(
-    widgetType === "dept_heatmap" ? "departments_rollup" : null,
-    {},
-    dataContext,
-    widgetType === "dept_heatmap",
   );
   const aiGovQ = useDashboardWidgetData(
     widgetType === "ai_governance" ? "ai_governance" : null,
@@ -177,24 +200,7 @@ export function DashboardWidgetBody({
   const alerts = useMemo(() => mapUnifiedEntityRows(alertRows), [alertRows]);
 
   const trendData = Array.isArray(chartQ.data) ? chartQ.data : [];
-  const riskData = Array.isArray(riskQ.data) ? riskQ.data : [];
   const execMetrics = Array.isArray(metricsQ.data) ? metricsQ.data : [];
-
-  const deptRows = Array.isArray(deptQ.data) ? deptQ.data : [];
-  const heat = useMemo(() => {
-    if (deptRows.length === 0) {
-      return [
-        { dept: "Revenue", score: 88 },
-        { dept: "Product", score: 72 },
-        { dept: "Operations", score: 64 },
-        { dept: "Finance", score: 91 },
-      ];
-    }
-    return deptRows.slice(0, 8).map((row, i) => ({
-      dept: readPayloadName(row.payload, `Department ${i + 1}`),
-      score: readHealthScore(row.payload),
-    }));
-  }, [deptRows]);
 
   const aiGov = aiGovQ.data as
     | {
@@ -445,41 +451,8 @@ export function DashboardWidgetBody({
       return <ActivityStream items={activityFeed} isLoading={activityQ.isLoading} />;
     case "alerts_feed":
       return <AlertPanel alerts={alerts} isLoading={alertsQ.isLoading} />;
-    case "risk_pie": {
-      const data =
-        riskData.length > 0
-          ? riskData
-          : [
-              { name: "On track", value: 62, color: "rgb(0,210,122)" },
-              { name: "Watch", value: 24, color: "rgb(154,208,255)" },
-            ];
-      return (
-        <div className="h-64 min-h-[200px] w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={data}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={50}
-                outerRadius={80}
-                paddingAngle={4}
-              >
-                {data.map((entry: { name: string; color?: string }) => (
-                  <Cell key={entry.name} fill={entry.color ?? "rgb(154,208,255)"} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{
-                  background: "rgb(15,23,32)",
-                  border: "1px solid rgb(17,32,43)",
-                }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      );
-    }
+    case "risk_pie":
+      return <ExecutiveRiskFromSnapshot dataContext={dataContext} />;
     case "exec_metrics":
       return (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -508,26 +481,11 @@ export function DashboardWidgetBody({
         </div>
       );
     case "dept_heatmap":
-      return (
-        <div className="grid gap-4 md:grid-cols-2">
-          {(heat ?? []).map((h) => (
-            <div key={h.dept} className="space-y-2 rounded-lg bg-surface-inner p-4">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-medium">{h.dept}</span>
-                <span className="text-primary">{h.score}</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-secondary to-primary transition-all duration-300"
-                  style={{ width: `${h.score}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      );
+      return <ExecutiveHeatmapFromSnapshot dataContext={dataContext} />;
     case "exec_ai_brief": {
       const result = briefMutation.data;
+      const actionItems = Array.isArray(result?.actionItems) ? result.actionItems : [];
+      const briefCitations = Array.isArray(result?.citations) ? result.citations : [];
       return (
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -565,17 +523,17 @@ export function DashboardWidgetBody({
           ) : result ? (
             <div className="prose prose-invert max-w-none text-sm prose-p:text-muted-foreground">
               <p className="whitespace-pre-wrap leading-relaxed">{result.brief}</p>
-              {result.actionItems.length > 0 ? (
+              {actionItems.length > 0 ? (
                 <ul className="mt-2">
-                  {result.actionItems.map((item) => (
+                  {actionItems.map((item) => (
                     <li key={item}>{item}</li>
                   ))}
                 </ul>
               ) : null}
-              {result.citations.length > 0 ? (
+              {briefCitations.length > 0 ? (
                 <p className="text-xs text-muted-foreground">
                   Sources:{" "}
-                  {result.citations
+                  {briefCitations
                     .map((c) => c.reference ?? c.source)
                     .filter(Boolean)
                     .slice(0, 6)

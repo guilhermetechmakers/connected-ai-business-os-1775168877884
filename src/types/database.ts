@@ -2249,6 +2249,137 @@ export interface Database {
           created_at?: string;
         };
       };
+      department_exec_intensity: {
+        Row: {
+          id: string;
+          company_id: string;
+          department_id: string;
+          intensity: number;
+          trend: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          department_id: string;
+          intensity: number;
+          trend?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          department_id?: string;
+          intensity?: number;
+          trend?: string;
+          updated_at?: string;
+        };
+      };
+      executive_kpi_metrics: {
+        Row: {
+          id: string;
+          company_id: string;
+          name: string;
+          value_text: string;
+          delta: string | null;
+          unit: string | null;
+          trend: string;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          name: string;
+          value_text: string;
+          delta?: string | null;
+          unit?: string | null;
+          trend?: string;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          name?: string;
+          value_text?: string;
+          delta?: string | null;
+          unit?: string | null;
+          trend?: string;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      executive_report_exports: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          export_type: string;
+          status: string;
+          artifact_url: string | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          export_type: string;
+          status?: string;
+          artifact_url?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          export_type?: string;
+          status?: string;
+          artifact_url?: string | null;
+          metadata?: Json;
+          created_at?: string;
+        };
+      };
+      executive_risk_issues: {
+        Row: {
+          id: string;
+          company_id: string;
+          title: string;
+          severity: string;
+          status: string;
+          owner_department_id: string | null;
+          due_date: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          title: string;
+          severity: string;
+          status?: string;
+          owner_department_id?: string | null;
+          due_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          title?: string;
+          severity?: string;
+          status?: string;
+          owner_department_id?: string | null;
+          due_date?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
       marketing_pricing_tiers: {
         Row: {
           id: string;

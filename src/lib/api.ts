@@ -99,6 +99,12 @@ export {
   type DomainSuggestionsResponse,
 } from "@/lib/onboarding-signup-api";
 
+/** Executive dashboard snapshot (`executive.snapshot` via unified-data-api). */
+export {
+  fetchExecutiveDashboardSnapshot,
+  logExecutiveExport,
+} from "@/api/executive-dashboard";
+
 /** Unified data layer (Edge Function `unified-data-api` + Supabase RLS). */
 export {
   fetchDashboardRollups,
