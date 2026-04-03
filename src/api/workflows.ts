@@ -1,3 +1,4 @@
+import { fetchTenantActivityLogs } from "@/api/activity-logs";
 import { invokeWorkflowsApi } from "@/lib/workflows-api";
 import type {
   ActivityLogEntryRow,
@@ -210,18 +211,17 @@ export async function fetchActivityLog(params?: {
   limit?: number;
   offset?: number;
 }): Promise<ActivityLogEntryRow[]> {
-  const { data, error } = await invokeWorkflowsApi<ActivityLogEntryRow[]>({
-    op: "activityLog.list",
-    actionType: params?.actionType,
+  const res = await fetchTenantActivityLogs({
+    eventTypes: params?.actionType ? [params.actionType] : undefined,
     departmentId: params?.departmentId,
-    userId: params?.userId,
-    from: params?.from,
-    to: params?.to,
+    actorUserId: params?.userId,
+    dateFrom: params?.from,
+    dateTo: params?.to,
     limit: params?.limit,
     offset: params?.offset,
   });
-  if (error) return [];
-  return Array.isArray(data) ? data : [];
+  const list = Array.isArray(res.entries) ? res.entries : [];
+  return list as ActivityLogEntryRow[];
 }
 
 export async function fetchApprovals(params?: {

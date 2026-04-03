@@ -21,6 +21,7 @@ export interface Database {
           sso_settings: Json;
           password_policy: Json;
           allowed_auth_methods: string[];
+          activity_log_retention_days: number;
           created_at: string;
           updated_at: string;
         };
@@ -35,6 +36,7 @@ export interface Database {
           sso_settings?: Json;
           password_policy?: Json;
           allowed_auth_methods?: string[];
+          activity_log_retention_days?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -49,6 +51,7 @@ export interface Database {
           sso_settings?: Json;
           password_policy?: Json;
           allowed_auth_methods?: string[];
+          activity_log_retention_days?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -531,9 +534,16 @@ export interface Database {
           event_type: string;
           actor_user_id: string | null;
           payload: Json;
+          redacted_payload: Json;
+          metadata: Json;
           related_entity: string | null;
           related_id: string | null;
           department_id: string | null;
+          workflow_run_id: string | null;
+          connector_id: string | null;
+          integration_id: string | null;
+          ai_action_id: string | null;
+          idempotency_key: string | null;
           created_at: string;
         };
         Insert: {
@@ -542,9 +552,16 @@ export interface Database {
           event_type: string;
           actor_user_id?: string | null;
           payload?: Json;
+          redacted_payload?: Json;
+          metadata?: Json;
           related_entity?: string | null;
           related_id?: string | null;
           department_id?: string | null;
+          workflow_run_id?: string | null;
+          connector_id?: string | null;
+          integration_id?: string | null;
+          ai_action_id?: string | null;
+          idempotency_key?: string | null;
           created_at?: string;
         };
         Update: {
@@ -553,10 +570,75 @@ export interface Database {
           event_type?: string;
           actor_user_id?: string | null;
           payload?: Json;
+          redacted_payload?: Json;
+          metadata?: Json;
           related_entity?: string | null;
           related_id?: string | null;
           department_id?: string | null;
+          workflow_run_id?: string | null;
+          connector_id?: string | null;
+          integration_id?: string | null;
+          ai_action_id?: string | null;
+          idempotency_key?: string | null;
           created_at?: string;
+        };
+      };
+      system_templates: {
+        Row: {
+          id: string;
+          template_key: string;
+          name: string;
+          category: string;
+          definition: Json;
+          version: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          template_key: string;
+          name: string;
+          category?: string;
+          definition?: Json;
+          version?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          template_key?: string;
+          name?: string;
+          category?: string;
+          definition?: Json;
+          version?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      feature_flags: {
+        Row: {
+          id: string;
+          flag_key: string;
+          company_id: string | null;
+          enabled: boolean;
+          payload: Json;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          flag_key: string;
+          company_id?: string | null;
+          enabled?: boolean;
+          payload?: Json;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          flag_key?: string;
+          company_id?: string | null;
+          enabled?: boolean;
+          payload?: Json;
+          updated_at?: string;
         };
       };
       ai_conversations: {

@@ -130,6 +130,22 @@ export {
   upsertIndexedDocument,
 } from "@/api/search";
 
+/** Activity log & audit trail (Edge Function `activity-logs-api`). */
+export {
+  createActivityLogEntry,
+  createAdminTenant,
+  deleteAdminSystemTemplate,
+  exportTenantActivityLogs,
+  fetchAdminActivityTail,
+  fetchAdminFeatureFlags,
+  fetchAdminSystemTemplates,
+  fetchTenantActivityLogs,
+  runAdminPruneRetention,
+  searchTenantActivityLogs,
+  upsertAdminFeatureFlag,
+  upsertAdminSystemTemplate,
+} from "@/api/activity-logs";
+
 /** Workflows engine (Edge Function `workflows-api` + Supabase RLS). */
 export {
   appendWorkflowRunLogs,

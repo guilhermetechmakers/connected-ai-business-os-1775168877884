@@ -27,6 +27,13 @@ ALTER TABLE public.activity_logs
 ALTER TABLE public.activity_logs
   ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
 
+ALTER TABLE public.activity_logs
+  ADD COLUMN IF NOT EXISTS idempotency_key text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_activity_logs_company_idempotency
+  ON public.activity_logs (company_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_activity_logs_workflow_run
   ON public.activity_logs (company_id, workflow_run_id)
   WHERE workflow_run_id IS NOT NULL;
@@ -64,7 +71,9 @@ CREATE OR REPLACE FUNCTION public.match_activity_logs(
   p_event_types text[] DEFAULT NULL,
   p_actor_user_id uuid DEFAULT NULL,
   p_workflow_run_id uuid DEFAULT NULL,
+  p_department_id uuid DEFAULT NULL,
   p_connector_id uuid DEFAULT NULL,
+  p_integration_id uuid DEFAULT NULL,
   p_ai_action_id uuid DEFAULT NULL,
   p_date_from timestamptz DEFAULT NULL,
   p_date_to timestamptz DEFAULT NULL,
@@ -83,7 +92,9 @@ AS $$
     AND (p_event_types IS NULL OR cardinality(p_event_types) = 0 OR al.event_type = ANY (p_event_types))
     AND (p_actor_user_id IS NULL OR al.actor_user_id = p_actor_user_id)
     AND (p_workflow_run_id IS NULL OR al.workflow_run_id = p_workflow_run_id)
+    AND (p_department_id IS NULL OR al.department_id = p_department_id)
     AND (p_connector_id IS NULL OR al.connector_id = p_connector_id)
+    AND (p_integration_id IS NULL OR al.integration_id = p_integration_id)
     AND (p_ai_action_id IS NULL OR al.ai_action_id = p_ai_action_id)
     AND (p_date_from IS NULL OR al.created_at >= p_date_from)
     AND (p_date_to IS NULL OR al.created_at <= p_date_to)
@@ -99,12 +110,60 @@ AS $$
   OFFSET GREATEST(coalesce(p_offset, 0), 0);
 $$;
 
+CREATE OR REPLACE FUNCTION public.match_activity_logs_count(
+  p_company_id uuid,
+  p_query text,
+  p_event_types text[] DEFAULT NULL,
+  p_actor_user_id uuid DEFAULT NULL,
+  p_workflow_run_id uuid DEFAULT NULL,
+  p_department_id uuid DEFAULT NULL,
+  p_connector_id uuid DEFAULT NULL,
+  p_integration_id uuid DEFAULT NULL,
+  p_ai_action_id uuid DEFAULT NULL,
+  p_date_from timestamptz DEFAULT NULL,
+  p_date_to timestamptz DEFAULT NULL
+)
+RETURNS bigint
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+  SELECT count(*)::bigint
+  FROM public.activity_logs al
+  WHERE al.company_id = p_company_id
+    AND (p_event_types IS NULL OR cardinality(p_event_types) = 0 OR al.event_type = ANY (p_event_types))
+    AND (p_actor_user_id IS NULL OR al.actor_user_id = p_actor_user_id)
+    AND (p_workflow_run_id IS NULL OR al.workflow_run_id = p_workflow_run_id)
+    AND (p_department_id IS NULL OR al.department_id = p_department_id)
+    AND (p_connector_id IS NULL OR al.connector_id = p_connector_id)
+    AND (p_integration_id IS NULL OR al.integration_id = p_integration_id)
+    AND (p_ai_action_id IS NULL OR al.ai_action_id = p_ai_action_id)
+    AND (p_date_from IS NULL OR al.created_at >= p_date_from)
+    AND (p_date_to IS NULL OR al.created_at <= p_date_to)
+    AND (
+      p_query IS NULL OR length(trim(p_query)) = 0 OR
+      al.event_type ILIKE '%' || trim(p_query) || '%' OR
+      al.payload::text ILIKE '%' || trim(p_query) || '%' OR
+      al.metadata::text ILIKE '%' || trim(p_query) || '%' OR
+      (al.redacted_payload IS NOT NULL AND al.redacted_payload::text ILIKE '%' || trim(p_query) || '%')
+    );
+$$;
+
 GRANT EXECUTE ON FUNCTION public.match_activity_logs(
-  uuid, text, text[], uuid, uuid, uuid, uuid, timestamptz, timestamptz, integer, integer
+  uuid, text, text[], uuid, uuid, uuid, uuid, uuid, uuid, timestamptz, timestamptz, integer, integer
 ) TO authenticated;
 
 GRANT EXECUTE ON FUNCTION public.match_activity_logs(
-  uuid, text, text[], uuid, uuid, uuid, uuid, timestamptz, timestamptz, integer, integer
+  uuid, text, text[], uuid, uuid, uuid, uuid, uuid, uuid, timestamptz, timestamptz, integer, integer
+) TO service_role;
+
+GRANT EXECUTE ON FUNCTION public.match_activity_logs_count(
+  uuid, text, text[], uuid, uuid, uuid, uuid, uuid, uuid, timestamptz, timestamptz
+) TO authenticated;
+
+GRANT EXECUTE ON FUNCTION public.match_activity_logs_count(
+  uuid, text, text[], uuid, uuid, uuid, uuid, uuid, uuid, timestamptz, timestamptz
 ) TO service_role;
 
 -- ---------------------------------------------------------------------------
@@ -127,15 +186,6 @@ CREATE INDEX IF NOT EXISTS idx_system_templates_category ON public.system_templa
 ALTER TABLE public.system_templates ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS system_templates_super_select ON public.system_templates;
-CREATE POLICY system_templates_super_select ON public.system_templates
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles p
-      WHERE p.id = auth.uid() AND p.roles @> ARRAY['super_admin']::text[]
-    )
-  );
-
 DROP POLICY IF EXISTS system_templates_super_all ON public.system_templates;
 CREATE POLICY system_templates_super_all ON public.system_templates
   FOR ALL
@@ -161,9 +211,16 @@ CREATE TABLE IF NOT EXISTS public.feature_flags (
   company_id uuid REFERENCES public.companies (id) ON DELETE CASCADE,
   enabled boolean NOT NULL DEFAULT false,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT feature_flags_key_scope UNIQUE (flag_key, company_id)
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_flags_global_key
+  ON public.feature_flags (flag_key)
+  WHERE company_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_flags_tenant_key
+  ON public.feature_flags (flag_key, company_id)
+  WHERE company_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_feature_flags_company ON public.feature_flags (company_id);
 CREATE INDEX IF NOT EXISTS idx_feature_flags_key ON public.feature_flags (flag_key);

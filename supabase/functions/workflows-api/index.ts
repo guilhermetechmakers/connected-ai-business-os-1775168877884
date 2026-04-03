@@ -7,6 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
 
 const nodeSchema = z.object({
   id: z.string().min(1).max(120),
@@ -278,6 +279,25 @@ function validateGraph(def: WorkflowDefinition): ValidationResult {
   return { valid, errors: [...new Set(errors)], topoOrder };
 }
 
+function canViewFullActivityPayload(roles: string[]): boolean {
+  const r = roles.map((x) => String(x).toLowerCase());
+  return r.some((x) =>
+    ["admin", "owner", "super_admin", "auditor", "manager"].includes(x)
+  );
+}
+
+function mapActivityRowForViewer(
+  row: Record<string, unknown>,
+  fullPayload: boolean,
+): Record<string, unknown> {
+  const payload = row.payload;
+  const redacted = row.redacted_payload ?? redactPayloadJson(payload);
+  return {
+    ...row,
+    payload: fullPayload ? payload : (redacted ?? {}),
+  };
+}
+
 async function insertActivity(
   supabase: SupabaseClient,
   companyId: string,
@@ -286,15 +306,21 @@ async function insertActivity(
   payload: Record<string, unknown>,
   related?: { entity: string; id: string; departmentId?: string | null },
 ) {
+  const redacted = redactPayloadJson(payload) as Record<string, unknown>;
   const row: Record<string, unknown> = {
     company_id: companyId,
     event_type: eventType,
     actor_user_id: actorUserId,
     payload,
+    redacted_payload: redacted,
+    metadata: { source: "workflows-api" },
   };
   if (related?.entity) row.related_entity = related.entity;
   if (related?.id) row.related_id = related.id;
   if (related?.departmentId) row.department_id = related.departmentId;
+  if (related?.entity === "workflow_run" && related.id) {
+    row.workflow_run_id = related.id;
+  }
   await supabase.from("activity_logs").insert(row);
 }
 
@@ -719,7 +745,12 @@ async function handleOp(
       q = q.range(offset, offset + limit - 1);
       const { data, error } = await q;
       if (error) return json({ error: error.message }, 400);
-      return json({ data: Array.isArray(data) ? data : [] });
+      const rows = Array.isArray(data) ? data : [];
+      const full = canViewFullActivityPayload(roles);
+      const mapped = rows.map((r) =>
+        mapActivityRowForViewer(r as Record<string, unknown>, full)
+      );
+      return json({ data: mapped });
     }
     case "approvals.list": {
       let q = supabase

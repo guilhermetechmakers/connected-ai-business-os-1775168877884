@@ -62,9 +62,16 @@ export interface ActivityLogEntryRow {
   event_type: string;
   actor_user_id: string | null;
   payload: Json | Record<string, unknown>;
+  redacted_payload?: Json | Record<string, unknown> | null;
+  metadata?: Json | Record<string, unknown> | null;
   related_entity: string | null;
   related_id: string | null;
   department_id: string | null;
+  workflow_run_id?: string | null;
+  connector_id?: string | null;
+  integration_id?: string | null;
+  ai_action_id?: string | null;
+  idempotency_key?: string | null;
   created_at: string;
 }
 

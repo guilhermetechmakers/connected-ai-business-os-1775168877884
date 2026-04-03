@@ -12,6 +12,7 @@ import {
   encryptCredentialsJson,
 } from "../_shared/credentials-crypto.ts";
 import { runProviderSyncStub } from "../_shared/provider-sync-stubs.ts";
+import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
 
 const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("connectors.list") }),
@@ -323,16 +324,20 @@ async function handleOp(
         .update({ last_sync_at: ended, status: "healthy", updated_at: ended })
         .eq("id", body.connectorId);
 
+      const syncPayload = {
+        connectorId: body.connectorId,
+        syncRunId: run.id,
+        providerKey: conn.provider_key,
+        idempotencyKey: body.idempotencyKey ?? null,
+      };
       await supabase.from("activity_logs").insert({
         company_id: companyId,
         event_type: "connector.sync",
         actor_user_id: userId,
-        payload: {
-          connectorId: body.connectorId,
-          syncRunId: run.id,
-          providerKey: conn.provider_key,
-          idempotencyKey: body.idempotencyKey ?? null,
-        },
+        payload: syncPayload,
+        redacted_payload: redactPayloadJson(syncPayload) as Record<string, unknown>,
+        connector_id: body.connectorId,
+        metadata: { source: "integrations-api" },
       });
 
       if (uErr) return json({ error: uErr.message }, 500);
