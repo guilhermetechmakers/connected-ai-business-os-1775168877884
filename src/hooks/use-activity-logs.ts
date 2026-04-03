@@ -14,6 +14,7 @@ import {
   fetchAdminSystemTemplates,
   fetchTenantActivityLogs,
   runAdminPruneRetention,
+  type AdminPruneRetentionResult,
   upsertAdminFeatureFlag,
   upsertAdminSystemTemplate,
 } from "@/api/activity-logs";
@@ -189,7 +190,7 @@ export function useAdminTemplateDeleteMutation() {
 
 export function useAdminPruneRetentionMutation() {
   const qc = useQueryClient();
-  return useMutation({
+  return useMutation<AdminPruneRetentionResult, Error, void>({
     mutationFn: runAdminPruneRetention,
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: activityLogQueryKeys.root });

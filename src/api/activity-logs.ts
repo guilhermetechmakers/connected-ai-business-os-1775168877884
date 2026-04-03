@@ -302,3 +302,7 @@ export async function runAdminPruneRetention(): Promise<{
     rowsDeleted: typeof d.rowsDeleted === "number" ? d.rowsDeleted : 0,
   };
 }
+
+export type AdminPruneRetentionResult = Awaited<
+  ReturnType<typeof runAdminPruneRetention>
+>;
