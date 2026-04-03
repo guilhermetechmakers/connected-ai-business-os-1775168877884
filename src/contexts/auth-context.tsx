@@ -25,6 +25,13 @@ export type AuthLoginPayload = {
   tenantId?: string;
 };
 
+export type AuthSignupCompanyProfile = {
+  timeZone: string;
+  currency: string;
+  departments: string[];
+  integrations: string[];
+};
+
 export type AuthSignupPayload = {
   tenantName: string;
   industry?: string;
@@ -34,6 +41,7 @@ export type AuthSignupPayload = {
   password: string;
   inviteToken?: string;
   acceptTerms: boolean;
+  companyProfile?: AuthSignupCompanyProfile;
 };
 
 type AuthContextValue = {
@@ -157,6 +165,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signUp = useCallback(async (payload: AuthSignupPayload) => {
+    const departments = Array.isArray(payload.companyProfile?.departments)
+      ? payload.companyProfile!.departments
+      : [];
+    const integrations = Array.isArray(payload.companyProfile?.integrations)
+      ? payload.companyProfile!.integrations
+      : [];
+    const companyProfile =
+      payload.companyProfile &&
+      (payload.companyProfile.timeZone ||
+        payload.companyProfile.currency ||
+        departments.length > 0 ||
+        integrations.length > 0)
+        ? {
+            timeZone: payload.companyProfile.timeZone,
+            currency: payload.companyProfile.currency,
+            departments,
+            integrations,
+          }
+        : undefined;
+
     const res = await invokeAuthApiEnvelope<{
       userId: string;
       companyId: string;
@@ -172,6 +200,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password: payload.password,
         inviteToken: payload.inviteToken,
         acceptTerms: payload.acceptTerms,
+        ...(companyProfile ? { companyProfile } : {}),
       },
       { skipAuthHeader: true },
     );

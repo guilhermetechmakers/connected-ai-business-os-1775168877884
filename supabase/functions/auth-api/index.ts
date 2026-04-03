@@ -1,6 +1,6 @@
 /**
  * Auth API — multi-tenant signup/login, refresh, password reset, email verification, profile, API keys,
- * tenant settings (admin), team listing, SSO unlink, TOTP enroll/verify/disable.
+ * tenant settings (admin), team listing, SSO unlink, TOTP enroll/verify/disable, domain suggestions.
  * Uses Supabase Auth (GoTrue) for credentials; service role for provisioning and token-backed flows.
  * Client: supabase.functions.invoke('auth-api', { body: { op, ... } }).
  * Secrets: SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_ANON_KEY.
@@ -32,6 +32,15 @@ const defaultPolicy: PasswordPolicy = {
   requireUppercase: true,
 };
 
+const companyProfileSignupSchema = z
+  .object({
+    timeZone: z.string().min(1).max(80).optional(),
+    currency: z.string().min(1).max(16).optional(),
+    departments: z.array(z.string().min(1).max(120)).max(50).optional(),
+    integrations: z.array(z.string().min(1).max(64)).max(32).optional(),
+  })
+  .strict();
+
 const opSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("auth.signup"),
@@ -43,6 +52,11 @@ const opSchema = z.discriminatedUnion("op", [
     password: z.string().min(8).max(200),
     inviteToken: z.string().max(500).optional(),
     acceptTerms: z.boolean(),
+    companyProfile: companyProfileSignupSchema.optional(),
+  }),
+  z.object({
+    op: z.literal("domains.suggestions"),
+    base: z.string().min(1).max(200),
   }),
   z.object({
     op: z.literal("auth.login"),
@@ -176,6 +190,111 @@ function validatePassword(pw: string, policy: PasswordPolicy): string | null {
     return "Password must include a special character";
   }
   return null;
+}
+
+function slugifyDomainBase(input: string): string {
+  const s = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return s.length > 0 ? s : "workspace";
+}
+
+function buildDomainSuggestions(base: string): string[] {
+  const slug = slugifyDomainBase(base);
+  const variants = [
+    `${slug}.connected.ai`,
+    `${slug}-hq.connected.ai`,
+    `${slug}-app.connected.ai`,
+    `${slug}-os.connected.ai`,
+  ];
+  return [...new Set(variants)];
+}
+
+async function isCompanyDomainTaken(
+  admin: SupabaseClient,
+  domain: string,
+): Promise<boolean> {
+  const d = domain.trim().toLowerCase();
+  if (!d) return false;
+  const { data } = await admin.from("companies").select("id").ilike("domain", d).maybeSingle();
+  return Boolean(data);
+}
+
+type CompanyProfileSignup = z.infer<typeof companyProfileSignupSchema>;
+
+async function applySignupCompanyProfile(
+  admin: SupabaseClient,
+  companyId: string,
+  profile: CompanyProfileSignup,
+): Promise<void> {
+  const hasDept = Array.isArray(profile.departments);
+  const hasInt = Array.isArray(profile.integrations);
+  const hasTz = typeof profile.timeZone === "string" && profile.timeZone.trim().length > 0;
+  const hasCur = typeof profile.currency === "string" && profile.currency.trim().length > 0;
+  if (!hasDept && !hasInt && !hasTz && !hasCur) return;
+
+  const departments = hasDept
+    ? (profile.departments ?? [])
+        .map((x) => String(x).trim())
+        .filter((x) => x.length > 0)
+        .slice(0, 50)
+    : [];
+  const integrations = hasInt
+    ? (profile.integrations ?? [])
+        .map((x) => String(x).trim())
+        .filter((x) => x.length > 0)
+        .slice(0, 32)
+    : [];
+
+  const { data: co, error: coErr } = await admin
+    .from("companies")
+    .select("settings")
+    .eq("id", companyId)
+    .maybeSingle();
+  if (coErr || !co) return;
+
+  const prevSettings =
+    co.settings && typeof co.settings === "object" && !Array.isArray(co.settings)
+      ? (co.settings as Record<string, unknown>)
+      : {};
+  const nextSettings: Record<string, unknown> = { ...prevSettings };
+  if (departments.length > 0) nextSettings.onboarding_departments = departments;
+  if (integrations.length > 0) nextSettings.suggested_integrations = integrations;
+
+  const patch: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    settings: nextSettings,
+  };
+  if (hasTz) patch.timezone = profile.timeZone!.trim();
+  if (hasCur) patch.currency = profile.currency!.trim();
+
+  const { error: uErr } = await admin.from("companies").update(patch).eq("id", companyId);
+  if (uErr) return;
+
+  if (departments.length === 0) return;
+
+  const { data: existingDepts } = await admin
+    .from("departments")
+    .select("name")
+    .eq("company_id", companyId);
+  const existing = new Set(
+    (Array.isArray(existingDepts) ? existingDepts : [])
+      .map((row) => String((row as { name?: string }).name ?? "").trim().toLowerCase())
+      .filter((x) => x.length > 0),
+  );
+
+  for (const name of departments) {
+    const key = name.toLowerCase();
+    if (existing.has(key)) continue;
+    const { error: dErr } = await admin.from("departments").insert({
+      company_id: companyId,
+      name: name.slice(0, 200),
+    });
+    if (!dErr) existing.add(key);
+  }
 }
 
 function parsePolicy(raw: unknown): PasswordPolicy {
@@ -467,6 +586,15 @@ serve(async (req) => {
         });
       }
 
+      case "domains.suggestions": {
+        const suggestions = buildDomainSuggestions(parsed.base);
+        return jsonResponse({
+          data: { suggestions },
+          error: null,
+          meta: {},
+        });
+      }
+
       case "invitations.resolve": {
         const { data: inv } = await admin
           .from("invitations")
@@ -543,16 +671,43 @@ serve(async (req) => {
           companyId = inv.company_id as string;
           defaultRoles = ["member"];
         } else {
+          const hint = parsed.domainHint?.trim() ?? "";
+          if (hint.length > 0 && (await isCompanyDomainTaken(admin, hint))) {
+            return jsonResponse({
+              data: null,
+              error: { message: "Suggested domain is already in use" },
+              meta: { code: "domain_taken" },
+            }, 400);
+          }
+          const cp = parsed.companyProfile;
+          const tz =
+            typeof cp?.timeZone === "string" && cp.timeZone.trim().length > 0
+              ? cp.timeZone.trim()
+              : "UTC";
+          const cur =
+            typeof cp?.currency === "string" && cp.currency.trim().length > 0
+              ? cp.currency.trim()
+              : "USD";
+          const deptList = Array.isArray(cp?.departments)
+            ? cp!.departments!.map((d) => String(d).trim()).filter((x) => x.length > 0).slice(0, 50)
+            : [];
+          const intList = Array.isArray(cp?.integrations)
+            ? cp!.integrations!.map((d) => String(d).trim()).filter((x) => x.length > 0).slice(0, 32)
+            : [];
           const settings = {
             industry: parsed.industry ?? null,
             domain_hint: parsed.domainHint ?? null,
+            onboarding_departments: deptList,
+            suggested_integrations: intList,
           };
           const { data: co, error: cErr } = await admin
             .from("companies")
             .insert({
               name: parsed.tenantName,
-              domain: parsed.domainHint?.trim() || null,
+              domain: hint.length > 0 ? hint : null,
               industry: parsed.industry?.trim() || null,
+              timezone: tz,
+              currency: cur,
               settings,
             })
             .select("id")
@@ -610,6 +765,10 @@ serve(async (req) => {
             .from("invitations")
             .update({ status: "accepted" })
             .eq("token", parsed.inviteToken);
+        }
+
+        if (parsed.companyProfile) {
+          await applySignupCompanyProfile(admin, companyId, parsed.companyProfile);
         }
 
         const vToken = randomToken();

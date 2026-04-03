@@ -21,6 +21,7 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 export default function EmailVerificationPage() {
   const [params] = useSearchParams();
   const tokenFromUrl = params.get("token") ?? "";
+  const nextPath = params.get("next")?.trim() || "/onboarding/company";
   const [tokenInput, setTokenInput] = useState(tokenFromUrl);
   const [sessionVerified, setSessionVerified] = useState(false);
 
@@ -101,7 +102,9 @@ export default function EmailVerificationPage() {
             ) : null}
             <div className="flex flex-wrap gap-3">
               <Button variant="cta" asChild>
-                <Link to="/onboarding/company">Continue setup</Link>
+                <Link to={nextPath.startsWith("/") ? nextPath : "/onboarding/company"}>
+                  Continue setup
+                </Link>
               </Button>
               <Button type="button" variant="outline" asChild>
                 <Link to="/login">Sign in</Link>

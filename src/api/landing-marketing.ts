@@ -70,7 +70,7 @@ function normalizePricingTier(raw: unknown): LandingPricingTier | null {
   const ctaFromNested = isRecord(ctaRaw)
     ? {
         label: typeof ctaRaw.label === "string" ? ctaRaw.label : "Get started",
-        href: typeof ctaRaw.href === "string" ? ctaRaw.href : "/signup",
+        href: typeof ctaRaw.href === "string" ? ctaRaw.href : "/auth/signup-invite",
       }
     : null;
   const cta =
@@ -84,9 +84,9 @@ function normalizePricingTier(raw: unknown): LandingPricingTier | null {
           href:
             typeof raw.cta_href === "string" && raw.cta_href.trim()
               ? raw.cta_href
-              : "/signup",
+              : "/auth/signup-invite",
         }
-      : { label: "Get started", href: "/signup" });
+      : { label: "Get started", href: "/auth/signup-invite" });
   let priceStr = "";
   if (typeof raw.display_price === "string" && raw.display_price.trim()) {
     priceStr = raw.display_price.trim();

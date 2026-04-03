@@ -76,7 +76,7 @@ export const DEFAULT_LANDING_PRICING: LandingPricingTier[] = [
       "AI Workspace (Ask mode)",
       "Standard support",
     ],
-    cta: { label: "Sign up", href: "/signup" },
+    cta: { label: "Sign up", href: "/auth/signup-invite" },
   },
   {
     id: "growth",
@@ -89,7 +89,7 @@ export const DEFAULT_LANDING_PRICING: LandingPricingTier[] = [
       "Department workspaces",
       "AI Analyze & Report modes",
     ],
-    cta: { label: "Start trial", href: "/signup" },
+    cta: { label: "Start trial", href: "/auth/signup-invite" },
     highlight: true,
   },
   {

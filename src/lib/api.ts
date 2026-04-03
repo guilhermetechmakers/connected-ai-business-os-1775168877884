@@ -82,6 +82,12 @@ export class ApiError extends Error {
 
 export { integrationsClient } from "@/lib/integrations-client";
 
+/** Sign-up / invite onboarding (native fetch to `auth-api` for domain suggestions). */
+export {
+  fetchDomainSuggestions,
+  type DomainSuggestionsResponse,
+} from "@/lib/onboarding-signup-api";
+
 /** Unified data layer (Edge Function `unified-data-api` + Supabase RLS). */
 export {
   fetchDashboardRollups,

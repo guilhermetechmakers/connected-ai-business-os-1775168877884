@@ -67,6 +67,7 @@ export default function App() {
         <Route path="/404" element={<NotFoundPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
+        <Route path="/auth/signup-invite" element={<SignupInviteAcceptancePage />} />
         <Route path="/onboarding/signup" element={<SignupInviteAcceptancePage />} />
         <Route path="/password-reset" element={<PasswordResetPage />} />
         <Route path="/verify-email" element={<EmailVerificationPage />} />

@@ -62,7 +62,10 @@ export function PublicChrome({
 
   return (
     <div className={cn("grid-bg flex min-h-screen flex-col", className)}>
-      <LandingNavBar links={DEFAULT_PUBLIC_NAV_LINKS} ctaPrimary={{ label: "Get started", href: "/signup" }} />
+      <LandingNavBar
+        links={DEFAULT_PUBLIC_NAV_LINKS}
+        ctaPrimary={{ label: "Get started", href: "/auth/signup-invite" }}
+      />
       <div className="flex-1">{children}</div>
       {resolvedFooter}
     </div>

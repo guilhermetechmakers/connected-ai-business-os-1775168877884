@@ -51,7 +51,7 @@ export default function LandingPage() {
             title="Orchestrate your SaaS stack with grounded AI"
             highlightWords={["SaaS stack", "grounded AI"]}
             subtitle="Connect tools, normalize context, automate cross-system work, and give every role a safe AI copilot scoped to tenant data and permissions."
-            ctaPrimary={{ label: "Sign up", href: "/signup" }}
+            ctaPrimary={{ label: "Sign up", href: "/auth/signup-invite" }}
             ctaSecondary={{ label: "Book demo", href: "/#demo" }}
           />
 

@@ -247,7 +247,7 @@ export default function LoginPage() {
             </Tabs>
             <p className="text-center text-sm text-muted-foreground">
               New tenant?{" "}
-              <Link to="/signup" className="font-medium text-primary hover:underline">
+              <Link to="/auth/signup-invite" className="font-medium text-primary hover:underline">
                 Create workspace
               </Link>
             </p>
