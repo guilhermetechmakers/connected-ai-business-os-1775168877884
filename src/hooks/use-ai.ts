@@ -3,12 +3,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createAiConversation,
   executeAiAction,
+  fetchAiContexts,
   fetchAiDashboardSummary,
   fetchAiPermissions,
+  fetchWorkspaceDocuments,
   getAiConversation,
   listAiConversations,
   listPromptTemplates,
   updateAiConversation,
+  upsertPromptTemplate,
 } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type { AiChatMode } from "@/types/ai";
@@ -20,6 +23,9 @@ export const aiQueryKeys = {
   templates: () => [...aiQueryKeys.root, "templates"] as const,
   permissions: () => [...aiQueryKeys.root, "permissions"] as const,
   dashboardSummary: () => [...aiQueryKeys.root, "dashboardSummary"] as const,
+  workspaceDocuments: (sourceFilter: string) =>
+    [...aiQueryKeys.root, "workspaceDocuments", sourceFilter] as const,
+  contextPreview: () => [...aiQueryKeys.root, "contextPreview"] as const,
 };
 
 export function useAiConversationsList(limit = 20) {
@@ -38,10 +44,36 @@ export function useAiConversationDetail(conversationId: string | null) {
   });
 }
 
-export function usePromptTemplates() {
+export function usePromptTemplates(workspaceMode?: AiChatMode) {
   return useQuery({
-    queryKey: aiQueryKeys.templates(),
-    queryFn: () => listPromptTemplates(false),
+    queryKey: [...aiQueryKeys.templates(), workspaceMode ?? "all"] as const,
+    queryFn: () =>
+      listPromptTemplates({
+        includeInactive: false,
+        workspaceMode,
+      }),
+    enabled: isSupabaseConfigured,
+  });
+}
+
+export function useWorkspaceDocuments(sourceFilter: string) {
+  const trimmed = sourceFilter.trim();
+  return useQuery({
+    queryKey: aiQueryKeys.workspaceDocuments(trimmed),
+    queryFn: () =>
+      fetchWorkspaceDocuments({
+        workspaceId: "global",
+        limit: 40,
+        sourceFilter: trimmed || undefined,
+      }),
+    enabled: isSupabaseConfigured,
+  });
+}
+
+export function useAiContextPreview() {
+  return useQuery({
+    queryKey: aiQueryKeys.contextPreview(),
+    queryFn: () => fetchAiContexts({ workspaceId: "global", query: "", limit: 16 }),
     enabled: isSupabaseConfigured,
   });
 }
@@ -99,6 +131,16 @@ export function useExecuteAiAction() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: aiQueryKeys.dashboardSummary() });
       void qc.invalidateQueries({ queryKey: aiQueryKeys.permissions() });
+    },
+  });
+}
+
+export function useUpsertPromptTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: upsertPromptTemplate,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [...aiQueryKeys.templates()] });
     },
   });
 }

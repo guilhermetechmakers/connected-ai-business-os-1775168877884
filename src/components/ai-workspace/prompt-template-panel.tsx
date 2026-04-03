@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { assemblePrompt } from "@/lib/ai-api";
-import type { AiPromptTemplateRow } from "@/types/ai";
+import type { AiChatMode, AiPromptTemplateRow } from "@/types/ai";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,8 @@ const LOCAL_FALLBACKS: AiPromptTemplateRow[] = [
       "Summarize operational risks and wins for {{focus_area}} this week using only tenant context provided.",
     slots: ["focus_area"],
     is_active: true,
+    workspace_mode: "Report",
+    version: 1,
   },
   {
     id: "local-bottleneck",
@@ -35,6 +37,32 @@ const LOCAL_FALLBACKS: AiPromptTemplateRow[] = [
       "Analyze likely bottlenecks for {{team}} from tasks and projects in context. Give 3 hypotheses and what data would confirm each.",
     slots: ["team"],
     is_active: true,
+    workspace_mode: "Analyze",
+    version: 1,
+  },
+  {
+    id: "local-ask",
+    name: "Contextual Q&A",
+    department: null,
+    purpose: "Ask",
+    template_text:
+      "Answer clearly using tenant context only. Topic: {{topic}}. If data is missing, say what to connect or sync.",
+    slots: ["topic"],
+    is_active: true,
+    workspace_mode: "Ask",
+    version: 1,
+  },
+  {
+    id: "local-action",
+    name: "Action planning",
+    department: null,
+    purpose: "Action",
+    template_text:
+      "Propose the smallest safe next step for {{objective}}. List required permissions and which integration would execute it.",
+    slots: ["objective"],
+    is_active: true,
+    workspace_mode: "Action",
+    version: 1,
   },
 ];
 
@@ -56,17 +84,22 @@ function slotNamesFromRow(row: AiPromptTemplateRow): string[] {
 export function PromptTemplatePanel({
   templates,
   isLoading,
+  workspaceMode,
   onApplyText,
 }: {
   templates: AiPromptTemplateRow[];
   isLoading: boolean;
+  workspaceMode: AiChatMode;
   onApplyText: (text: string) => void;
 }) {
   const safeTemplates = Array.isArray(templates) ? templates : [];
-  const merged = useMemo(
-    () => (safeTemplates.length > 0 ? safeTemplates : LOCAL_FALLBACKS),
-    [safeTemplates],
-  );
+  const merged = useMemo(() => {
+    const forMode = safeTemplates.filter(
+      (t) => !t.workspace_mode || t.workspace_mode === workspaceMode,
+    );
+    if (forMode.length > 0) return forMode;
+    return LOCAL_FALLBACKS.filter((t) => t.workspace_mode === workspaceMode);
+  }, [safeTemplates, workspaceMode]);
   const [templateId, setTemplateId] = useState<string>("");
   const [slotValues, setSlotValues] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);

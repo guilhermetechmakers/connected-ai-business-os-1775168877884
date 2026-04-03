@@ -123,11 +123,14 @@ export {
   fetchAiDashboardInsights,
   fetchAiDashboardSummary,
   fetchAiPermissions,
+  fetchExecutiveBrief,
+  fetchWorkspaceDocuments,
   getAiConversation,
   listAiConversations,
   listPromptTemplates,
   streamAiChat,
   updateAiConversation,
+  upsertPromptTemplate,
 } from "@/api/ai";
 
 /** Global search & indexed documents (Edge Function `search-api`). */

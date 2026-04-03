@@ -11,9 +11,11 @@ export {
   fetchAiDashboardSummary,
   fetchExecutiveBrief,
   fetchAiPermissions,
+  fetchWorkspaceDocuments,
   getAiConversation,
   listAiConversations,
   listPromptTemplates,
   streamAiChat,
   updateAiConversation,
+  upsertPromptTemplate,
 } from "@/lib/ai-api";

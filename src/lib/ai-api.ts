@@ -9,6 +9,7 @@ import type {
   AiPromptTemplateRow,
   AiSourceCitation,
   AiStreamEvent,
+  AiWorkspaceDocumentItem,
 } from "@/types/ai";
 import type { ExecutiveBriefResult } from "@/types/dashboard";
 
@@ -27,6 +28,37 @@ async function authHeaders(): Promise<HeadersInit> {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
     apikey: anonKey(),
+  };
+}
+
+function normalizePromptTemplateRow(raw: unknown): AiPromptTemplateRow {
+  if (!raw || typeof raw !== "object") {
+    return {
+      id: "",
+      name: "",
+      department: null,
+      purpose: "",
+      template_text: "",
+      slots: [],
+      is_active: true,
+      workspace_mode: "Ask",
+      version: 1,
+    };
+  }
+  const r = raw as Record<string, unknown>;
+  const wm = r.workspace_mode;
+  const mode: AiChatMode =
+    wm === "Ask" || wm === "Analyze" || wm === "Report" || wm === "Action" ? wm : "Ask";
+  return {
+    id: String(r.id ?? ""),
+    name: String(r.name ?? ""),
+    department: typeof r.department === "string" ? r.department : null,
+    purpose: String(r.purpose ?? ""),
+    template_text: String(r.template_text ?? ""),
+    slots: r.slots ?? [],
+    is_active: Boolean(r.is_active ?? true),
+    workspace_mode: mode,
+    version: typeof r.version === "number" ? r.version : 1,
   };
 }
 
@@ -89,12 +121,62 @@ export async function updateAiConversation(
   });
 }
 
-export async function listPromptTemplates(includeInactive?: boolean): Promise<AiPromptTemplateRow[]> {
-  const data = await postAiJson<AiPromptTemplateRow[]>({
+export async function listPromptTemplates(params?: {
+  includeInactive?: boolean;
+  workspaceMode?: AiChatMode;
+}): Promise<AiPromptTemplateRow[]> {
+  const data = await postAiJson<unknown[]>({
     op: "prompts.templates.list",
-    includeInactive,
+    includeInactive: params?.includeInactive,
+    workspaceMode: params?.workspaceMode,
   });
-  return Array.isArray(data) ? data : [];
+  const list = Array.isArray(data) ? data : [];
+  return list.map((row) => normalizePromptTemplateRow(row));
+}
+
+export async function upsertPromptTemplate(params: {
+  templateId?: string;
+  name: string;
+  templateText: string;
+  workspaceMode: AiChatMode;
+  department?: string | null;
+  purpose?: string;
+  slots?: unknown;
+  isActive?: boolean;
+  version?: number;
+}): Promise<AiPromptTemplateRow> {
+  const data = await postAiJson<unknown>({
+    op: "prompts.templates.upsert",
+    templateId: params.templateId,
+    name: params.name,
+    templateText: params.templateText,
+    workspaceMode: params.workspaceMode,
+    department: params.department,
+    purpose: params.purpose,
+    slots: params.slots ?? [],
+    isActive: params.isActive,
+    version: params.version,
+  });
+  return normalizePromptTemplateRow(data);
+}
+
+export async function fetchWorkspaceDocuments(params?: {
+  workspaceId?: string;
+  limit?: number;
+  sourceFilter?: string;
+}): Promise<AiWorkspaceDocumentItem[]> {
+  const data = await postAiJson<{ items: AiWorkspaceDocumentItem[] }>({
+    op: "workspace.documents.list",
+    workspaceId: params?.workspaceId ?? "global",
+    limit: params?.limit,
+    sourceFilter: params?.sourceFilter,
+  });
+  const items = data?.items;
+  if (!Array.isArray(items)) return [];
+  return items.filter(
+    (x): x is AiWorkspaceDocumentItem =>
+      Boolean(x && typeof x === "object" && "id" in x && "sourceProvider" in x),
+  );
 }
 
 export async function assemblePrompt(
@@ -169,11 +251,13 @@ export async function completeAiChat(params: {
 }): Promise<{
   message: string;
   citations: AiSourceCitation[];
+  actions: string[];
   usage: Record<string, unknown>;
 }> {
-  return postAiJson<{
+  const raw = await postAiJson<{
     message: string;
     citations: AiSourceCitation[];
+    actions?: { id: string; label?: string; requiresConfirmation?: boolean }[];
     usage: Record<string, unknown>;
   }>({
     op: "complete.chat",
@@ -183,6 +267,17 @@ export async function completeAiChat(params: {
     workspaceId: params.workspaceId ?? "global",
     model: params.model,
   });
+  const actionIds = Array.isArray(raw.actions)
+    ? raw.actions
+        .map((a) => (a && typeof a === "object" && typeof a.id === "string" ? a.id : null))
+        .filter((x): x is string => Boolean(x))
+    : [];
+  return {
+    message: typeof raw.message === "string" ? raw.message : "",
+    citations: Array.isArray(raw.citations) ? raw.citations : [],
+    actions: actionIds,
+    usage: raw.usage && typeof raw.usage === "object" ? raw.usage : {},
+  };
 }
 
 export async function fetchAiContexts(params: {
@@ -206,6 +301,7 @@ export async function streamAiChat(params: {
   workspaceId?: string;
   onCitations: (c: AiSourceCitation[]) => void;
   onChunk: (text: string) => void;
+  onSuggestedActions?: (actionIds: string[]) => void;
   onDone: (usage?: Record<string, unknown>) => void;
   onError: (message: string) => void;
 }): Promise<void> {
@@ -248,6 +344,17 @@ export async function streamAiChat(params: {
         params.onCitations(ev.citations);
       } else if ("c" in ev && typeof ev.c === "string") {
         params.onChunk(ev.c);
+      } else if ("suggestedActions" in ev && Array.isArray(ev.suggestedActions)) {
+        const ids = ev.suggestedActions
+          .map((x) => {
+            if (typeof x === "string") return x;
+            if (x && typeof x === "object" && "id" in x && typeof (x as { id: unknown }).id === "string") {
+              return (x as { id: string }).id;
+            }
+            return null;
+          })
+          .filter((x): x is string => Boolean(x));
+        params.onSuggestedActions?.(ids);
       } else if ("done" in ev && ev.done) {
         params.onDone("usage" in ev ? (ev.usage as Record<string, unknown>) : undefined);
       } else if ("error" in ev && typeof ev.error === "string") {

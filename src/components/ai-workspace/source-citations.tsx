@@ -16,6 +16,11 @@ function normalizeCitations(raw: unknown): AiSourceCitation[] {
   );
 }
 
+/** Inline / collapsible citation list for AI messages (RAG provenance). */
+export function SourceCitationRenderer(props: Parameters<typeof SourceCitationsBlock>[0]) {
+  return <SourceCitationsBlock {...props} />;
+}
+
 export function SourceCitationsBlock({
   citations,
   className,
@@ -57,6 +62,12 @@ export function SourceCitationsBlock({
                   </span>
                 ) : null}
               </p>
+              {c.sourceProvider ? (
+                <p className="mt-1 text-[11px] text-muted-foreground">Provider: {c.sourceProvider}</p>
+              ) : null}
+              {c.snippet ? (
+                <p className="mt-1 line-clamp-4 text-xs leading-relaxed text-foreground/90">{c.snippet}</p>
+              ) : null}
               {c.retrievedAt ? (
                 <p className="mt-1 text-[10px] text-muted-foreground">{c.retrievedAt}</p>
               ) : null}

@@ -12,6 +12,9 @@ const citationSchema = z.object({
   source: z.string(),
   reference: z.string().optional(),
   retrievedAt: z.string().optional(),
+  docId: z.string().uuid().optional(),
+  snippet: z.string().optional(),
+  sourceProvider: z.string().optional(),
 });
 
 const jsonOpSchema = z.discriminatedUnion("op", [
@@ -50,6 +53,25 @@ const jsonOpSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("prompts.templates.list"),
     includeInactive: z.boolean().optional(),
+    workspaceMode: z.enum(["Ask", "Analyze", "Report", "Action"]).optional(),
+  }),
+  z.object({
+    op: z.literal("prompts.templates.upsert"),
+    templateId: z.string().uuid().optional(),
+    name: z.string().min(1).max(200),
+    templateText: z.string().min(1).max(32000),
+    workspaceMode: z.enum(["Ask", "Analyze", "Report", "Action"]),
+    department: z.string().max(120).nullable().optional(),
+    purpose: z.string().max(120).optional(),
+    slots: z.union([z.array(z.string()), z.record(z.unknown())]).optional(),
+    isActive: z.boolean().optional(),
+    version: z.number().int().positive().max(9999).optional(),
+  }),
+  z.object({
+    op: z.literal("workspace.documents.list"),
+    workspaceId: z.string().max(120).default("global"),
+    limit: z.number().int().positive().max(80).optional(),
+    sourceFilter: z.string().max(64).optional(),
   }),
   z.object({
     op: z.literal("actions.permissions"),
@@ -143,6 +165,34 @@ function permittedActionsForRoles(userRoles: string[]) {
   }));
 }
 
+function canEditPromptTemplates(userRoles: string[]) {
+  const r = new Set(normalizeRoles(userRoles));
+  return ["admin", "manager", "owner", "company admin", "executive"].some((x) => r.has(x));
+}
+
+function suggestedActionsForMode(
+  mode: "Ask" | "Analyze" | "Report" | "Action",
+  permitted: ReturnType<typeof permittedActionsForRoles>,
+): string[] {
+  const ids = permitted.map((p) => p.id);
+  if (mode === "Action") {
+    return permitted.filter((p) => p.id !== "draft_status_update").slice(0, 4).map((p) => p.id);
+  }
+  if (mode === "Report") {
+    return permitted
+      .filter((p) => p.id === "draft_status_update" || p.id === "run_integration_sync")
+      .slice(0, 3)
+      .map((p) => p.id);
+  }
+  if (mode === "Analyze") {
+    return permitted
+      .filter((p) => p.id === "draft_status_update" || p.id === "advance_deal_stage")
+      .slice(0, 3)
+      .map((p) => p.id);
+  }
+  return permitted.filter((p) => ids.includes(p.id)).slice(0, 3).map((p) => p.id);
+}
+
 async function getProfile(
   supabase: SupabaseClient,
   userId: string,
@@ -182,9 +232,13 @@ async function retrieveRagContext(
       : text.slice(0, 1200);
     if (!snippet.trim()) continue;
     parts.push(`[Document ${d.source_provider}] ${snippet.slice(0, 1200)}`);
+    const prov = typeof d.source_provider === "string" ? d.source_provider : "unknown";
     citations.push({
       source: "documents",
       reference: String(d.id),
+      docId: String(d.id),
+      sourceProvider: prov,
+      snippet: snippet.slice(0, 280),
       retrievedAt: new Date().toISOString(),
     });
   }
@@ -227,9 +281,33 @@ async function retrieveRagContext(
     });
   }
 
+  const { data: indexed } = await supabase
+    .from("indexed_documents")
+    .select("id, source_provider, external_id, title, snippet, full_text, metadata, department_id")
+    .eq("company_id", companyId)
+    .limit(Math.min(limit, 24));
+
+  const indexedList = Array.isArray(indexed) ? indexed : [];
+  for (const doc of indexedList.slice(0, 10)) {
+    const body =
+      typeof doc.snippet === "string" && doc.snippet.trim()
+        ? doc.snippet
+        : typeof doc.full_text === "string"
+          ? doc.full_text.slice(0, 1200)
+          : "";
+    if (!body.trim()) continue;
+    const title = typeof doc.title === "string" ? doc.title : doc.source_provider;
+    parts.push(`[Indexed: ${title}] ${body.slice(0, 1200)}`);
+    citations.push({
+      source: `indexed_documents:${doc.source_provider}`,
+      reference: String(doc.id),
+      retrievedAt: new Date().toISOString(),
+    });
+  }
+
   return {
-    contextText: parts.slice(0, 12).join("\n\n"),
-    citations: citations.slice(0, 20),
+    contextText: parts.slice(0, 14).join("\n\n"),
+    citations: citations.slice(0, 24),
   };
 }
 
@@ -304,9 +382,12 @@ serve(async (req) => {
     }
 
     const companyId = profile.company_id;
+    const userRoles = normalizeRoles(profile.roles);
     const body = streamParsed.data;
     const workspaceId = body.workspaceId ?? "global";
     const model = body.model ?? "gpt-4o-mini";
+    const permittedForStream = permittedActionsForRoles(userRoles);
+    const streamSuggested = suggestedActionsForMode(body.mode, permittedForStream);
 
     const { data: conv, error: convErr } = await supabase
       .from("ai_conversations")
@@ -486,6 +567,7 @@ serve(async (req) => {
           },
         });
 
+        controller.enqueue(sseData({ suggestedActions: streamSuggested }));
         controller.enqueue(
           sseData({
             done: true,
@@ -623,10 +705,13 @@ serve(async (req) => {
       case "prompts.templates.list": {
         let rq = supabase
           .from("ai_prompt_templates")
-          .select("id, name, department, purpose, template_text, slots, is_active")
+          .select("id, name, department, purpose, template_text, slots, is_active, workspace_mode, version")
           .eq("company_id", companyId);
         if (!op.includeInactive) {
           rq = rq.eq("is_active", true);
+        }
+        if (op.workspaceMode) {
+          rq = rq.eq("workspace_mode", op.workspaceMode);
         }
         const { data, error } = await rq.order("name", { ascending: true });
         if (error) throw error;
@@ -634,6 +719,122 @@ serve(async (req) => {
         return new Response(JSON.stringify({ data: list }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+      }
+      case "prompts.templates.upsert": {
+        if (!canEditPromptTemplates(userRoles)) {
+          return new Response(JSON.stringify({ error: "Forbidden" }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const slotsPayload = op.slots ?? [];
+        const now = new Date().toISOString();
+        if (op.templateId) {
+          const updateRow: Record<string, unknown> = {
+            name: op.name,
+            template_text: op.templateText,
+            workspace_mode: op.workspaceMode,
+            department: op.department ?? null,
+            purpose: op.purpose ?? op.workspaceMode.toLowerCase(),
+            slots: slotsPayload,
+            is_active: op.isActive ?? true,
+            updated_at: now,
+          };
+          if (op.version !== undefined) updateRow.version = op.version;
+          const { data, error } = await supabase
+            .from("ai_prompt_templates")
+            .update(updateRow)
+            .eq("id", op.templateId)
+            .eq("company_id", companyId)
+            .select("id, name, department, purpose, template_text, slots, is_active, workspace_mode, version, updated_at")
+            .single();
+          if (error) throw error;
+          return new Response(JSON.stringify({ data }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const { data, error } = await supabase
+          .from("ai_prompt_templates")
+          .insert({
+            company_id: companyId,
+            name: op.name,
+            template_text: op.templateText,
+            workspace_mode: op.workspaceMode,
+            department: op.department ?? null,
+            purpose: op.purpose ?? op.workspaceMode.toLowerCase(),
+            slots: slotsPayload,
+            is_active: op.isActive ?? true,
+            version: op.version ?? 1,
+          })
+          .select("id, name, department, purpose, template_text, slots, is_active, workspace_mode, version, created_at")
+          .single();
+        if (error) {
+          const msg = error.message ?? "";
+          if (msg.includes("duplicate") || msg.includes("unique")) {
+            return new Response(JSON.stringify({ error: "A template with this name already exists" }), {
+              status: 409,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          throw error;
+        }
+        return new Response(JSON.stringify({ data }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "workspace.documents.list": {
+        const lim = op.limit ?? 24;
+        const filt = op.sourceFilter?.trim().toLowerCase();
+        let idxQ = supabase
+          .from("indexed_documents")
+          .select("id, source_provider, external_id, title, snippet, metadata, department_id, updated_at")
+          .eq("company_id", companyId)
+          .order("updated_at", { ascending: false })
+          .limit(lim);
+        if (filt) {
+          idxQ = idxQ.ilike("source_provider", `%${filt}%`);
+        }
+        const { data: idxRows, error: idxErr } = await idxQ;
+        if (idxErr) throw idxErr;
+        const { data: docRows, error: docErr } = await supabase
+          .from("documents")
+          .select("id, source_provider, external_id, text_content, metadata, updated_at")
+          .eq("company_id", companyId)
+          .order("updated_at", { ascending: false })
+          .limit(Math.max(4, Math.floor(lim / 2)));
+        if (docErr) throw docErr;
+        const indexedOut = (Array.isArray(idxRows) ? idxRows : []).map((d) => ({
+          kind: "indexed" as const,
+          id: String(d.id),
+          sourceProvider: String(d.source_provider),
+          externalId: d.external_id != null ? String(d.external_id) : "",
+          title: typeof d.title === "string" ? d.title : d.source_provider,
+          snippet:
+            typeof d.snippet === "string" && d.snippet.trim()
+              ? d.snippet.slice(0, 400)
+              : "",
+          metadata: d.metadata && typeof d.metadata === "object" ? d.metadata : {},
+          departmentId: d.department_id != null ? String(d.department_id) : null,
+          updatedAt: d.updated_at,
+        }));
+        const legacyDocs = (Array.isArray(docRows) ? docRows : []).map((d) => {
+          const text = typeof d.text_content === "string" ? d.text_content : "";
+          return {
+            kind: "document" as const,
+            id: String(d.id),
+            sourceProvider: String(d.source_provider),
+            externalId: d.external_id != null ? String(d.external_id) : "",
+            title: String(d.source_provider),
+            snippet: text.slice(0, 400),
+            metadata: d.metadata && typeof d.metadata === "object" ? d.metadata : {},
+            departmentId: null as string | null,
+            updatedAt: d.updated_at,
+          };
+        });
+        return new Response(
+          JSON.stringify({ data: { items: [...indexedOut, ...legacyDocs].slice(0, lim) } }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
       }
       case "prompts.assemble": {
         const { data: tpl, error } = await supabase
@@ -1008,6 +1209,11 @@ serve(async (req) => {
         };
         const text = data?.choices?.[0]?.message?.content ?? "";
         const latency = Math.round(performance.now() - started);
+        const modeEnum = mode as "Ask" | "Analyze" | "Report" | "Action";
+        const chatActions = suggestedActionsForMode(
+          modeEnum,
+          permittedActionsForRoles(userRoles),
+        );
 
         if (op.conversationId) {
           await supabase.from("ai_messages").insert({
@@ -1035,6 +1241,7 @@ serve(async (req) => {
             data: {
               message: text,
               citations,
+              actions: chatActions,
               usage: { ...data.usage, latencyMs: latency, model },
             },
           }),

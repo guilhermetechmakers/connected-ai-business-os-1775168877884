@@ -868,6 +868,8 @@ export interface Database {
           template_text: string;
           slots: Json;
           is_active: boolean;
+          workspace_mode: string;
+          version: number;
           created_at: string;
           updated_at: string;
         };
@@ -880,6 +882,8 @@ export interface Database {
           template_text: string;
           slots?: Json;
           is_active?: boolean;
+          workspace_mode?: string;
+          version?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -892,6 +896,8 @@ export interface Database {
           template_text?: string;
           slots?: Json;
           is_active?: boolean;
+          workspace_mode?: string;
+          version?: number;
           created_at?: string;
           updated_at?: string;
         };
