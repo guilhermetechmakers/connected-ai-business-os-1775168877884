@@ -6,7 +6,9 @@ export type WorkflowNodeType =
   | "action"
   | "approval"
   | "delay"
-  | "subworkflow";
+  | "subworkflow"
+  | "branch"
+  | "loop";
 
 export interface WorkflowNode {
   id: string;
@@ -23,6 +25,7 @@ export interface WorkflowDefinition {
   schedule?: {
     cronExpression?: string;
     timezone?: string;
+    nextRunAt?: string;
   };
   policies?: {
     maxRetries?: number;
@@ -39,6 +42,7 @@ export interface WorkflowRow {
   status: string;
   owner_user_id: string | null;
   department_id?: string | null;
+  next_run_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +57,8 @@ export interface WorkflowRunRow {
   result_metadata: Json | Record<string, unknown>;
   test_mode: boolean;
   correlation_id: string | null;
+  retry_count?: number;
+  input_payload?: Json | Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -83,8 +89,24 @@ export interface WorkflowApprovalRow {
   approver_user_id: string | null;
   decision: string;
   notes: string | null;
+  due_by?: string | null;
+  approvers?: unknown;
   created_at: string;
   decided_at: string | null;
+}
+
+export interface WorkflowLibraryTemplate {
+  id: string;
+  type: WorkflowNodeType;
+  label: string;
+  description: string;
+  preset: Record<string, unknown>;
+}
+
+export interface WorkflowLibraryCatalog {
+  triggers: WorkflowLibraryTemplate[];
+  actions: WorkflowLibraryTemplate[];
+  logic: WorkflowLibraryTemplate[];
 }
 
 export interface WorkflowValidationResult {

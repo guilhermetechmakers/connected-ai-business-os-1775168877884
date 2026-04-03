@@ -1,5 +1,6 @@
 import { Play, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { TaskBoard } from "@/components/unified-data/task-board";
 import { Badge } from "@/components/ui/badge";
@@ -122,6 +123,7 @@ export function TasksWorkflowsPanel({
           </CardTitle>
           <p className="text-sm text-muted-foreground">
             Tenant workflows scoped to this department (or global). Test runs are isolated and audited.
+            Use the <span className="text-foreground">Automation studio</span> tab for canvas, library, and execution panels.
           </p>
         </CardHeader>
         <CardContent>
@@ -155,18 +157,23 @@ export function TasksWorkflowsPanel({
                         {schedule ? <span>Cron: {schedule || "—"}</span> : null}
                       </div>
                     </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="gap-2 shrink-0"
-                      disabled={isTestRunning}
-                      onClick={() => onTestWorkflow(w.id)}
-                      aria-label={`Test run workflow ${w.name}`}
-                    >
-                      <Play className="h-4 w-4" aria-hidden />
-                      Test run
-                    </Button>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Button type="button" size="sm" variant="outline" asChild>
+                        <Link to={`/dashboard/workflows/${w.id}`}>Edit</Link>
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="gap-2"
+                        disabled={isTestRunning}
+                        onClick={() => onTestWorkflow(w.id)}
+                        aria-label={`Test run workflow ${w.name}`}
+                      >
+                        <Play className="h-4 w-4" aria-hidden />
+                        Test run
+                      </Button>
+                    </div>
                   </li>
                 );
               })}

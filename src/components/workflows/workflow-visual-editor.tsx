@@ -4,13 +4,21 @@ import {
   GitMerge,
   Hourglass,
   Play,
+  Repeat2,
   ShieldCheck,
+  SplitSquareHorizontal,
   Trash2,
   Zap,
 } from "lucide-react";
 import type { DragEvent } from "react";
 import { useCallback, useRef } from "react";
 
+import {
+  WORKFLOW_DND_MOVE_ID,
+  WORKFLOW_DND_NODE_LABEL,
+  WORKFLOW_DND_NODE_TYPE,
+  WORKFLOW_DND_PRESET,
+} from "@/components/workflows/workflow-dnd";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -42,6 +50,18 @@ const NODE_TYPES: {
     className: "border-secondary/50 bg-secondary/15 text-secondary-foreground",
   },
   {
+    type: "branch",
+    label: "Branch",
+    icon: SplitSquareHorizontal,
+    className: "border-accent/40 bg-accent/10 text-accent-foreground",
+  },
+  {
+    type: "loop",
+    label: "Loop",
+    icon: Repeat2,
+    className: "border-primary/35 bg-primary/5 text-primary",
+  },
+  {
     type: "action",
     label: "Action",
     icon: Zap,
@@ -67,11 +87,14 @@ const NODE_TYPES: {
   },
 ];
 
-const DND_TYPE = "application/x-workflow-node-type";
-const MOVE_ID = "application/x-workflow-move-id";
+const SNAP = 16;
 
 function clamp(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
+}
+
+function snapCoord(n: number) {
+  return Math.round(n / SNAP) * SNAP;
 }
 
 export interface WorkflowVisualEditorProps {
@@ -81,6 +104,8 @@ export interface WorkflowVisualEditorProps {
   onSelect: (id: string | null) => void;
   validationErrors?: string[];
   readOnly?: boolean;
+  /** Hide built-in palette (use external `WorkflowLibraryPanel`). */
+  hidePalette?: boolean;
 }
 
 export function WorkflowVisualEditor({
@@ -90,6 +115,7 @@ export function WorkflowVisualEditor({
   onSelect,
   validationErrors = [],
   readOnly = false,
+  hidePalette = false,
 }: WorkflowVisualEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const nodes = Array.isArray(definition.nodes) ? definition.nodes : [];
@@ -104,20 +130,35 @@ export function WorkflowVisualEditor({
   );
 
   const addNode = useCallback(
-    (type: WorkflowNodeType, clientX: number, clientY: number) => {
+    (
+      type: WorkflowNodeType,
+      clientX: number,
+      clientY: number,
+      presetConfig?: Record<string, unknown>,
+      labelFromLibrary?: string,
+    ) => {
       const el = canvasRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const x = clamp(clientX - rect.left - 80, 8, rect.width - 160);
-      const y = clamp(clientY - rect.top - 32, 8, rect.height - 80);
+      const x = snapCoord(
+        clamp(clientX - rect.left - 80, 8, rect.width - 160),
+      );
+      const y = snapCoord(
+        clamp(clientY - rect.top - 32, 8, rect.height - 80),
+      );
       const id = crypto.randomUUID();
+      const trimmed = labelFromLibrary?.trim();
       const label =
-        NODE_TYPES.find((n) => n.type === type)?.label ?? type;
+        trimmed && trimmed.length > 0
+          ? trimmed
+          : NODE_TYPES.find((n) => n.type === type)?.label ?? type;
+      const baseConfig =
+        presetConfig && typeof presetConfig === "object" ? presetConfig : {};
       const node: WorkflowNode = {
         id,
         type,
         label,
-        config: {},
+        config: { ...baseConfig },
         next: [],
         position: { x, y },
       };
@@ -130,22 +171,45 @@ export function WorkflowVisualEditor({
   const onCanvasDrop = (e: DragEvent<HTMLDivElement>) => {
     if (readOnly) return;
     e.preventDefault();
-    const moveId = e.dataTransfer.getData(MOVE_ID);
+    const moveId = e.dataTransfer.getData(WORKFLOW_DND_MOVE_ID);
     if (moveId) {
       moveNode(moveId, e.clientX, e.clientY);
       return;
     }
-    const type = e.dataTransfer.getData(DND_TYPE) as WorkflowNodeType;
+    const type = e.dataTransfer.getData(WORKFLOW_DND_NODE_TYPE) as WorkflowNodeType;
     if (!type) return;
-    addNode(type, e.clientX, e.clientY);
+    const dndLabel = e.dataTransfer.getData(WORKFLOW_DND_NODE_LABEL);
+    let preset: Record<string, unknown> | undefined;
+    try {
+      const raw = e.dataTransfer.getData(WORKFLOW_DND_PRESET);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          preset = parsed as Record<string, unknown>;
+        }
+      }
+    } catch {
+      preset = undefined;
+    }
+    addNode(
+      type,
+      e.clientX,
+      e.clientY,
+      preset,
+      dndLabel || undefined,
+    );
   };
 
   const moveNode = (id: string, clientX: number, clientY: number) => {
     const el = canvasRef.current;
     if (!el || readOnly) return;
     const rect = el.getBoundingClientRect();
-    const x = clamp(clientX - rect.left - 80, 8, rect.width - 160);
-    const y = clamp(clientY - rect.top - 32, 8, rect.height - 80);
+    const x = snapCoord(
+      clamp(clientX - rect.left - 80, 8, rect.width - 160),
+    );
+    const y = snapCoord(
+      clamp(clientY - rect.top - 32, 8, rect.height - 80),
+    );
     updateNodes((list) =>
       list.map((n) =>
         n.id === id ? { ...n, position: { x, y } } : n,
@@ -189,41 +253,43 @@ export function WorkflowVisualEditor({
 
   return (
     <div className="flex flex-col gap-4 lg:flex-row">
-      <div className="lg:w-52 shrink-0 space-y-3">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Palette
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
-          {(NODE_TYPES ?? []).map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.type}
-                type="button"
-                draggable={!readOnly}
-                aria-label={`Drag ${item.label} onto canvas`}
-                onDragStart={(e) => {
-                  e.dataTransfer.setData(DND_TYPE, item.type);
-                  e.dataTransfer.effectAllowed = "copy";
-                }}
-                className={cn(
-                  "flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs font-medium transition-all duration-150",
-                  "hover:-translate-y-0.5 hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                  item.className,
-                  readOnly && "pointer-events-none opacity-50",
-                )}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                {item.label}
-              </button>
-            );
-          })}
+      {!hidePalette ? (
+        <div className="lg:w-52 shrink-0 space-y-3">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Palette
+          </p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-1">
+            {(NODE_TYPES ?? []).map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={`${item.type}-${item.label}`}
+                  type="button"
+                  draggable={!readOnly}
+                  aria-label={`Drag ${item.label} onto canvas`}
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(WORKFLOW_DND_NODE_TYPE, item.type);
+                    e.dataTransfer.effectAllowed = "copy";
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 rounded-xl border px-3 py-2 text-left text-xs font-medium transition-all duration-150",
+                    "hover:-translate-y-0.5 hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                    item.className,
+                    readOnly && "pointer-events-none opacity-50",
+                  )}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Drag nodes onto the canvas. Select a node to wire outputs and edit
+            properties.
+          </p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Drag nodes onto the canvas. Select a node to wire outputs and edit
-          properties.
-        </p>
-      </div>
+      ) : null}
 
       <div className="min-w-0 flex-1 space-y-3">
         {(validationErrors ?? []).length > 0 ? (
@@ -247,7 +313,7 @@ export function WorkflowVisualEditor({
           onDragOver={(e) => {
             e.preventDefault();
             const types = Array.from(e.dataTransfer.types ?? []);
-            e.dataTransfer.dropEffect = types.includes(MOVE_ID)
+            e.dataTransfer.dropEffect = types.includes(WORKFLOW_DND_MOVE_ID)
               ? "move"
               : "copy";
           }}
@@ -275,7 +341,7 @@ export function WorkflowVisualEditor({
                 draggable={!readOnly}
                 onDragStart={(e) => {
                   e.stopPropagation();
-                  e.dataTransfer.setData(MOVE_ID, node.id);
+                  e.dataTransfer.setData(WORKFLOW_DND_MOVE_ID, node.id);
                   e.dataTransfer.effectAllowed = "move";
                 }}
                 onClick={() => onSelect(node.id)}
@@ -326,6 +392,64 @@ export function WorkflowVisualEditor({
                     className="bg-input border-border/60"
                   />
                 </div>
+                {selected.type === "approval" ? (
+                  <div className="space-y-2">
+                    <Label htmlFor="sla-hours">SLA (hours until due)</Label>
+                    <Input
+                      id="sla-hours"
+                      type="number"
+                      min={1}
+                      max={720}
+                      disabled={readOnly}
+                      value={Number(
+                        typeof selected.config?.dueByHours === "number"
+                          ? selected.config.dueByHours
+                          : 24,
+                      )}
+                      onChange={(e) => {
+                        const dueByHours = Math.min(
+                          720,
+                          Math.max(1, Number(e.target.value) || 24),
+                        );
+                        updateSelected({
+                          config: {
+                            ...(selected.config ?? {}),
+                            dueByHours,
+                          },
+                        });
+                      }}
+                      className="bg-input border-border/60"
+                    />
+                    <Label htmlFor="approver-ids">
+                      Approver user IDs (comma-separated)
+                    </Label>
+                    <Input
+                      id="approver-ids"
+                      disabled={readOnly}
+                      value={
+                        Array.isArray(selected.config?.approverUserIds)
+                          ? (selected.config.approverUserIds as string[]).join(
+                              ", ",
+                            )
+                          : ""
+                      }
+                      onChange={(e) => {
+                        const approverUserIds = e.target.value
+                          .split(",")
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        updateSelected({
+                          config: {
+                            ...(selected.config ?? {}),
+                            approverUserIds,
+                          },
+                        });
+                      }}
+                      placeholder="uuid, uuid…"
+                      className="bg-input border-border/60 font-mono text-xs"
+                    />
+                  </div>
+                ) : null}
                 <div className="space-y-2">
                   <Label>Outputs (next steps)</Label>
                   <div className="space-y-2 rounded-lg border border-border/60 bg-surface-inner/80 p-2">

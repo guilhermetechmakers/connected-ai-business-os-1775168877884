@@ -13,6 +13,8 @@ import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/animated-page";
 import { PageHeader } from "@/components/layout/page-header";
+import { WorkflowMetricsTiles } from "@/components/workflows/workflow-metrics-tiles";
+import { WorkflowMetricsCards } from "@/components/workflows/workflow-metrics-cards";
 import { WorkflowRunsChart } from "@/components/workflows/workflow-runs-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -43,7 +45,9 @@ import {
   useWorkflowRunsQuery,
   useWorkflowsList,
 } from "@/hooks/use-workflows";
+import { fetchTenantDepartmentsDirectory } from "@/lib/department-workspace-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
+import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 
 function canMutateWorkflows(roles: string[] | null | undefined): boolean {
@@ -64,10 +68,19 @@ export default function WorkflowsPage() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [departmentFilter, setDepartmentFilter] = useState<string>("all");
+
+  const { data: departments = [] } = useQuery({
+    queryKey: ["tenant-departments-directory"],
+    queryFn: () => fetchTenantDepartmentsDirectory(),
+    enabled: isSupabaseConfigured,
+  });
 
   const { data: workflows = [], isLoading } = useWorkflowsList({
     status: statusFilter,
     search: debouncedSearch,
+    departmentId:
+      departmentFilter === "all" ? undefined : departmentFilter,
   });
 
   const { data: allRuns = [] } = useWorkflowRunsQuery({
@@ -181,6 +194,7 @@ export default function WorkflowsPage() {
         </TabsList>
 
         <TabsContent value="library" className="space-y-4">
+          <WorkflowMetricsTiles runs={Array.isArray(allRuns) ? allRuns : []} />
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="relative flex-1 md:max-w-md">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -193,6 +207,22 @@ export default function WorkflowsPage() {
               />
             </div>
             <div className="flex flex-wrap gap-2">
+              <Select
+                value={departmentFilter}
+                onValueChange={setDepartmentFilter}
+              >
+                <SelectTrigger className="w-[200px] bg-input border-border/60">
+                  <SelectValue placeholder="Department scope" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All departments</SelectItem>
+                  {(departments ?? []).map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      {d.name ?? d.id.slice(0, 8)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Select
                 value={statusFilter ?? "all"}
                 onValueChange={(v) =>
@@ -338,6 +368,7 @@ export default function WorkflowsPage() {
         </TabsContent>
 
         <TabsContent value="metrics" className="space-y-4">
+          <WorkflowMetricsCards runs={Array.isArray(allRuns) ? allRuns : []} />
           <WorkflowRunsChart runs={Array.isArray(allRuns) ? allRuns : []} />
           <p className="text-xs text-muted-foreground">
             Aggregated from recent runs across all workflows in this tenant.

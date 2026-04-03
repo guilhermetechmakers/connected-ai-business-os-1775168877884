@@ -18,6 +18,8 @@ const nodeSchema = z.object({
     "approval",
     "delay",
     "subworkflow",
+    "branch",
+    "loop",
   ]),
   label: z.string().max(200).optional(),
   config: z.record(z.unknown()).default({}),
@@ -34,6 +36,7 @@ const workflowDefinitionSchema = z.object({
     .object({
       cronExpression: z.string().optional(),
       timezone: z.string().optional(),
+      nextRunAt: z.string().optional(),
     })
     .optional(),
   policies: z
@@ -79,7 +82,23 @@ const opSchema = z.discriminatedUnion("op", [
     testMode: z.boolean().optional(),
     correlationId: z.string().max(200).optional(),
     departmentId: z.string().uuid().optional(),
+    inputPayload: z.record(z.unknown()).optional(),
   }),
+  z.object({
+    op: z.literal("workflows.schedule"),
+    workflowId: z.string().uuid(),
+    cronExpression: z.string().max(200).optional(),
+    timezone: z.string().max(80).optional(),
+  }),
+  z.object({
+    op: z.literal("workflowRuns.retry"),
+    runId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("workflowRuns.cancel"),
+    runId: z.string().uuid(),
+  }),
+  z.object({ op: z.literal("libraries.list") }),
   z.object({
     op: z.literal("workflowRuns.list"),
     workflowId: z.string().uuid().optional(),
@@ -197,6 +216,14 @@ type ValidationResult = {
   errors: string[];
   topoOrder: string[];
 };
+
+function computeNextSchedulePreview(cronExpression: string | undefined): string | null {
+  const c = cronExpression?.trim();
+  if (!c) return null;
+  const d = new Date();
+  d.setUTCHours(d.getUTCHours() + 1);
+  return d.toISOString();
+}
 
 function validateGraph(def: WorkflowDefinition): ValidationResult {
   const nodes = Array.isArray(def.nodes) ? def.nodes : [];
@@ -408,6 +435,16 @@ async function executeWorkflowRun(
     ]);
 
     if (node.type === "approval") {
+      const cfg = node.config && typeof node.config === "object"
+        ? node.config as Record<string, unknown>
+        : {};
+      const dueHours = typeof cfg.dueByHours === "number" && cfg.dueByHours > 0
+        ? cfg.dueByHours
+        : 24;
+      const dueBy = new Date(Date.now() + dueHours * 3600_000).toISOString();
+      const approverIds = Array.isArray(cfg.approverUserIds)
+        ? cfg.approverUserIds.map((x) => String(x))
+        : [];
       await supabase
         .from("workflow_runs")
         .update({
@@ -419,6 +456,8 @@ async function executeWorkflowRun(
         run_id: runId,
         step_id: stepId,
         decision: "pending",
+        due_by: dueBy,
+        approvers: approverIds,
       });
       await appendRunLogs(supabase, runId, [
         {
@@ -459,6 +498,26 @@ async function executeWorkflowRun(
           stepId,
           stepStatus: "success",
           message: "Sub-workflow placeholder executed",
+        },
+      ]);
+    } else if (node.type === "branch") {
+      await appendRunLogs(supabase, runId, [
+        {
+          ts: new Date().toISOString(),
+          level: "info",
+          stepId,
+          stepStatus: "success",
+          message: "Branch evaluated (runtime router placeholder)",
+        },
+      ]);
+    } else if (node.type === "loop") {
+      await appendRunLogs(supabase, runId, [
+        {
+          ts: new Date().toISOString(),
+          level: "info",
+          stepId,
+          stepStatus: "success",
+          message: "Loop iteration boundary (scheduler would iterate)",
         },
       ]);
     } else {
@@ -511,7 +570,7 @@ async function handleOp(
       let q = supabase
         .from("workflows")
         .select(
-          "id, company_id, name, definition, status, owner_user_id, department_id, created_at, updated_at",
+          "id, company_id, name, definition, status, owner_user_id, department_id, next_run_at, created_at, updated_at",
         )
         .eq("company_id", companyId)
         .order("updated_at", { ascending: false });
@@ -682,6 +741,9 @@ async function handleOp(
 
       const now = new Date().toISOString();
       const testMode = Boolean(body.testMode);
+      const inputPayload = body.inputPayload && typeof body.inputPayload === "object"
+        ? body.inputPayload
+        : {};
       const { data: runRow, error: runErr } = await supabase
         .from("workflow_runs")
         .insert({
@@ -697,6 +759,7 @@ async function handleOp(
           ],
           test_mode: testMode,
           correlation_id: body.correlationId ?? null,
+          input_payload: inputPayload,
         })
         .select("*")
         .single();
@@ -880,6 +943,201 @@ async function handleOp(
         decision: body.decision,
       }, { entity: "workflow_run", id: body.runId });
 
+      const { data: updated } = await supabase
+        .from("workflow_runs")
+        .select("*")
+        .eq("id", body.runId)
+        .maybeSingle();
+      return json({ data: updated });
+    }
+    case "libraries.list": {
+      const triggers = [
+        { id: "tr-manual", type: "trigger", label: "Manual / UI", description: "Start from console or API", preset: { kind: "manual" } },
+        { id: "tr-schedule", type: "trigger", label: "Schedule (cron)", description: "Time-based recurrence", preset: { kind: "schedule" } },
+        { id: "tr-webhook", type: "trigger", label: "Webhook", description: "HTTP callback ingress", preset: { kind: "webhook", path: "/hooks/tenant" } },
+        { id: "tr-event", type: "trigger", label: "Domain event", description: "Unified data layer event", preset: { kind: "event", topic: "entity.updated" } },
+      ];
+      const actions = [
+        { id: "ac-slack", type: "action", label: "Notify Slack", description: "Post to channel", preset: { channel: "slack", template: "default" } },
+        { id: "ac-email", type: "action", label: "Send email", description: "Transactional template", preset: { channel: "email", templateId: "notify" } },
+        { id: "ac-http", type: "action", label: "HTTP request", description: "Signed outbound call", preset: { method: "POST", url: "https://api.example.com/hook" } },
+        { id: "ac-crm", type: "action", label: "CRM update", description: "Patch lead / deal", preset: { integration: "crm", operation: "upsert" } },
+      ];
+      const logic = [
+        { id: "lg-condition", type: "condition", label: "If / else", description: "Boolean gate on payload", preset: { expression: "payload.status == 'open'" } },
+        { id: "lg-branch", type: "branch", label: "Multi-branch", description: "Route by rules", preset: { mode: "first-match" } },
+        { id: "lg-loop", type: "loop", label: "Loop", description: "Iterate collection", preset: { collectionPath: "items" } },
+        { id: "lg-delay", type: "delay", label: "Delay", description: "Wait before next step", preset: { seconds: 60 } },
+        { id: "lg-approval", type: "approval", label: "Approval gate", description: "Human decision + SLA", preset: { dueByHours: 24, approverUserIds: [] } },
+      ];
+      return json({ data: { triggers, actions, logic } });
+    }
+    case "workflows.schedule": {
+      if (!mutate) return json({ error: "Forbidden" }, 403);
+      const { data: wf, error: wfErr } = await supabase
+        .from("workflows")
+        .select("id, definition")
+        .eq("id", body.workflowId)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (wfErr) return json({ error: wfErr.message }, 400);
+      if (!wf) return json({ error: "Workflow not found" }, 404);
+      const rawDef = wf.definition;
+      const parsed = workflowDefinitionSchema.safeParse(rawDef);
+      if (!parsed.success) {
+        return json({ error: "Stored definition is invalid" }, 422);
+      }
+      const cron =
+        body.cronExpression ?? parsed.data.schedule?.cronExpression ?? "";
+      const timezone = body.timezone ?? parsed.data.schedule?.timezone ?? "UTC";
+      const nextRunAt = computeNextSchedulePreview(cron);
+      const merged: WorkflowDefinition = {
+        ...parsed.data,
+        schedule: {
+          ...parsed.data.schedule,
+          cronExpression: cron,
+          timezone,
+          nextRunAt: nextRunAt ?? undefined,
+        },
+      };
+      const { data: updated, error: upErr } = await supabase
+        .from("workflows")
+        .update({
+          definition: merged as unknown as Record<string, unknown>,
+          next_run_at: nextRunAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", body.workflowId)
+        .eq("company_id", companyId)
+        .select("*")
+        .maybeSingle();
+      if (upErr) return json({ error: upErr.message }, 400);
+      await insertActivity(supabase, companyId, "user_action", userId, {
+        action: "workflow.schedule",
+        workflowId: body.workflowId,
+        nextRunAt,
+      }, { entity: "workflow", id: body.workflowId });
+      return json({ data: updated });
+    }
+    case "workflowRuns.retry": {
+      if (!mutate) return json({ error: "Forbidden" }, 403);
+      const { data: oldRun, error: oldErr } = await supabase
+        .from("workflow_runs")
+        .select("id, workflow_id, status, test_mode, correlation_id, retry_count")
+        .eq("id", body.runId)
+        .maybeSingle();
+      if (oldErr) return json({ error: oldErr.message }, 400);
+      if (!oldRun) return json({ error: "Run not found" }, 404);
+      const st = String(oldRun.status ?? "");
+      if (st !== "Failed" && st !== "Canceled") {
+        return json({ error: "Only failed or canceled runs can be retried" }, 400);
+      }
+      const { data: wf, error: wfErr2 } = await supabase
+        .from("workflows")
+        .select("id, definition, department_id")
+        .eq("id", oldRun.workflow_id as string)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (wfErr2 || !wf) return json({ error: "Workflow not found" }, 404);
+      const parsedDef = workflowDefinitionSchema.safeParse(wf.definition);
+      if (!parsedDef.success) {
+        return json({ error: "Stored definition is invalid" }, 422);
+      }
+      const v = validateGraph(parsedDef.data);
+      if (!v.valid) {
+        return json({ error: "Invalid graph", details: v.errors }, 422);
+      }
+      const prevRetry = typeof oldRun.retry_count === "number" ? oldRun.retry_count : 0;
+      const nextRetry = prevRetry + 1;
+      const now2 = new Date().toISOString();
+      const { data: newRun, error: insErr } = await supabase
+        .from("workflow_runs")
+        .insert({
+          workflow_id: oldRun.workflow_id as string,
+          status: "Running",
+          started_at: now2,
+          logs: [
+            {
+              ts: now2,
+              level: "info",
+              message: `Retry #${nextRetry} (from ${oldRun.id})`,
+            },
+          ],
+          test_mode: Boolean(oldRun.test_mode),
+          correlation_id: (oldRun.correlation_id as string | null) ?? null,
+          retry_count: nextRetry,
+          result_metadata: { parentRunId: oldRun.id },
+          input_payload: {},
+        })
+        .select("*")
+        .single();
+      if (insErr) return json({ error: insErr.message }, 400);
+      const newId = newRun?.id as string;
+      try {
+        await executeWorkflowRun(
+          supabase,
+          companyId,
+          userId,
+          oldRun.workflow_id as string,
+          newId,
+          parsedDef.data,
+          Boolean(oldRun.test_mode),
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Execution failed";
+        await supabase
+          .from("workflow_runs")
+          .update({
+            status: "Failed",
+            finished_at: new Date().toISOString(),
+            result_metadata: { error: msg },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", newId);
+      }
+      const { data: finalRun } = await supabase
+        .from("workflow_runs")
+        .select("*")
+        .eq("id", newId)
+        .maybeSingle();
+      return json({ data: finalRun });
+    }
+    case "workflowRuns.cancel": {
+      if (!mutate) return json({ error: "Forbidden" }, 403);
+      const { data: runRow, error: rErr } = await supabase
+        .from("workflow_runs")
+        .select("id, status, workflow_id")
+        .eq("id", body.runId)
+        .maybeSingle();
+      if (rErr) return json({ error: rErr.message }, 400);
+      if (!runRow) return json({ error: "Not found" }, 404);
+      const { data: wfCheck } = await supabase
+        .from("workflows")
+        .select("id")
+        .eq("id", runRow.workflow_id as string)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (!wfCheck) return json({ error: "Forbidden" }, 403);
+      if (String(runRow.status) !== "Running") {
+        return json({ error: "Run is not active" }, 400);
+      }
+      const canceledAt = new Date().toISOString();
+      await supabase
+        .from("workflow_runs")
+        .update({
+          status: "Canceled",
+          finished_at: canceledAt,
+          updated_at: canceledAt,
+          result_metadata: { canceled: true },
+        })
+        .eq("id", body.runId);
+      await appendRunLogs(supabase, body.runId, [
+        { ts: canceledAt, level: "info", message: "Run canceled by user" },
+      ]);
+      await insertActivity(supabase, companyId, "user_action", userId, {
+        action: "workflow.run.cancel",
+        runId: body.runId,
+      }, { entity: "workflow_run", id: body.runId });
       const { data: updated } = await supabase
         .from("workflow_runs")
         .select("*")

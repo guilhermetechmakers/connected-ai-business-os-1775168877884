@@ -15,6 +15,7 @@ import {
   TasksWorkflowsPanel,
   TeamActivityPanel,
 } from "@/components/department-workspace";
+import { DepartmentWorkflowStudio } from "@/components/workflows/department-workflow-studio";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -59,6 +60,10 @@ export default function DepartmentWorkspacePage() {
   const roles = Array.isArray(profile?.roles) ? profile.roles : [];
   const canAssignTask = roles.some((r) =>
     ["admin", "company admin", "executive", "manager"].includes(r.toLowerCase()),
+  );
+
+  const canEditWorkflowStudio = roles.some((r) =>
+    ["admin", "owner", "manager", "builder"].includes(String(r).toLowerCase()),
   );
 
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
@@ -174,6 +179,7 @@ export default function DepartmentWorkspacePage() {
                 ["overview", "Overview"],
                 ["metrics", "Metrics"],
                 ["tasks", "Tasks / Workflows"],
+                ["automation", "Automation studio"],
                 ["activity", "Team activity"],
                 ["reports", "Reports"],
                 ["documents", "Documents"],
@@ -216,6 +222,23 @@ export default function DepartmentWorkspacePage() {
               onTestWorkflow={onTestWorkflow}
               isTestRunning={testWorkflow.isPending}
             />
+          </TabsContent>
+
+          <TabsContent value="automation" className="space-y-6">
+            {isUuid && departmentId ? (
+              <DepartmentWorkflowStudio
+                departmentId={departmentId}
+                workflows={wfRows}
+                workflowsLoading={wfLoading}
+                allowWrite={canEditWorkflowStudio}
+              />
+            ) : (
+              <Card className="border-border/80 bg-card/90">
+                <CardContent className="py-6 text-sm text-muted-foreground">
+                  Open a valid department workspace to use the automation studio.
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="activity">

@@ -4,6 +4,7 @@ import type {
   ActivityLogEntryRow,
   WorkflowApprovalRow,
   WorkflowDefinition,
+  WorkflowLibraryCatalog,
   WorkflowNode,
   WorkflowNodeType,
   WorkflowRow,
@@ -21,7 +22,14 @@ function asWorkflowDefinition(raw: unknown): WorkflowDefinition {
     version: typeof o.version === "number" ? o.version : undefined,
     schedule:
       o.schedule && typeof o.schedule === "object"
-        ? (o.schedule as WorkflowDefinition["schedule"])
+        ? {
+            ...(o.schedule as WorkflowDefinition["schedule"]),
+            nextRunAt:
+              typeof (o.schedule as { nextRunAt?: unknown }).nextRunAt ===
+                "string"
+                ? (o.schedule as { nextRunAt: string }).nextRunAt
+                : undefined,
+          }
         : undefined,
     policies:
       o.policies && typeof o.policies === "object"
@@ -155,6 +163,7 @@ export async function runWorkflow(payload: {
   testMode?: boolean;
   correlationId?: string;
   departmentId?: string;
+  inputPayload?: Record<string, unknown>;
 }): Promise<WorkflowRunRow | null> {
   const { data, error } = await invokeWorkflowsApi<WorkflowRunRow>({
     op: "workflows.run",
@@ -162,9 +171,57 @@ export async function runWorkflow(payload: {
     testMode: payload.testMode,
     correlationId: payload.correlationId,
     departmentId: payload.departmentId,
+    inputPayload: payload.inputPayload,
   });
   if (error || !data) return null;
   return data;
+}
+
+export async function scheduleWorkflow(payload: {
+  workflowId: string;
+  cronExpression?: string;
+  timezone?: string;
+}): Promise<WorkflowRow | null> {
+  const { data, error } = await invokeWorkflowsApi<WorkflowRow>({
+    op: "workflows.schedule",
+    workflowId: payload.workflowId,
+    cronExpression: payload.cronExpression,
+    timezone: payload.timezone,
+  });
+  if (error || !data) return null;
+  return {
+    ...data,
+    definition: asWorkflowDefinition(data.definition),
+  };
+}
+
+export async function retryWorkflowRun(runId: string): Promise<WorkflowRunRow | null> {
+  const { data, error } = await invokeWorkflowsApi<WorkflowRunRow>({
+    op: "workflowRuns.retry",
+    runId,
+  });
+  if (error || !data) return null;
+  return data;
+}
+
+export async function cancelWorkflowRun(runId: string): Promise<WorkflowRunRow | null> {
+  const { data, error } = await invokeWorkflowsApi<WorkflowRunRow>({
+    op: "workflowRuns.cancel",
+    runId,
+  });
+  if (error || !data) return null;
+  return data;
+}
+
+export async function fetchWorkflowLibrary(): Promise<WorkflowLibraryCatalog | null> {
+  const { data, error } = await invokeWorkflowsApi<WorkflowLibraryCatalog>({
+    op: "libraries.list",
+  });
+  if (error || !data) return null;
+  const triggers = Array.isArray(data.triggers) ? data.triggers : [];
+  const actions = Array.isArray(data.actions) ? data.actions : [];
+  const logic = Array.isArray(data.logic) ? data.logic : [];
+  return { triggers, actions, logic };
 }
 
 export async function fetchWorkflowRuns(params?: {
@@ -262,6 +319,7 @@ export async function submitApproval(payload: {
 
 export function createDefaultWorkflowDefinition(): WorkflowDefinition {
   const triggerId = crypto.randomUUID();
+  const conditionId = crypto.randomUUID();
   const actionId = crypto.randomUUID();
   return {
     version: 1,
@@ -271,8 +329,16 @@ export function createDefaultWorkflowDefinition(): WorkflowDefinition {
         type: "trigger",
         label: "Manual / schedule",
         config: { kind: "manual" },
+        next: [conditionId],
+        position: { x: 32, y: 80 },
+      },
+      {
+        id: conditionId,
+        type: "condition",
+        label: "Gate",
+        config: { expression: "payload.ready == true" },
         next: [actionId],
-        position: { x: 40, y: 80 },
+        position: { x: 224, y: 80 },
       },
       {
         id: actionId,
@@ -280,7 +346,7 @@ export function createDefaultWorkflowDefinition(): WorkflowDefinition {
         label: "Notify channel",
         config: { channel: "slack", template: "default" },
         next: [],
-        position: { x: 280, y: 80 },
+        position: { x: 416, y: 80 },
       },
     ],
     schedule: { cronExpression: "", timezone: "UTC" },

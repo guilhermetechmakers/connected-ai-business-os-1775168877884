@@ -1,30 +1,26 @@
-import { formatDistanceToNow } from "date-fns";
 import {
   ArrowLeft,
   FlaskConical,
   Play,
   Save,
-  ScrollText,
+  Settings2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/animated-page";
+import { WorkflowExecutionPanel } from "@/components/workflows/workflow-execution-panel";
+import { WorkflowLibraryPanel } from "@/components/workflows/workflow-library-panel";
+import { WorkflowMetricsCards } from "@/components/workflows/workflow-metrics-cards";
+import { WorkflowRunConfigurator } from "@/components/workflows/workflow-run-configurator";
 import { WorkflowRunsChart } from "@/components/workflows/workflow-runs-chart";
 import { WorkflowVisualEditor } from "@/components/workflows/workflow-visual-editor";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -35,14 +31,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { useAuth } from "@/contexts/auth-context";
 import {
   useApprovalsQuery,
@@ -51,12 +39,7 @@ import {
   useWorkflowRunsQuery,
 } from "@/hooks/use-workflows";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import { parseRunLogs } from "@/api/workflows";
-import type {
-  WorkflowDefinition,
-  WorkflowRunRow,
-} from "@/types/workflows";
-import { cn } from "@/lib/utils";
+import type { WorkflowDefinition, WorkflowLibraryTemplate } from "@/types/workflows";
 
 function canMutateWorkflows(roles: string[] | null | undefined): boolean {
   const r = Array.isArray(roles) ? roles : [];
@@ -78,6 +61,9 @@ export default function WorkflowDetailPage() {
     runWorkflow,
     submitApproval,
     validateDefinition,
+    scheduleWorkflow,
+    retryWorkflowRun,
+    cancelWorkflowRun,
   } = useWorkflowMutations();
 
   const [name, setName] = useState("");
@@ -87,7 +73,8 @@ export default function WorkflowDetailPage() {
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
-  const [logRun, setLogRun] = useState<WorkflowRunRow | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runConfigOpen, setRunConfigOpen] = useState(false);
 
   useEffect(() => {
     if (!wf) return;
@@ -150,7 +137,39 @@ export default function WorkflowDetailPage() {
     }
   };
 
-  const handleRun = async (testMode: boolean) => {
+  const deptScope =
+    typeof wf?.department_id === "string" && wf.department_id
+      ? wf.department_id
+      : undefined;
+
+  const handleQuickAdd = (item: WorkflowLibraryTemplate) => {
+    if (!allowWrite) return;
+    const id = crypto.randomUUID();
+    const preset =
+      item.preset && typeof item.preset === "object" && !Array.isArray(item.preset)
+        ? (item.preset as Record<string, unknown>)
+        : {};
+    setDefinition((prev) => ({
+      ...prev,
+      nodes: [
+        ...(Array.isArray(prev.nodes) ? prev.nodes : []),
+        {
+          id,
+          type: item.type,
+          label: item.label,
+          config: { ...preset },
+          next: [],
+          position: {
+            x: 96 + Math.floor(Math.random() * 48),
+            y: 96 + Math.floor(Math.random() * 48),
+          },
+        },
+      ],
+    }));
+    setSelectedId(id);
+  };
+
+  const handleRunQuick = async (testMode: boolean) => {
     if (!workflowId || !allowWrite) return;
     const ok = await validateLocal();
     if (!ok) {
@@ -158,7 +177,12 @@ export default function WorkflowDetailPage() {
       return;
     }
     toast.loading(testMode ? "Simulating test run…" : "Starting run…");
-    const run = await runWorkflow.mutateAsync({ workflowId, testMode });
+    const run = await runWorkflow.mutateAsync({
+      workflowId,
+      testMode,
+      departmentId: deptScope,
+      inputPayload: {},
+    });
     toast.dismiss();
     if (run) {
       toast.success(`Run ${run.status}`);
@@ -229,17 +253,27 @@ export default function WorkflowDetailPage() {
               variant="outline"
               size="sm"
               disabled={!allowWrite || runWorkflow.isPending}
-              onClick={() => void handleRun(true)}
+              onClick={() => void handleRunQuick(true)}
             >
               <FlaskConical className="mr-1 h-4 w-4" />
               Test run
             </Button>
             <Button
               type="button"
+              variant="outline"
+              size="sm"
+              disabled={!allowWrite || runWorkflow.isPending}
+              onClick={() => setRunConfigOpen(true)}
+            >
+              <Settings2 className="mr-1 h-4 w-4" />
+              Configure run
+            </Button>
+            <Button
+              type="button"
               variant="cta"
               size="sm"
               disabled={!allowWrite || runWorkflow.isPending}
-              onClick={() => void handleRun(false)}
+              onClick={() => void handleRunQuick(false)}
             >
               <Play className="mr-1 h-4 w-4" />
               Run now
@@ -287,77 +321,49 @@ export default function WorkflowDetailPage() {
               <TabsTrigger value="policies">Schedule & retries</TabsTrigger>
             </TabsList>
             <TabsContent value="editor" className="space-y-4">
-              <WorkflowVisualEditor
-                definition={definition}
-                onChange={setDefinition}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                validationErrors={validationErrors}
-                readOnly={!allowWrite}
-              />
+              <div className="grid gap-4 xl:grid-cols-[minmax(240px,300px)_1fr]">
+                <WorkflowLibraryPanel
+                  readOnly={!allowWrite}
+                  onQuickAdd={allowWrite ? handleQuickAdd : undefined}
+                />
+                <WorkflowVisualEditor
+                  definition={definition}
+                  onChange={setDefinition}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  validationErrors={validationErrors}
+                  readOnly={!allowWrite}
+                  hidePalette
+                />
+              </div>
             </TabsContent>
             <TabsContent value="runs" className="space-y-4">
+              <WorkflowMetricsCards runs={runsForWorkflow} />
               <WorkflowRunsChart runs={runsForWorkflow} />
-              <div className="overflow-hidden rounded-xl border border-border/80 bg-card/90 shadow-card">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-border/60 hover:bg-transparent">
-                      <TableHead>Run</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Mode</TableHead>
-                      <TableHead>When</TableHead>
-                      <TableHead className="text-right">Logs</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(runsForWorkflow ?? []).map((r) => (
-                      <TableRow key={r.id} className="border-border/60">
-                        <TableCell className="font-mono text-xs text-primary">
-                          {r.id.slice(0, 8)}…
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={cn(
-                              "rounded-full px-2 py-0.5 text-xs font-medium",
-                              r.status === "Completed" && "bg-success/15 text-success",
-                              r.status === "Failed" && "bg-destructive/15 text-destructive",
-                              r.status === "Running" && "bg-primary/15 text-primary",
-                              r.status === "WaitingApproval" &&
-                                "bg-secondary/20 text-secondary-foreground",
-                            )}
-                          >
-                            {r.status}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {r.test_mode ? "Test" : "Live"}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {formatDistanceToNow(new Date(r.created_at), {
-                            addSuffix: true,
-                          })}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => setLogRun(r)}
-                            aria-label="View run logs"
-                          >
-                            <ScrollText className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                {(runsForWorkflow ?? []).length === 0 ? (
-                  <p className="p-6 text-center text-sm text-muted-foreground">
-                    No executions yet. Use Test run or Run now from the header.
-                  </p>
-                ) : null}
-              </div>
+              <WorkflowExecutionPanel
+                runs={runsForWorkflow}
+                selectedRunId={selectedRunId}
+                onSelectRun={setSelectedRunId}
+                allowWrite={allowWrite}
+                onRetry={(runId) => {
+                  void retryWorkflowRun.mutateAsync(runId).then((row) => {
+                    if (row) {
+                      toast.success("Retry started");
+                      void refetchRuns();
+                    } else toast.error("Retry failed");
+                  });
+                }}
+                onCancel={(runId) => {
+                  void cancelWorkflowRun.mutateAsync(runId).then((row) => {
+                    if (row) {
+                      toast.success("Run canceled");
+                      void refetchRuns();
+                    } else toast.error("Cancel failed");
+                  });
+                }}
+                isRetrying={retryWorkflowRun.isPending}
+                isCanceling={cancelWorkflowRun.isPending}
+              />
             </TabsContent>
             <TabsContent value="policies" className="space-y-4">
               <div className="grid gap-4 md:grid-cols-2">
@@ -472,6 +478,40 @@ export default function WorkflowDetailPage() {
                   </Label>
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-3">
+                {wf.next_run_at ? (
+                  <p className="text-xs text-muted-foreground">
+                    Next scheduled preview:{" "}
+                    <span className="font-mono text-primary">
+                      {new Date(wf.next_run_at).toLocaleString()}
+                    </span>
+                  </p>
+                ) : null}
+                {allowWrite ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={scheduleWorkflow.isPending}
+                    onClick={() => {
+                      void scheduleWorkflow
+                        .mutateAsync({
+                          workflowId: workflowId as string,
+                          cronExpression:
+                            definition.schedule?.cronExpression ?? "",
+                          timezone: definition.schedule?.timezone ?? "UTC",
+                        })
+                        .then((row) => {
+                          if (row) {
+                            toast.success("Schedule synced");
+                          } else toast.error("Could not sync schedule");
+                        });
+                    }}
+                  >
+                    Sync schedule to worker
+                  </Button>
+                ) : null}
+              </div>
               <p className="text-xs text-muted-foreground">
                 Scheduler and retry workers read these fields from{" "}
                 <code className="rounded bg-surface-inner px-1">definition</code>{" "}
@@ -504,6 +544,11 @@ export default function WorkflowDetailPage() {
                   <p className="mt-1 text-muted-foreground">
                     Step: {a.step_id ?? "—"}
                   </p>
+                  {a.due_by ? (
+                    <p className="mt-1 text-[11px] text-success">
+                      Due: {new Date(a.due_by).toLocaleString()}
+                    </p>
+                  ) : null}
                   {allowWrite ? (
                     <div className="mt-2 flex gap-2">
                       <Button
@@ -575,18 +620,37 @@ export default function WorkflowDetailPage() {
         </aside>
       </div>
 
-      <Dialog open={Boolean(logRun)} onOpenChange={() => setLogRun(null)}>
-        <DialogContent className="max-w-lg border-border/80 bg-card">
-          <DialogHeader>
-            <DialogTitle>Run log</DialogTitle>
-          </DialogHeader>
-          <ScrollArea className="max-h-80 pr-3">
-            <pre className="whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
-              {JSON.stringify(parseRunLogs(logRun), null, 2)}
-            </pre>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
+      <WorkflowRunConfigurator
+        open={runConfigOpen}
+        onOpenChange={setRunConfigOpen}
+        title="Configure workflow run"
+        isLoading={runWorkflow.isPending}
+        onConfirm={async (values) => {
+          if (!workflowId || !allowWrite) return;
+          const ok = await validateLocal();
+          if (!ok) {
+            toast.error("Fix validation errors before running");
+            return;
+          }
+          setRunConfigOpen(false);
+          toast.loading(values.testMode ? "Simulating…" : "Starting…");
+          const run = await runWorkflow.mutateAsync({
+            workflowId,
+            testMode: values.testMode,
+            correlationId: values.correlationId || undefined,
+            departmentId: deptScope,
+            inputPayload: values.inputPayload,
+          });
+          toast.dismiss();
+          if (run) {
+            toast.success(`Run ${run.status}`);
+            void refetchRuns();
+            void refetchApprovals();
+          } else {
+            toast.error("Run failed to start");
+          }
+        }}
+      />
     </AnimatedPage>
   );
 }

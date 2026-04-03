@@ -424,6 +424,7 @@ export interface Database {
           department_id: string | null;
           definition: Json;
           status: string;
+          next_run_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -435,6 +436,7 @@ export interface Database {
           department_id?: string | null;
           definition?: Json;
           status?: string;
+          next_run_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -446,6 +448,7 @@ export interface Database {
           department_id?: string | null;
           definition?: Json;
           status?: string;
+          next_run_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -461,6 +464,8 @@ export interface Database {
           result_metadata: Json;
           test_mode: boolean;
           correlation_id: string | null;
+          retry_count: number;
+          input_payload: Json;
           created_at: string;
           updated_at: string;
         };
@@ -474,6 +479,8 @@ export interface Database {
           result_metadata?: Json;
           test_mode?: boolean;
           correlation_id?: string | null;
+          retry_count?: number;
+          input_payload?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -487,6 +494,8 @@ export interface Database {
           result_metadata?: Json;
           test_mode?: boolean;
           correlation_id?: string | null;
+          retry_count?: number;
+          input_payload?: Json;
           created_at?: string;
           updated_at?: string;
         };
@@ -499,6 +508,8 @@ export interface Database {
           approver_user_id: string | null;
           decision: string;
           notes: string | null;
+          due_by: string | null;
+          approvers: Json;
           created_at: string;
           decided_at: string | null;
         };
@@ -509,6 +520,8 @@ export interface Database {
           approver_user_id?: string | null;
           decision?: string;
           notes?: string | null;
+          due_by?: string | null;
+          approvers?: Json;
           created_at?: string;
           decided_at?: string | null;
         };
@@ -519,6 +532,8 @@ export interface Database {
           approver_user_id?: string | null;
           decision?: string;
           notes?: string | null;
+          due_by?: string | null;
+          approvers?: Json;
           created_at?: string;
           decided_at?: string | null;
         };

@@ -7,27 +7,36 @@ import { useCallback, useState } from "react";
 
 import {
   appendWorkflowRunLogs,
+  cancelWorkflowRun,
   createDefaultWorkflowDefinition,
   createWorkflow,
   deleteWorkflow,
   fetchActivityLog,
   fetchApprovals,
   fetchWorkflow,
+  fetchWorkflowLibrary,
   fetchWorkflowRun,
   fetchWorkflowRuns,
   fetchWorkflows,
+  retryWorkflowRun,
   runWorkflow,
+  scheduleWorkflow,
   submitApproval,
   updateWorkflow,
   validateWorkflowDefinition,
 } from "@/api/workflows";
+import { WORKFLOW_LIBRARY_FALLBACK } from "@/lib/workflow-library-fallback";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type { WorkflowDefinition } from "@/types/workflows";
 
 export const workflowQueryKeys = {
   root: ["workflows-engine"] as const,
-  list: (filters: { status?: string; search?: string }) =>
-    [...workflowQueryKeys.root, "list", filters] as const,
+  library: () => [...workflowQueryKeys.root, "library"] as const,
+  list: (filters: {
+    status?: string;
+    search?: string;
+    departmentId?: string;
+  }) => [...workflowQueryKeys.root, "list", filters] as const,
   detail: (id: string) => [...workflowQueryKeys.root, "detail", id] as const,
   runs: (workflowId: string | undefined, extra: Record<string, string | undefined>) =>
     [...workflowQueryKeys.root, "runs", workflowId ?? "all", extra] as const,
@@ -41,13 +50,14 @@ export const workflowQueryKeys = {
 export function useWorkflowsList(params: {
   status?: string;
   search?: string;
+  departmentId?: string;
   enabled?: boolean;
 }) {
-  const { enabled = true, status, search } = params;
-  const filters = { status, search };
+  const { enabled = true, status, search, departmentId } = params;
+  const filters = { status, search, departmentId };
   return useQuery({
     queryKey: workflowQueryKeys.list(filters),
-    queryFn: () => fetchWorkflows({ status, search }),
+    queryFn: () => fetchWorkflows({ status, search, departmentId }),
     enabled: enabled && isSupabaseConfigured,
   });
 }
@@ -133,6 +143,17 @@ export function useActivityLogQuery(params: {
   });
 }
 
+export function useWorkflowLibraryQuery(enabled = true) {
+  return useQuery({
+    queryKey: workflowQueryKeys.library(),
+    queryFn: async () => {
+      const res = await fetchWorkflowLibrary();
+      return res ?? WORKFLOW_LIBRARY_FALLBACK;
+    },
+    enabled,
+  });
+}
+
 export function useApprovalsQuery(params: {
   runId?: string;
   decision?: string;
@@ -159,6 +180,7 @@ export function useWorkflowMutations() {
       name: string;
       definition: WorkflowDefinition;
       status?: string;
+      departmentId?: string | null;
     }) => createWorkflow(payload),
     onSuccess: () => invalidateAll(),
   });
@@ -169,6 +191,7 @@ export function useWorkflowMutations() {
       name?: string;
       definition?: WorkflowDefinition;
       status?: string;
+      departmentId?: string | null;
     }) => updateWorkflow(payload),
     onSuccess: (_d, v) => {
       void qc.invalidateQueries({ queryKey: workflowQueryKeys.detail(v.id) });
@@ -185,7 +208,46 @@ export function useWorkflowMutations() {
     mutationFn: (payload: {
       workflowId: string;
       testMode?: boolean;
+      correlationId?: string;
+      departmentId?: string;
+      inputPayload?: Record<string, unknown>;
     }) => runWorkflow(payload),
+    onSuccess: (data) => {
+      if (data?.workflow_id) {
+        void qc.invalidateQueries({
+          queryKey: workflowQueryKeys.runs(data.workflow_id, {}),
+        });
+      }
+      invalidateAll();
+    },
+  });
+
+  const scheduleMut = useMutation({
+    mutationFn: (payload: {
+      workflowId: string;
+      cronExpression?: string;
+      timezone?: string;
+    }) => scheduleWorkflow(payload),
+    onSuccess: (_d, v) => {
+      void qc.invalidateQueries({ queryKey: workflowQueryKeys.detail(v.workflowId) });
+      invalidateAll();
+    },
+  });
+
+  const retryRunMut = useMutation({
+    mutationFn: (runId: string) => retryWorkflowRun(runId),
+    onSuccess: (data) => {
+      if (data?.workflow_id) {
+        void qc.invalidateQueries({
+          queryKey: workflowQueryKeys.runs(data.workflow_id, {}),
+        });
+      }
+      invalidateAll();
+    },
+  });
+
+  const cancelRunMut = useMutation({
+    mutationFn: (runId: string) => cancelWorkflowRun(runId),
     onSuccess: (data) => {
       if (data?.workflow_id) {
         void qc.invalidateQueries({
@@ -216,6 +278,9 @@ export function useWorkflowMutations() {
     updateWorkflow: updateMut,
     deleteWorkflow: deleteMut,
     runWorkflow: runMut,
+    scheduleWorkflow: scheduleMut,
+    retryWorkflowRun: retryRunMut,
+    cancelWorkflowRun: cancelRunMut,
     appendLogs: appendLogsMut,
     submitApproval: approvalMut,
     validateDefinition: validateWorkflowDefinition,
