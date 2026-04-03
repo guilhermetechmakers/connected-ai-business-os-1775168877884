@@ -118,6 +118,30 @@ const opSchema = z.discriminatedUnion("op", [
     op: z.literal("admin.activity.tail"),
     limit: z.number().int().positive().max(200).optional(),
   }),
+  z.object({
+    op: z.literal("admin.activity.search"),
+    companyId: z.string().uuid().optional(),
+    search: z.string().max(500).optional(),
+    eventTypes: z.array(z.string()).optional(),
+    dateFrom: z.string().optional(),
+    dateTo: z.string().optional(),
+    actorUserId: z.string().uuid().optional(),
+    aiTriggeredOnly: z.boolean().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  z.object({
+    op: z.literal("admin.audit.search"),
+    companyId: z.string().uuid().optional(),
+    search: z.string().max(500).optional(),
+    eventTypes: z.array(z.string()).optional(),
+    dateFrom: z.string().optional(),
+    dateTo: z.string().optional(),
+    actorUserId: z.string().uuid().optional(),
+    aiTriggeredOnly: z.boolean().optional(),
+    limit: z.number().int().positive().max(200).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
   z.object({ op: z.literal("admin.pruneRetention") }),
 ]);
 
@@ -188,6 +212,25 @@ function normalizeRoles(roles: string[]): string[] {
 function isSuperAdmin(roles: string[]): boolean {
   return normalizeRoles(roles).includes("super_admin");
 }
+
+function canAdminCrossTenantRead(roles: string[]): boolean {
+  const r = normalizeRoles(roles);
+  return r.some((x) =>
+    ["super_admin", "compliance_auditor", "auditor"].includes(x)
+  );
+}
+
+const AUDIT_DEFAULT_EVENT_TYPES = [
+  "admin_action",
+  "system_change",
+  "user_action",
+  "workflow_event",
+  "workflow_run",
+  "integration_sync",
+  "connector.sync",
+  "ai_action",
+  "module_event",
+] as const;
 
 function canViewFullPayload(roles: string[]): boolean {
   const r = normalizeRoles(roles);
@@ -338,6 +381,8 @@ async function handleOp(
       }
       const payload = body.payload ?? {};
       const redacted = redactPayloadJson(payload) as Record<string, unknown>;
+      const aiTriggered =
+        body.eventType === "ai_action" || Boolean(body.aiActionId);
       const row: Record<string, unknown> = {
         company_id: companyId,
         event_type: body.eventType,
@@ -345,6 +390,7 @@ async function handleOp(
         payload,
         redacted_payload: redacted,
         metadata: body.metadata ?? {},
+        ai_triggered: aiTriggered,
       };
       if (body.workflowRunId) row.workflow_run_id = body.workflowRunId;
       if (body.connectorId) row.connector_id = body.connectorId;
@@ -549,14 +595,69 @@ async function handleOp(
   }
 }
 
+async function execAdminCrossTenantSearch(
+  admin: SupabaseClient,
+  roles: string[],
+  body:
+    | Extract<ParsedOp, { op: "admin.activity.search" }>
+    | Extract<ParsedOp, { op: "admin.audit.search" }>,
+): Promise<Response> {
+  const fullPayload = canViewFullPayload(roles);
+  const lim = Math.min(body.limit ?? 50, 200);
+  const off = body.offset ?? 0;
+  const defaultTypes = body.op === "admin.audit.search"
+    ? [...AUDIT_DEFAULT_EVENT_TYPES]
+    : null;
+  const types =
+    Array.isArray(body.eventTypes) && body.eventTypes.length > 0
+      ? body.eventTypes
+      : defaultTypes;
+
+  let q = admin
+    .from("activity_logs")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false });
+
+  if (body.companyId) q = q.eq("company_id", body.companyId);
+  if (types && types.length === 1) q = q.eq("event_type", types[0]!);
+  else if (types && types.length > 1) q = q.in("event_type", [...types]);
+  if (body.actorUserId) q = q.eq("actor_user_id", body.actorUserId);
+  if (body.dateFrom) q = q.gte("created_at", body.dateFrom);
+  if (body.dateTo) q = q.lte("created_at", body.dateTo);
+  if (body.aiTriggeredOnly === true) q = q.eq("ai_triggered", true);
+  if (body.search?.trim()) {
+    const term = body.search.trim().replace(/%/g, "\\%");
+    q = q.ilike("event_type", `%${term}%`);
+  }
+
+  q = q.range(off, off + lim - 1);
+  const { data, error, count } = await q;
+  if (error) return json({ error: error.message }, 400);
+  const raw = Array.isArray(data) ? data : [];
+  const rows = raw.map((r) =>
+    mapRowForViewer(r as Record<string, unknown>, fullPayload),
+  );
+  return json({
+    data: rows,
+    total: typeof count === "number" ? count : rows.length,
+    canViewFullPayload: fullPayload,
+  });
+}
+
 async function handleAdminOp(
   userId: string,
   roles: string[],
   body: ParsedOp,
 ): Promise<Response> {
-  if (!isSuperAdmin(roles)) {
+  const superUser = isSuperAdmin(roles);
+  const auditorTailOnly =
+    !superUser &&
+    canAdminCrossTenantRead(roles) &&
+    body.op === "admin.activity.tail";
+  if (!superUser && !auditorTailOnly) {
     return json({ error: "Forbidden" }, 403);
   }
+
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const url = Deno.env.get("SUPABASE_URL") ?? "";
   if (!serviceKey) return json({ error: "Server missing service role" }, 500);
@@ -703,6 +804,9 @@ async function handleAdminOp(
       return json({ data: list, total: list.length });
     }
     case "admin.pruneRetention": {
+      if (!superUser) {
+        return json({ error: "Forbidden" }, 403);
+      }
       const { data: companies, error: cErr } = await admin
         .from("companies")
         .select("id, activity_log_retention_days");
@@ -761,6 +865,28 @@ serve(async (req) => {
     }
 
     const op = parsed.data.op;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const url = Deno.env.get("SUPABASE_URL") ?? "";
+
+    const crossTenantSearchOps: ParsedOp["op"][] = [
+      "admin.activity.search",
+      "admin.audit.search",
+    ];
+    if (crossTenantSearchOps.includes(op)) {
+      if (!canAdminCrossTenantRead(roles)) {
+        return json({ error: "Forbidden" }, 403);
+      }
+      if (!serviceKey) {
+        return json({ error: "Server missing service role" }, 500);
+      }
+      const admin = createClient(url, serviceKey);
+      return await execAdminCrossTenantSearch(
+        admin,
+        roles,
+        parsed.data as Parameters<typeof execAdminCrossTenantSearch>[2],
+      );
+    }
+
     const adminOps = [
       "admin.templates.list",
       "admin.templates.upsert",

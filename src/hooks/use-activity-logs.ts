@@ -9,7 +9,9 @@ import {
   createAdminTenant,
   deleteAdminSystemTemplate,
   exportTenantActivityLogs,
+  fetchAdminActivitySearch,
   fetchAdminActivityTail,
+  fetchAdminAuditSearch,
   fetchAdminFeatureFlags,
   fetchAdminSystemTemplates,
   fetchTenantActivityLogs,
@@ -29,6 +31,10 @@ export const activityLogQueryKeys = {
     ["activity-logs", "admin", "flags", companyId ?? "all"] as const,
   adminTail: (limit: number) =>
     ["activity-logs", "admin", "tail", String(limit)] as const,
+  adminActivitySearch: (filters: Record<string, string | boolean | undefined>) =>
+    ["activity-logs", "admin", "activity-search", filters] as const,
+  adminAuditSearch: (filters: Record<string, string | boolean | undefined>) =>
+    ["activity-logs", "admin", "audit-search", filters] as const,
 };
 
 export function useTenantActivityLogsQuery(params: {
@@ -163,6 +169,116 @@ export function useAdminActivityTailQuery(limit = 60, enabled = true) {
   return useQuery({
     queryKey: activityLogQueryKeys.adminTail(limit),
     queryFn: () => fetchAdminActivityTail(limit),
+    enabled: enabled && isSupabaseConfigured,
+  });
+}
+
+export function useAdminActivitySearchQuery(params: {
+  companyId?: string;
+  search?: string;
+  eventTypes?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  actorUserId?: string;
+  aiTriggeredOnly?: boolean;
+  limit?: number;
+  offset?: number;
+  enabled?: boolean;
+}) {
+  const {
+    companyId,
+    search,
+    eventTypes,
+    dateFrom,
+    dateTo,
+    actorUserId,
+    aiTriggeredOnly,
+    limit = 40,
+    offset = 0,
+    enabled = true,
+  } = params;
+
+  const filterKey = {
+    c: companyId,
+    s: search,
+    et: Array.isArray(eventTypes) ? eventTypes.join(",") : "",
+    df: dateFrom,
+    dt: dateTo,
+    a: actorUserId,
+    ai: aiTriggeredOnly === true ? "1" : "",
+    l: String(limit),
+    o: String(offset),
+  };
+
+  return useQuery({
+    queryKey: activityLogQueryKeys.adminActivitySearch(filterKey),
+    queryFn: () =>
+      fetchAdminActivitySearch({
+        companyId,
+        search,
+        eventTypes,
+        dateFrom,
+        dateTo,
+        actorUserId,
+        aiTriggeredOnly,
+        limit,
+        offset,
+      }),
+    enabled: enabled && isSupabaseConfigured,
+  });
+}
+
+export function useAdminAuditSearchQuery(params: {
+  companyId?: string;
+  search?: string;
+  eventTypes?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  actorUserId?: string;
+  aiTriggeredOnly?: boolean;
+  limit?: number;
+  offset?: number;
+  enabled?: boolean;
+}) {
+  const {
+    companyId,
+    search,
+    eventTypes,
+    dateFrom,
+    dateTo,
+    actorUserId,
+    aiTriggeredOnly,
+    limit = 40,
+    offset = 0,
+    enabled = true,
+  } = params;
+
+  const filterKey = {
+    c: companyId,
+    s: search,
+    et: Array.isArray(eventTypes) ? eventTypes.join(",") : "",
+    df: dateFrom,
+    dt: dateTo,
+    a: actorUserId,
+    ai: aiTriggeredOnly === true ? "1" : "",
+    l: String(limit),
+    o: String(offset),
+  };
+
+  return useQuery({
+    queryKey: activityLogQueryKeys.adminAuditSearch(filterKey),
+    queryFn: () =>
+      fetchAdminAuditSearch({
+        companyId,
+        search,
+        eventTypes,
+        dateFrom,
+        dateTo,
+        actorUserId,
+        aiTriggeredOnly,
+        limit,
+        offset,
+      }),
     enabled: enabled && isSupabaseConfigured,
   });
 }

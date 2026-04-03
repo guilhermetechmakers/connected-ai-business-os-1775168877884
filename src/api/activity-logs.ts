@@ -266,6 +266,90 @@ export async function createAdminTenant(payload: {
   return typed.id ? typed : null;
 }
 
+export async function fetchAdminActivitySearch(params: {
+  companyId?: string;
+  search?: string;
+  eventTypes?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  actorUserId?: string;
+  aiTriggeredOnly?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<ActivityLogsListResult> {
+  const { data, error } = await invokeActivityLogsApi<ListEnvelope>({
+    op: "admin.activity.search",
+    companyId: params.companyId,
+    search: params.search,
+    eventTypes: params.eventTypes,
+    dateFrom: params.dateFrom,
+    dateTo: params.dateTo,
+    actorUserId: params.actorUserId,
+    aiTriggeredOnly: params.aiTriggeredOnly,
+    limit: params.limit,
+    offset: params.offset,
+  });
+  if (error || !data || typeof data !== "object") {
+    return { entries: [], total: 0, canViewFullPayload: false };
+  }
+  const entries = asActivityEntries(
+    (data as { data?: unknown }).data,
+  );
+  const total =
+    typeof (data as { total?: number }).total === "number"
+      ? (data as { total: number }).total
+      : entries.length;
+  return {
+    entries,
+    total,
+    canViewFullPayload: Boolean(
+      (data as { canViewFullPayload?: boolean }).canViewFullPayload,
+    ),
+  };
+}
+
+export async function fetchAdminAuditSearch(params: {
+  companyId?: string;
+  search?: string;
+  eventTypes?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  actorUserId?: string;
+  aiTriggeredOnly?: boolean;
+  limit?: number;
+  offset?: number;
+}): Promise<ActivityLogsListResult> {
+  const { data, error } = await invokeActivityLogsApi<ListEnvelope>({
+    op: "admin.audit.search",
+    companyId: params.companyId,
+    search: params.search,
+    eventTypes: params.eventTypes,
+    dateFrom: params.dateFrom,
+    dateTo: params.dateTo,
+    actorUserId: params.actorUserId,
+    aiTriggeredOnly: params.aiTriggeredOnly,
+    limit: params.limit,
+    offset: params.offset,
+  });
+  if (error || !data || typeof data !== "object") {
+    return { entries: [], total: 0, canViewFullPayload: false };
+  }
+  const entries = asActivityEntries(
+    (data as { data?: unknown }).data,
+  );
+  const total =
+    typeof (data as { total?: number }).total === "number"
+      ? (data as { total: number }).total
+      : entries.length;
+  return {
+    entries,
+    total,
+    canViewFullPayload: Boolean(
+      (data as { canViewFullPayload?: boolean }).canViewFullPayload,
+    ),
+  };
+}
+
 export async function fetchAdminActivityTail(
   limit?: number,
 ): Promise<ActivityLogEntry[]> {

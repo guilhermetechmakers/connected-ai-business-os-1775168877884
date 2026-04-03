@@ -133,6 +133,13 @@ function json(data: unknown, status = 200) {
   });
 }
 
+function canIntegrationAdminRead(roles: string[]): boolean {
+  const r = roles.map((x) => String(x).toLowerCase());
+  return r.some((x) =>
+    ["super_admin", "compliance_auditor", "auditor"].includes(x)
+  );
+}
+
 async function handleOp(
   supabase: SupabaseClient,
   userId: string,
@@ -439,7 +446,7 @@ async function handleOp(
 
     case "admin.tenants":
     case "admin.integrationOverview": {
-      if (!roles.includes("super_admin")) {
+      if (!canIntegrationAdminRead(roles)) {
         return json({ error: "Forbidden" }, 403);
       }
       const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");

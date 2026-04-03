@@ -91,6 +91,7 @@ const opSchema = z.discriminatedUnion("op", [
     op: z.literal("onboarding.templates.delete"),
     id: z.string().uuid(),
   }),
+  z.object({ op: z.literal("onboarding.templates.adminList") }),
   z.object({
     op: z.literal("onboarding.company.apply"),
     legalName: z.string().min(1).max(200),
@@ -163,6 +164,15 @@ function isSuperAdmin(roles: string[]): boolean {
   return normalizeRoles(roles).includes("super_admin");
 }
 
+function isPlatformAuditor(roles: string[]): boolean {
+  const r = normalizeRoles(roles);
+  return r.some((x) => ["compliance_auditor", "auditor"].includes(x));
+}
+
+function canTenantsAdminRead(roles: string[]): boolean {
+  return isSuperAdmin(roles) || isPlatformAuditor(roles);
+}
+
 function isCompanyAdmin(roles: string[]): boolean {
   const r = normalizeRoles(roles);
   return r.some((x) =>
@@ -193,8 +203,22 @@ async function logAdminAction(
 async function handleSuperAdmin(
   admin: SupabaseClient,
   userId: string,
+  roles: string[],
   body: ParsedOp,
 ): Promise<Response> {
+  const auditorOnly = isPlatformAuditor(roles) && !isSuperAdmin(roles);
+  const mutateOps: ParsedOp["op"][] = [
+    "tenants.admin.create",
+    "tenants.admin.patch",
+    "tenants.admin.deprovision",
+    "tenants.admin.bulkDeprovision",
+    "onboarding.templates.upsert",
+    "onboarding.templates.delete",
+  ];
+  if (auditorOnly && mutateOps.includes(body.op)) {
+    return json({ error: "Forbidden" }, 403);
+  }
+
   switch (body.op) {
     case "tenants.admin.list": {
       const limit = body.limit ?? 25;
@@ -309,6 +333,15 @@ async function handleSuperAdmin(
         }
       }
       return json({ data: results });
+    }
+    case "onboarding.templates.adminList": {
+      const { data, error } = await admin
+        .from("onboarding_templates")
+        .select("*")
+        .order("updated_at", { ascending: false })
+        .limit(200);
+      if (error) return json({ error: error.message }, 500);
+      return json({ data: Array.isArray(data) ? data : [] });
     }
     case "tenants.admin.integrationMonitor": {
       const cid = body.companyId;
@@ -538,14 +571,17 @@ serve(async (req) => {
     }
 
     const body = parsed.data;
-    const superOps: ParsedOp["op"][] = [
+    const superReadOps: ParsedOp["op"][] = [
       "tenants.admin.list",
       "tenants.admin.get",
+      "tenants.admin.integrationMonitor",
+      "onboarding.templates.adminList",
+    ];
+    const superMutateOps: ParsedOp["op"][] = [
       "tenants.admin.create",
       "tenants.admin.patch",
       "tenants.admin.deprovision",
       "tenants.admin.bulkDeprovision",
-      "tenants.admin.integrationMonitor",
       "onboarding.templates.upsert",
       "onboarding.templates.delete",
     ];
@@ -554,14 +590,16 @@ serve(async (req) => {
     const url = Deno.env.get("SUPABASE_URL") ?? "";
     const admin = serviceKey ? createClient(url, serviceKey) : null;
 
-    if (superOps.includes(body.op)) {
-      if (!isSuperAdmin(roles)) {
+    if (superReadOps.includes(body.op) || superMutateOps.includes(body.op)) {
+      const needsMutate = superMutateOps.includes(body.op);
+      const allowed = needsMutate ? isSuperAdmin(roles) : canTenantsAdminRead(roles);
+      if (!allowed) {
         return json({ error: "Forbidden" }, 403);
       }
       if (!admin) {
         return json({ error: "Server missing service role" }, 500);
       }
-      return await handleSuperAdmin(admin, userId, body);
+      return await handleSuperAdmin(admin, userId, roles, body);
     }
 
     if (body.op === "onboarding.templates.list") {

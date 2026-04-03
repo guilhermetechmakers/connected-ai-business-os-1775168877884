@@ -1,9 +1,20 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
+import { AdminRoute } from "@/components/auth/admin-route";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppProviders } from "@/components/providers";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import AdminConsolePage from "@/pages/dashboard/admin-console-page";
+import AdminActivityPage from "@/pages/dashboard/admin/admin-activity-page";
+import AdminAuditPage from "@/pages/dashboard/admin/admin-audit-page";
+import AdminFlagsPage from "@/pages/dashboard/admin/admin-flags-page";
+import AdminIntegrationsPage from "@/pages/dashboard/admin/admin-integrations-page";
+import AdminOnboardingPage from "@/pages/dashboard/admin/admin-onboarding-page";
+import AdminOverviewPage from "@/pages/dashboard/admin/admin-overview-page";
+import AdminProvisionPage from "@/pages/dashboard/admin/admin-provision-page";
+import AdminTemplatesPage from "@/pages/dashboard/admin/admin-templates-page";
+import { AdminDashboardShell } from "@/components/admin-console";
+import AdminMaintenancePage from "@/pages/dashboard/admin/admin-maintenance-page";
+import AdminTenantsPage from "@/pages/dashboard/admin/admin-tenants-page";
 import AIWorkspacePage from "@/pages/dashboard/ai-workspace-page";
 import ActivityLogPage from "@/pages/dashboard/activity-log-page";
 import CreateModulePage from "@/pages/dashboard/create-module-page";
@@ -64,6 +75,7 @@ export default function App() {
         <Route path="/loading" element={<LoadingPage />} />
         <Route path="/success" element={<SuccessPage />} />
         <Route path="/error-500" element={<ServerErrorPage />} />
+        <Route path="/server-error" element={<ServerErrorPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardLayout />}>
             <Route index element={<Navigate to="global" replace />} />
@@ -81,7 +93,21 @@ export default function App() {
             <Route path="activity" element={<ActivityLogPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="profile" element={<ProfilePage />} />
-            <Route path="admin" element={<AdminConsolePage />} />
+            <Route path="admin" element={<AdminRoute />}>
+              <Route element={<AdminDashboardShell />}>
+                <Route index element={<Navigate to="overview" replace />} />
+                <Route path="overview" element={<AdminOverviewPage />} />
+                <Route path="tenants" element={<AdminTenantsPage />} />
+                <Route path="integrations" element={<AdminIntegrationsPage />} />
+                <Route path="templates" element={<AdminTemplatesPage />} />
+                <Route path="onboarding" element={<AdminOnboardingPage />} />
+                <Route path="flags" element={<AdminFlagsPage />} />
+                <Route path="activity" element={<AdminActivityPage />} />
+                <Route path="audit" element={<AdminAuditPage />} />
+                <Route path="maintenance" element={<AdminMaintenancePage />} />
+                <Route path="provision" element={<AdminProvisionPage />} />
+              </Route>
+            </Route>
           </Route>
           <Route path="/department/:deptId" element={<DashboardLayout />}>
             <Route index element={<DepartmentWorkspacePage />} />

@@ -15,6 +15,7 @@ export interface ActivityLogEntry {
   connector_id: string | null;
   integration_id: string | null;
   ai_action_id: string | null;
+  ai_triggered?: boolean;
   idempotency_key?: string | null;
   created_at: string;
 }

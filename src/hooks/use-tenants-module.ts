@@ -8,8 +8,10 @@ import {
   applyOnboardingCompany,
   bulkDeprovisionTenantsAdmin,
   createTenantAdminModule,
+  deleteOnboardingTemplateAdmin,
   deprovisionTenantAdmin,
   fetchOnboardingTemplates,
+  fetchOnboardingTemplatesAdmin,
   fetchTenantAdminDetail,
   fetchTenantConfigs,
   fetchTenantIntegrationMonitor,
@@ -131,6 +133,15 @@ export function useOnboardingTemplatesQuery(
   });
 }
 
+export function useOnboardingTemplatesAdminQuery(enabled = true) {
+  return useQuery({
+    queryKey: [...tenancyQueryKeys.root, "onboarding-templates-admin"] as const,
+    queryFn: fetchOnboardingTemplatesAdmin,
+    enabled: enabled && isSupabaseConfigured,
+    retry: false,
+  });
+}
+
 export function useCreateTenantModuleMutation() {
   const qc = useQueryClient();
   return useMutation({
@@ -191,6 +202,19 @@ export function useUpsertOnboardingTemplateMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: upsertOnboardingTemplateAdmin,
+    onSuccess: () => {
+      void qc.invalidateQueries({
+        predicate: (q) =>
+          Array.isArray(q.queryKey) && q.queryKey[0] === "tenancy",
+      });
+    },
+  });
+}
+
+export function useDeleteOnboardingTemplateMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteOnboardingTemplateAdmin,
     onSuccess: () => {
       void qc.invalidateQueries({
         predicate: (q) =>

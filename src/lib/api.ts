@@ -137,7 +137,9 @@ export {
   createAdminTenant,
   deleteAdminSystemTemplate,
   exportTenantActivityLogs,
+  fetchAdminActivitySearch,
   fetchAdminActivityTail,
+  fetchAdminAuditSearch,
   fetchAdminFeatureFlags,
   fetchAdminSystemTemplates,
   fetchTenantActivityLogs,
@@ -182,6 +184,12 @@ export {
   type TenantUserRow,
 } from "@/api/user-profile";
 
+/** Admin console REST facade (`admin-console-api` Edge Function, super_admin only). */
+export {
+  adminConsoleRest,
+  fetchAdminCrossTenantActivity,
+} from "@/lib/admin-console-api";
+
 /** Multi-tenant company module (Edge Function `tenants-api` + Supabase RLS). */
 export {
   applyOnboardingCompany,
@@ -189,6 +197,7 @@ export {
   createTenantAdminModule,
   deprovisionTenantAdmin,
   fetchOnboardingTemplates,
+  fetchOnboardingTemplatesAdmin,
   fetchTenantAdminDetail,
   fetchTenantConfigs,
   fetchTenantIntegrationMonitor,

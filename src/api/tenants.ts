@@ -192,6 +192,17 @@ export async function upsertTenantConfig(payload: {
   return row as TenantConfigRow;
 }
 
+export async function fetchOnboardingTemplatesAdmin(): Promise<
+  OnboardingTemplateRow[]
+> {
+  const { data, error } = await invokeTenantsApi<{ data?: unknown }>({
+    op: "onboarding.templates.adminList",
+  });
+  if (error || !data || typeof data !== "object") return [];
+  const list = (data as { data?: unknown }).data;
+  return Array.isArray(list) ? (list as OnboardingTemplateRow[]) : [];
+}
+
 export async function fetchOnboardingTemplates(params?: {
   templateType?: "onboarding" | "system";
 }): Promise<OnboardingTemplateRow[]> {
