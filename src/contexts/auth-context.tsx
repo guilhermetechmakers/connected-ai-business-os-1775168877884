@@ -18,11 +18,67 @@ import type {
   TenantPayload,
 } from "@/types/auth-api";
 
+const DEMO_SESSION_KEY = "caos_demo_session_v1";
+
+export type DemoSessionPayload = {
+  email: string;
+  rememberMe: boolean;
+  tenantName?: string;
+  tenantId?: string;
+};
+
+function parseDemoSession(raw: unknown): DemoSessionPayload | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.email !== "string" || typeof o.rememberMe !== "boolean") return null;
+  return {
+    email: o.email,
+    rememberMe: o.rememberMe,
+    tenantName: typeof o.tenantName === "string" ? o.tenantName : undefined,
+    tenantId: typeof o.tenantId === "string" ? o.tenantId : undefined,
+  };
+}
+
+function readDemoSessionFromStorage(): DemoSessionPayload | null {
+  for (const store of [sessionStorage, localStorage]) {
+    try {
+      const raw = store.getItem(DEMO_SESSION_KEY);
+      if (!raw) continue;
+      const parsed = parseDemoSession(JSON.parse(raw) as unknown);
+      if (parsed) return parsed;
+    } catch {
+      /* ignore corrupt storage */
+    }
+  }
+  return null;
+}
+
+function persistDemoSession(payload: DemoSessionPayload): void {
+  const primary = payload.rememberMe ? localStorage : sessionStorage;
+  const secondary = payload.rememberMe ? sessionStorage : localStorage;
+  try {
+    secondary.removeItem(DEMO_SESSION_KEY);
+    primary.setItem(DEMO_SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function clearDemoSessionStorage(): void {
+  try {
+    sessionStorage.removeItem(DEMO_SESSION_KEY);
+    localStorage.removeItem(DEMO_SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 export type AuthLoginPayload = {
   email: string;
   password: string;
   tenantDomain?: string;
   tenantId?: string;
+  rememberMe?: boolean;
 };
 
 export type AuthSignupCompanyProfile = {
@@ -49,6 +105,7 @@ type AuthContextValue = {
   user: User | null;
   isLoading: boolean;
   isConfigured: boolean;
+  demoSession: DemoSessionPayload | null;
   profile: ProfilePayload;
   tenant: TenantPayload;
   profileBundle: ProfileGetData | null;
@@ -56,6 +113,7 @@ type AuthContextValue = {
   signInWithPassword: (
     payload: AuthLoginPayload,
   ) => Promise<{ ok: boolean; error?: string; code?: string }>;
+  signInDemo: (payload: DemoSessionPayload) => void;
   signUp: (payload: AuthSignupPayload) => Promise<{ ok: boolean; error?: string }>;
   signOut: () => Promise<void>;
   ensureProfile: () => Promise<void>;
@@ -73,6 +131,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [demoSession, setDemoSession] = useState<DemoSessionPayload | null>(() =>
+    readDemoSessionFromStorage(),
+  );
   const [profile, setProfile] = useState<ProfilePayload>(null);
   const [tenant, setTenant] = useState<TenantPayload>(null);
   const [profileBundle, setProfileBundle] = useState<ProfileGetData | null>(null);
@@ -139,14 +200,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           password: payload.password,
           tenantDomain: payload.tenantDomain,
           tenantId: payload.tenantId,
+          rememberMe: payload.rememberMe === true,
         },
         { skipAuthHeader: true },
       );
       if (res.error || !res.data?.session) {
+        const metaCode =
+          res.meta && typeof res.meta === "object" && "code" in res.meta
+            ? (res.meta as { code?: unknown }).code
+            : undefined;
         return {
           ok: false as const,
           error: res.error?.message ?? "Sign-in failed",
-          code: typeof res.meta?.code === "string" ? res.meta.code : undefined,
+          code:
+            typeof res.error?.code === "string"
+              ? res.error.code
+              : typeof metaCode === "string"
+                ? metaCode
+                : undefined,
         };
       }
       const { error } = await supabase.auth.setSession({
@@ -156,6 +227,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (error) {
         return { ok: false as const, error: error.message };
       }
+      try {
+        if (payload.rememberMe === true) {
+          localStorage.setItem("caos_auth_remember_me", "1");
+        } else {
+          localStorage.removeItem("caos_auth_remember_me");
+        }
+      } catch {
+        /* storage may be unavailable */
+      }
       setProfile(res.data.profile ?? null);
       setTenant(res.data.tenant ?? null);
       await refreshProfileBundle();
@@ -163,6 +243,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
     [refreshProfileBundle],
   );
+
+  const signInDemo = useCallback((payload: DemoSessionPayload) => {
+    persistDemoSession(payload);
+    setDemoSession(payload);
+  }, []);
 
   const signUp = useCallback(async (payload: AuthSignupPayload) => {
     const departments = Array.isArray(payload.companyProfile?.departments)
@@ -218,6 +303,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshProfileBundle]);
 
   const signOut = useCallback(async () => {
+    clearDemoSessionStorage();
+    setDemoSession(null);
+    try {
+      localStorage.removeItem("caos_auth_remember_me");
+    } catch {
+      /* ignore */
+    }
     const { data: current } = await supabase.auth.getSession();
     if (current.session?.access_token) {
       try {
@@ -260,11 +352,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isLoading,
       isConfigured: isSupabaseConfigured,
+      demoSession,
       profile,
       tenant,
       profileBundle,
       refreshProfileBundle,
       signInWithPassword,
+      signInDemo,
       signUp,
       signOut,
       ensureProfile,
@@ -274,11 +368,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       session,
       user,
       isLoading,
+      demoSession,
       profile,
       tenant,
       profileBundle,
       refreshProfileBundle,
       signInWithPassword,
+      signInDemo,
       signUp,
       signOut,
       ensureProfile,

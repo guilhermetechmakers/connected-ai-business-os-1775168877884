@@ -5,7 +5,7 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/auth-context";
 
 export function ProtectedRoute() {
-  const { session, isLoading, isConfigured, ensureProfile } = useAuth();
+  const { session, isLoading, isConfigured, ensureProfile, demoSession } = useAuth();
   const location = useLocation();
 
   useEffect(() => {
@@ -14,13 +14,17 @@ export function ProtectedRoute() {
   }, [ensureProfile, isConfigured, session]);
 
   if (!isConfigured) {
+    if (!demoSession) {
+      return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    }
     return (
       <div className="min-h-screen">
         <div className="border-b border-border/80 bg-card/90 px-4 py-2 text-center text-xs text-muted-foreground">
-          Demo mode: set{" "}
+          Demo session active for{" "}
+          <span className="font-medium text-foreground">{demoSession.email}</span>. Configure{" "}
           <span className="font-mono text-[10px] text-foreground">VITE_SUPABASE_URL</span> and{" "}
-          <span className="font-mono text-[10px] text-foreground">VITE_SUPABASE_ANON_KEY</span>{" "}
-          to enforce authenticated dashboard access.
+          <span className="font-mono text-[10px] text-foreground">VITE_SUPABASE_ANON_KEY</span> for
+          full auth.
         </div>
         <Outlet />
       </div>

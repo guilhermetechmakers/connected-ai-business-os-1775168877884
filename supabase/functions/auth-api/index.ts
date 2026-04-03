@@ -2,7 +2,7 @@
  * Auth API — multi-tenant signup/login, refresh, password reset, email verification, profile, API keys,
  * tenant settings (admin), team listing, SSO unlink, TOTP enroll/verify/disable, domain suggestions.
  * Uses Supabase Auth (GoTrue) for credentials; service role for provisioning and token-backed flows.
- * Client: supabase.functions.invoke('auth-api', { body: { op, ... } }).
+ * Client: POST /functions/v1/auth-api (native fetch or supabase.functions.invoke) with JSON body { op, ... }.
  * Secrets: SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL, SUPABASE_ANON_KEY.
  * Optional: SITE_URL (for email links), GOOGLE_OAUTH_CLIENT_ID, MICROSOFT_OAUTH_CLIENT_ID.
  */
@@ -64,6 +64,12 @@ const opSchema = z.discriminatedUnion("op", [
     password: z.string().min(1).max(200),
     tenantDomain: z.string().max(200).optional(),
     tenantId: z.string().uuid().optional(),
+    rememberMe: z.boolean().optional(),
+  }),
+  z.object({
+    op: z.literal("auth.sso.start"),
+    tenantId: z.string().uuid().optional(),
+    redirectTo: z.string().url().optional(),
   }),
   z.object({
     op: z.literal("auth.logout"),
@@ -792,7 +798,65 @@ serve(async (req) => {
         });
       }
 
+      case "auth.sso.start": {
+        const site = parsed.redirectTo ?? Deno.env.get("SITE_URL") ?? "http://localhost:5173";
+        let idpUrl: string | null = null;
+        if (parsed.tenantId) {
+          const { data: co } = await admin
+            .from("companies")
+            .select("sso_settings,name")
+            .eq("id", parsed.tenantId)
+            .maybeSingle();
+          if (!co) {
+            return jsonResponse(
+              {
+                data: null,
+                error: { message: "Workspace not found. Check your sign-in link." },
+                meta: { code: "tenant_not_found" },
+              },
+              404,
+            );
+          }
+          const sso =
+            co?.sso_settings && typeof co.sso_settings === "object" && !Array.isArray(co.sso_settings)
+              ? (co.sso_settings as Record<string, unknown>)
+              : {};
+          const candidates = [
+            "saml_sso_url",
+            "oidc_authorization_url",
+            "idpAuthorizationUrl",
+            "ssoEntryUrl",
+            "entryUrl",
+            "authorizationUrl",
+          ] as const;
+          for (const k of candidates) {
+            const v = sso[k];
+            if (typeof v === "string" && v.startsWith("http")) {
+              idpUrl = v;
+              break;
+            }
+          }
+        }
+        if (!idpUrl) {
+          return jsonResponse(
+            {
+              data: null,
+              error: {
+                message:
+                  "Enterprise SSO is not configured for this workspace. Use email sign-in or ask your admin to connect your IdP.",
+              },
+              meta: { code: "sso_not_configured" },
+            },
+            400,
+          );
+        }
+        const sep = idpUrl.includes("?") ? "&" : "?";
+        const url = `${idpUrl}${sep}return_to=${encodeURIComponent(`${site}/login`)}`;
+        return jsonResponse({ data: { url }, error: null, meta: {} });
+      }
+
       case "auth.login": {
+        void parsed.rememberMe;
         const emailNorm = normalizeEmail(parsed.email);
         const ip = getClientIp(req);
         if (await isLockedOut(admin, emailNorm)) {
@@ -896,7 +960,10 @@ serve(async (req) => {
 
         await recordSuccess(admin, emailNorm, ip);
         const bundle = await fetchProfileBundle(admin, userId);
-        await logSecurityEvent(admin, companyId, userId, "login_success", { ip });
+        await logSecurityEvent(admin, companyId, userId, "login_success", {
+          ip,
+          remember_me: parsed.rememberMe === true,
+        });
 
         return jsonResponse({
           data: {

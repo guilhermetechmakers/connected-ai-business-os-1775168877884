@@ -1,5 +1,13 @@
 import { supabase } from "@/lib/supabase";
 
+/** Auth Edge Function (`auth-api`) — native `fetch` inside `invokeAuthApiEnvelope`. */
+export {
+  invokeAuthApi,
+  invokeAuthApiEnvelope,
+  safeStringArray,
+  type AuthApiEnvelope,
+} from "@/lib/auth-api";
+
 /** Public marketing content (native fetch, no auth). */
 export {
   fetchLogoAssets,

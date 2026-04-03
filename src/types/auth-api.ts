@@ -2,6 +2,7 @@ import type { Json } from "@/types/database";
 
 export type AuthApiError = {
   message: string;
+  /** Present when the Edge Function attaches a machine-readable code on the error object. */
   code?: string;
   details?: unknown;
 };

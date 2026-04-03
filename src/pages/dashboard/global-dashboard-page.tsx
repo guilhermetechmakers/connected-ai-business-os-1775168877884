@@ -15,7 +15,7 @@ import { useAuth } from "@/contexts/auth-context";
 
 export default function GlobalDashboardPage() {
   const navigate = useNavigate();
-  const { profile, tenant } = useAuth();
+  const { profile, tenant, demoSession } = useAuth();
   const profileRoles = Array.isArray(profile?.roles) ? profile.roles : [];
 
   const [rolePreview, setRolePreview] = useState<RolePreviewMode>("actual");
@@ -33,7 +33,10 @@ export default function GlobalDashboardPage() {
 
   const leading = (
     <div className="space-y-8">
-      <GlobalDashboardHero tenantName={tenant?.name ?? null} dateRange={dateRange} />
+      <GlobalDashboardHero
+        tenantName={tenant?.name ?? demoSession?.tenantName ?? null}
+        dateRange={dateRange}
+      />
       <GlobalDashboardToolbar
         rolePreview={rolePreview}
         onRolePreviewChange={setRolePreview}
