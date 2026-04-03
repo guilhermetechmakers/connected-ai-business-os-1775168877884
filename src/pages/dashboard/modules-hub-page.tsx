@@ -12,7 +12,7 @@ import {
 
 import { AnimatedPage } from "@/components/animated-page";
 import { PageHeader } from "@/components/layout/page-header";
-import { summarizeBindings } from "@/api/modules";
+import { fetchModuleVersions, summarizeBindings } from "@/api/modules";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,7 +50,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { fetchModuleVersions } from "@/api/modules";
 import {
   useDeleteModuleMutation,
   useDeployModuleMutation,
@@ -60,7 +59,11 @@ import {
   useRollbackModuleMutation,
 } from "@/hooks/use-modules";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import type { InternalModuleRow, MarketplaceTemplateRow } from "@/types/modules";
+import type {
+  InternalModuleRow,
+  MarketplaceTemplateRow,
+  ModuleDataBinding,
+} from "@/types/modules";
 
 function statusBadgeVariant(
   status: string,
@@ -321,7 +324,9 @@ export default function ModulesHubPage() {
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {summarizeBindings(
-                            Array.isArray(m.data_bindings) ? m.data_bindings : [],
+                            (Array.isArray(m.data_bindings)
+                              ? m.data_bindings
+                              : []) as ModuleDataBinding[],
                           )}
                         </TableCell>
                         <TableCell className="text-right">

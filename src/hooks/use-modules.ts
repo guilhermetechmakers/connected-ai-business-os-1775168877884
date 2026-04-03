@@ -218,6 +218,9 @@ export function useUpdateModuleMutation() {
       void qc.invalidateQueries({
         queryKey: modulesQueryKeys.versions(vars.id),
       });
+      void qc.invalidateQueries({
+        queryKey: modulesQueryKeys.audit(vars.id),
+      });
     },
   });
 }
@@ -249,6 +252,9 @@ export function useDeployModuleMutation() {
     onSuccess: (_d, moduleId) => {
       void qc.invalidateQueries({ queryKey: modulesQueryKeys.root });
       void qc.invalidateQueries({ queryKey: modulesQueryKeys.detail(moduleId) });
+      void qc.invalidateQueries({
+        queryKey: modulesQueryKeys.audit(moduleId),
+      });
     },
   });
 }
@@ -263,6 +269,9 @@ export function usePublishModuleVersionMutation() {
       });
       void qc.invalidateQueries({
         queryKey: modulesQueryKeys.detail(vars.moduleId),
+      });
+      void qc.invalidateQueries({
+        queryKey: modulesQueryKeys.audit(vars.moduleId),
       });
       void qc.invalidateQueries({ queryKey: modulesQueryKeys.root });
     },
@@ -279,6 +288,9 @@ export function useRollbackModuleMutation() {
       });
       void qc.invalidateQueries({
         queryKey: modulesQueryKeys.versions(vars.moduleId),
+      });
+      void qc.invalidateQueries({
+        queryKey: modulesQueryKeys.audit(vars.moduleId),
       });
       void qc.invalidateQueries({ queryKey: modulesQueryKeys.root });
     },
@@ -307,6 +319,9 @@ export function useSetModuleDepartmentsMutation() {
     onSuccess: (_ok, vars) => {
       void qc.invalidateQueries({
         queryKey: modulesQueryKeys.detail(vars.moduleId),
+      });
+      void qc.invalidateQueries({
+        queryKey: modulesQueryKeys.audit(vars.moduleId),
       });
     },
   });
