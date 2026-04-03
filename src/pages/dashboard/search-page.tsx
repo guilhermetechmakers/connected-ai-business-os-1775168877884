@@ -1,149 +1,231 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { toast } from "sonner";
 
-import { summarizeEntityForSearch } from "@/api/unified-data";
 import { AnimatedPage } from "@/components/animated-page";
+import { GlobalSearchBar } from "@/components/global-search/global-search-bar";
+import { GlobalSearchFilters as GlobalSearchFiltersPanel } from "@/components/global-search/global-search-filters";
+import { GlobalSearchResultGroups } from "@/components/global-search/global-search-result-groups";
 import { PageHeader } from "@/components/layout/page-header";
-import { AISummaryCard } from "@/components/unified-data/ai-summary-card";
-import { FilterChips } from "@/components/unified-data/filter-chips";
-import { ResultList } from "@/components/unified-data/result-list";
-import { SearchBar } from "@/components/unified-data/search-bar";
-import { UnifiedEntityCard } from "@/components/unified-data/unified-entity-card";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import { useDebouncedValue, useUnifiedSearch } from "@/hooks/use-unified-data";
-import type { UnifiedEntity } from "@/types/unified";
-import { mapUnifiedEntityRows } from "@/types/unified";
+  useInfiniteGlobalSearch,
+  useSearchAiSummarizeMutation,
+  useSearchIndexStatusQuery,
+} from "@/hooks/use-global-search";
+import { useDebouncedValue } from "@/hooks/use-unified-data";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import type {
+  GlobalSearchFilters as GlobalSearchFiltersState,
+  GlobalSearchHit,
+} from "@/types/global-search";
 
-const suggestions = [
-  "Acme renewal",
-  "Q3 board deck",
-  "Invoice #4412",
-  "Slack: #gtm-alerts",
-];
-
-const typeFilters = [
-  { id: "Task", label: "Tasks" },
-  { id: "Deal", label: "Deals" },
-  { id: "Document", label: "Docs" },
-  { id: "Contact", label: "Contacts" },
-];
+function hitKey(hit: GlobalSearchHit): string {
+  return `${hit.type}-${hit.id}`;
+}
 
 export default function SearchPage() {
-  const [q, setQ] = useState("");
-  const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
-  const [preview, setPreview] = useState<UnifiedEntity | null>(null);
-  const [summary, setSummary] = useState("");
-  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState(() => params.get("q") ?? "");
+  const [filters, setFilters] = useState<GlobalSearchFiltersState>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [aiOpenId, setAiOpenId] = useState<string | null>(null);
+  const [aiTargetId, setAiTargetId] = useState<string | null>(null);
+  const [aiSummary, setAiSummary] = useState("");
+  const [aiConfidence, setAiConfidence] = useState<number | undefined>(undefined);
 
-  const debounced = useDebouncedValue(q, 300);
-  const primaryType = selectedTypes[0];
-
-  const { data: rawResults = [], isFetching } = useUnifiedSearch(debounced, {
-    entityType: primaryType,
-  });
-
-  const results = useMemo(
-    () => mapUnifiedEntityRows(rawResults),
-    [rawResults],
-  );
-
-  const loadSummary = useCallback(async (entityId: string) => {
-    setSummaryLoading(true);
-    try {
-      const res = await summarizeEntityForSearch(entityId, "brief");
-      setSummary(res?.summary ?? "No summary available.");
-    } catch {
-      setSummary("Summary request failed.");
-    } finally {
-      setSummaryLoading(false);
-    }
-  }, []);
+  const debouncedSearch = useDebouncedValue(q, 280);
 
   useEffect(() => {
-    if (!preview?.id) {
-      setSummary("");
-      return;
+    const iq = params.get("q");
+    if (iq !== null) setQ(iq);
+  }, [params]);
+
+  const {
+    data,
+    isLoading,
+    isFetchingNextPage,
+    fetchNextPage,
+    hasNextPage,
+  } = useInfiniteGlobalSearch(debouncedSearch, filters, 24);
+
+  const flatResults = useMemo(() => {
+    const pages = data?.pages ?? [];
+    const merged: GlobalSearchHit[] = [];
+    for (const p of pages) {
+      const chunk = Array.isArray(p?.results) ? p.results : [];
+      merged.push(...chunk);
     }
-    void loadSummary(preview.id);
-  }, [preview?.id, loadSummary]);
+    return merged;
+  }, [data?.pages]);
+
+  const total = data?.pages?.[0]?.total ?? 0;
+  const facets = data?.pages?.[0]?.facets;
+
+  const aiMutation = useSearchAiSummarizeMutation();
+  const { data: indexStatus } = useSearchIndexStatusQuery(isSupabaseConfigured);
+
+  const runSearch = useCallback(() => {
+    const next = new URLSearchParams(params);
+    if (q.trim()) next.set("q", q.trim());
+    else next.delete("q");
+    setParams(next, { replace: true });
+  }, [q, params, setParams]);
+
+  const requestAiForHit = useCallback(
+    async (hit: GlobalSearchHit) => {
+      const key = hitKey(hit);
+      setAiTargetId(key);
+      setAiSummary("");
+      setAiConfidence(undefined);
+      try {
+        const out = await aiMutation.mutateAsync({
+          contextItems: [
+            { id: hit.id, type: hit.type, source: hit.source },
+          ],
+        });
+        if (out) {
+          setAiSummary(out.summary);
+          setAiConfidence(out.confidence);
+        } else {
+          toast.error("Could not generate AI summary.");
+        }
+      } catch {
+        toast.error("AI summary failed.");
+      }
+    },
+    [aiMutation],
+  );
+
+  const onToggleAi = useCallback(
+    (hit: GlobalSearchHit) => {
+      const key = hitKey(hit);
+      if (aiOpenId === key) {
+        setAiOpenId(null);
+        setAiTargetId(null);
+        return;
+      }
+      setAiOpenId(key);
+      void requestAiForHit(hit);
+    },
+    [aiOpenId, requestAiForHit],
+  );
 
   return (
     <AnimatedPage className="space-y-8">
       <PageHeader
-        title="Search"
-        description="Global, permission-aware search across unified entities with filters and optional AI summary."
+        title="Global search"
+        description="Permission-aware search across unified entities, indexed documents, activity, and reports — with autosuggest and optional AI summaries."
+        actions={
+          <Badge variant="outline" className="text-xs">
+            Tenant scoped · RLS
+          </Badge>
+        }
       />
-      <div className="space-y-4">
-        <SearchBar value={q} onChange={setQ} />
-        <FilterChips
-          options={typeFilters}
-          selected={selectedTypes}
-          onChange={setSelectedTypes}
-        />
-      </div>
-      <Card className="border-border/80 bg-card/90">
-        <CardContent className="p-0">
-          <Command className="rounded-lg border border-border/60 bg-surface-inner">
-            <CommandInput
-              placeholder="Suggestions…"
-              value={q}
-              onValueChange={setQ}
-              aria-label="Search suggestions"
-            />
-            <CommandList>
-              <CommandEmpty>No matching suggestions</CommandEmpty>
-              <CommandGroup heading="Suggestions">
-                {(suggestions ?? []).map((s) => (
-                  <CommandItem key={s} onSelect={() => setQ(s)}>
-                    {s}
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </Command>
+
+      <Card className="border-border/80 bg-gradient-to-r from-primary/10 via-transparent to-success/5 shadow-card">
+        <CardHeader>
+          <CardTitle className="text-base text-foreground">Search everywhere</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Results are grouped by type. Use filters to narrow source, department, and dates.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <GlobalSearchBar
+            value={q}
+            onChange={setQ}
+            onSubmit={runSearch}
+            variant="hero"
+            aria-label="Global search query"
+          />
         </CardContent>
       </Card>
 
-      <ResultList
-        results={results}
-        isLoading={isFetching}
-        onSelect={(e) => setPreview(e)}
-      />
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
+        <GlobalSearchFiltersPanel filters={filters} onChange={setFilters} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="border-border/80 bg-card/90">
-          <CardContent className="space-y-3 p-6">
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-medium text-foreground">Preview</p>
-              <Badge variant="outline" className="text-xs">
-                RLS enforced
-              </Badge>
-            </div>
-            {preview ? (
-              <UnifiedEntityCard entity={preview} />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Select a result to preview payload and sources.
+        <div className="min-w-0 flex-1 space-y-6">
+          {debouncedSearch.trim().length >= 2 ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+              <p>
+                <span className="font-medium text-foreground">{total}</span> results for{" "}
+                <span className="text-primary">&ldquo;{debouncedSearch}&rdquo;</span>
               </p>
-            )}
+              {facets?.types && Object.keys(facets.types).length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(facets.types).map(([t, c]) => (
+                    <Badge key={t} variant="secondary" className="text-[10px]">
+                      {t}: {c}
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Type at least two characters to search. Autosuggest appears after a short pause (~120ms).
+            </p>
+          )}
+
+          <GlobalSearchResultGroups
+            results={flatResults}
+            isLoading={isLoading}
+            selectedId={selectedId}
+            onSelect={(hit) => setSelectedId(hitKey(hit))}
+            aiOpenId={aiOpenId}
+            aiTargetId={aiTargetId}
+            onToggleAi={onToggleAi}
+            aiSummary={aiSummary}
+            aiLoading={aiMutation.isPending}
+            aiConfidence={aiConfidence}
+          />
+
+          {hasNextPage ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full transition-transform duration-150 hover:scale-[1.01] motion-reduce:hover:scale-100"
+              disabled={isFetchingNextPage}
+              onClick={() => void fetchNextPage()}
+            >
+              {isFetchingNextPage ? "Loading…" : "Load more"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      {isSupabaseConfigured && indexStatus ? (
+        <Card className="border-border/70 bg-card/80">
+          <CardHeader>
+            <CardTitle className="text-sm">Index status</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Document index health for this tenant (from search-api).
+            </p>
+          </CardHeader>
+          <CardContent className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-3">
+            <p>
+              <span className="text-foreground">Documents indexed:</span>{" "}
+              {indexStatus.documentCount}
+            </p>
+            <p>
+              <span className="text-foreground">Last index:</span>{" "}
+              {indexStatus.lastIndexTime
+                ? new Date(indexStatus.lastIndexTime).toLocaleString()
+                : "—"}
+            </p>
+            <p>
+              <span className="text-foreground">Status:</span> {indexStatus.status}
+            </p>
+            {Array.isArray(indexStatus.errors) && indexStatus.errors.length > 0 ? (
+              <p className="sm:col-span-3 text-destructive text-xs">
+                {(indexStatus.errors ?? []).join(" · ")}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
-        <AISummaryCard
-          summary={summary}
-          isLoading={summaryLoading}
-          onRefresh={() => {
-            if (preview?.id) void loadSummary(preview.id);
-          }}
-        />
-      </div>
+      ) : null}
     </AnimatedPage>
   );
 }

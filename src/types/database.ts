@@ -1350,6 +1350,111 @@ export interface Database {
           updated_at?: string;
         };
       };
+      indexed_documents: {
+        Row: {
+          id: string;
+          company_id: string;
+          source_provider: string;
+          external_id: string;
+          title: string;
+          full_text: string | null;
+          snippet: string | null;
+          embedding: Json | null;
+          indexed_at: string;
+          metadata: Json;
+          permissions: Json;
+          department_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          source_provider: string;
+          external_id?: string;
+          title?: string;
+          full_text?: string | null;
+          snippet?: string | null;
+          embedding?: Json | null;
+          indexed_at?: string;
+          metadata?: Json;
+          permissions?: Json;
+          department_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          source_provider?: string;
+          external_id?: string;
+          title?: string;
+          full_text?: string | null;
+          snippet?: string | null;
+          embedding?: Json | null;
+          indexed_at?: string;
+          metadata?: Json;
+          permissions?: Json;
+          department_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      search_index_jobs: {
+        Row: {
+          id: string;
+          company_id: string;
+          status: string;
+          provider: string | null;
+          message: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          status?: string;
+          provider?: string | null;
+          message?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          status?: string;
+          provider?: string | null;
+          message?: string | null;
+          created_at?: string;
+        };
+      };
+      ai_search_summary_logs: {
+        Row: {
+          id: string;
+          company_id: string;
+          user_id: string;
+          context_items: Json;
+          summary: string;
+          confidence: number | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          user_id: string;
+          context_items?: Json;
+          summary?: string;
+          confidence?: number | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          user_id?: string;
+          context_items?: Json;
+          summary?: string;
+          confidence?: number | null;
+          created_at?: string;
+        };
+      };
     };
     Views: {
       v_dashboard_entity_rollups: {

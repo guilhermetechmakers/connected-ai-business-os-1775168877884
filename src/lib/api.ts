@@ -121,6 +121,15 @@ export {
   updateAiConversation,
 } from "@/api/ai";
 
+/** Global search & indexed documents (Edge Function `search-api`). */
+export {
+  fetchGlobalSearch,
+  fetchSearchAutosuggest,
+  fetchSearchIndexStatus,
+  summarizeSearchContext,
+  upsertIndexedDocument,
+} from "@/api/search";
+
 /** Workflows engine (Edge Function `workflows-api` + Supabase RLS). */
 export {
   appendWorkflowRunLogs,

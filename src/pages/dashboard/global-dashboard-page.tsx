@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowUpRight, Bot, ShieldAlert, Sparkles } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   Area,
   AreaChart,
@@ -12,6 +12,7 @@ import {
 } from "recharts";
 
 import { AnimatedPage } from "@/components/animated-page";
+import { GlobalSearchBar } from "@/components/global-search/global-search-bar";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActivityStream } from "@/components/unified-data/activity-stream";
 import { AlertPanel } from "@/components/unified-data/alert-panel";
@@ -56,9 +57,11 @@ function isKpiSnapshot(
 }
 
 export default function GlobalDashboardPage() {
+  const navigate = useNavigate();
   const { profile } = useAuth();
   const roles = Array.isArray(profile?.roles) ? profile!.roles : [];
   const roleLabel = roles.length > 0 ? roles.join(", ") : "Member";
+  const [dashSearch, setDashSearch] = useState("");
 
   const { data: rollupsRaw = [], isLoading: rollupsLoading } =
     useDashboardRollups("rollups");
@@ -151,6 +154,29 @@ export default function GlobalDashboardPage() {
         Tailored for <span className="text-primary">{roleLabel}</span> · unified data
         layer
       </p>
+
+      <Card className="overflow-hidden border-border/80 bg-gradient-to-r from-[rgb(7,18,40)]/90 via-card to-[rgb(11,26,42)]/70 shadow-card">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base font-display text-foreground">
+            Global <span className="text-primary">search</span>
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Autosuggest, filters, and AI summaries — continue in the full search workspace.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <GlobalSearchBar
+            value={dashSearch}
+            onChange={setDashSearch}
+            onSubmit={() => {
+              const t = dashSearch.trim();
+              navigate(t ? `/search?q=${encodeURIComponent(t)}` : "/search");
+            }}
+            variant="hero"
+            aria-label="Dashboard global search"
+          />
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {rollupsLoading && !rollupKpis
@@ -341,6 +367,7 @@ export default function GlobalDashboardPage() {
           <CardContent className="space-y-3">
             {(roles.some((r) => /admin|manager/i.test(r))
               ? [
+                  { label: "Global search", to: "/search" },
                   { label: "Run integration sync", to: "/onboarding/integrations" },
                   { label: "Create workflow", to: "/dashboard/workflows" },
                   { label: "Install module", to: "/dashboard/modules" },
