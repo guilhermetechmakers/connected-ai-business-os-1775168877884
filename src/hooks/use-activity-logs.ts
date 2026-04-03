@@ -174,6 +174,7 @@ export function useAdminTenantCreateMutation() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["integrations", "admin", "tenants"] });
       void qc.invalidateQueries({ queryKey: ["integrations", "admin", "overview"] });
+      void qc.invalidateQueries({ queryKey: ["tenancy"] });
     },
   });
 }

@@ -227,6 +227,7 @@ export async function upsertAdminFeatureFlag(payload: {
   flagKey: string;
   companyId?: string | null;
   enabled: boolean;
+  rollout?: number;
   payload?: Record<string, unknown>;
 }): Promise<FeatureFlagRow | null> {
   const { data, error } = await invokeActivityLogsApi<{ data?: unknown }>({
@@ -234,6 +235,7 @@ export async function upsertAdminFeatureFlag(payload: {
     flagKey: payload.flagKey,
     companyId: payload.companyId ?? null,
     enabled: payload.enabled,
+    rollout: payload.rollout,
     payload: payload.payload,
   });
   if (error || !data || typeof data !== "object") return null;

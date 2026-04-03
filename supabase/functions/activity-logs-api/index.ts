@@ -104,6 +104,7 @@ const opSchema = z.discriminatedUnion("op", [
     flagKey: z.string().min(1).max(120),
     companyId: z.string().uuid().nullable().optional(),
     enabled: z.boolean(),
+    rollout: z.number().int().min(0).max(100).optional(),
     payload: z.record(z.unknown()).optional(),
   }),
   z.object({
@@ -638,6 +639,7 @@ async function handleAdminOp(
         flag_key: body.flagKey,
         company_id: companyId,
         enabled: body.enabled,
+        rollout: body.rollout ?? 100,
         payload: body.payload ?? {},
         updated_at: now,
       };

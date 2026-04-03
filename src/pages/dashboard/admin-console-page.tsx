@@ -1,5 +1,5 @@
-import { AlertTriangle, Shield, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp, Shield, Trash2 } from "lucide-react";
+import { Fragment, useState } from "react";
 import { toast } from "sonner";
 import {
   Bar,
@@ -16,9 +16,11 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -45,6 +47,13 @@ import {
   useAdminIntegrationOverviewQuery,
   useAdminTenantsQuery,
 } from "@/hooks/use-integrations";
+import {
+  useBulkDeprovisionTenantsMutation,
+  useTenantIntegrationMonitorQuery,
+  useTenantsAdminListQuery,
+} from "@/hooks/use-tenants-module";
+import { AdminTenantProvisionWizard } from "@/components/tenancy/admin-tenant-provision-wizard";
+import { IntegrationStatus } from "@/components/tenancy/integration-status";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
 
@@ -56,17 +65,98 @@ function isSuperAdminRole(roles: string[] | undefined): boolean {
   return r.map((x) => String(x).toLowerCase()).includes("super_admin");
 }
 
+function TenantMonitorPanel({
+  companyId,
+  open,
+}: {
+  companyId: string;
+  open: boolean;
+}) {
+  const q = useTenantIntegrationMonitorQuery(companyId, open);
+  if (!open) return null;
+  if (q.isLoading) {
+    return (
+      <div className="p-4">
+        <Skeleton className="h-16 w-full bg-surface-inner" />
+      </div>
+    );
+  }
+  const connectors = Array.isArray(q.data?.connectors) ? q.data.connectors : [];
+  const integrations = Array.isArray(q.data?.integrations)
+    ? q.data.integrations
+    : [];
+  return (
+    <div className="border-t border-border/60 bg-surface-inner/30 p-4 text-sm">
+      <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-primary">
+        Integration monitor
+      </p>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <p className="mb-1 text-muted-foreground">Connectors</p>
+          {connectors.length === 0 ? (
+            <p className="text-muted-foreground">None</p>
+          ) : (
+            <ul className="space-y-2">
+              {connectors.map((c) => (
+                <li
+                  key={c.id}
+                  className="rounded-lg border border-border/50 px-2 py-1.5"
+                >
+                  <p className="font-mono text-xs text-foreground">
+                    {c.provider_key}
+                  </p>
+                  <IntegrationStatus
+                    status={c.status}
+                    lastSyncAt={c.last_sync_at}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div>
+          <p className="mb-1 text-muted-foreground">Legacy integrations</p>
+          {integrations.length === 0 ? (
+            <p className="text-muted-foreground">None</p>
+          ) : (
+            <ul className="space-y-2">
+              {integrations.map((i) => (
+                <li
+                  key={i.id}
+                  className="rounded-lg border border-border/50 px-2 py-1.5"
+                >
+                  <p className="text-xs text-foreground">{i.provider}</p>
+                  <IntegrationStatus
+                    status={i.status}
+                    lastSyncAt={i.last_sync_at}
+                    errorMessage={i.error_message}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminConsolePage() {
   const { profile } = useAuth();
   const isSuper = isSuperAdminRole(profile?.roles);
 
   const tenantsQuery = useAdminTenantsQuery();
+  const tenantsModuleQuery = useTenantsAdminListQuery({
+    enabled: isSuper,
+    limit: 80,
+  });
   const overviewQuery = useAdminIntegrationOverviewQuery();
   const templatesQuery = useAdminSystemTemplatesQuery(isSuper);
   const flagsQuery = useAdminFeatureFlagsQuery(undefined, isSuper);
   const auditQuery = useAdminActivityTailQuery(80, isSuper);
 
   const tenantCreate = useAdminTenantCreateMutation();
+  const bulkDeprovision = useBulkDeprovisionTenantsMutation();
   const tplUpsert = useAdminTemplatesUpsertMutation();
   const tplDelete = useAdminTemplateDeleteMutation();
   const flagUpsert = useAdminFlagsUpsertMutation();
@@ -83,8 +173,16 @@ export default function AdminConsolePage() {
   const [flagKey, setFlagKey] = useState("");
   const [flagTenantId, setFlagTenantId] = useState("");
   const [flagEnabled, setFlagEnabled] = useState(false);
+  const [flagRollout, setFlagRollout] = useState(100);
+  const [selectedTenantIds, setSelectedTenantIds] = useState<string[]>([]);
+  const [expandedTenantId, setExpandedTenantId] = useState<string | null>(null);
 
-  const tenants = Array.isArray(tenantsQuery.data) ? tenantsQuery.data : [];
+  const moduleTenants = Array.isArray(tenantsModuleQuery.data?.tenants)
+    ? tenantsModuleQuery.data.tenants
+    : [];
+  const legacyTenants = Array.isArray(tenantsQuery.data) ? tenantsQuery.data : [];
+  const tenants =
+    isSuper && moduleTenants.length > 0 ? moduleTenants : legacyTenants;
   const overview = Array.isArray(overviewQuery.data) ? overviewQuery.data : [];
   const templates = Array.isArray(templatesQuery.data)
     ? templatesQuery.data
@@ -100,6 +198,21 @@ export default function AdminConsolePage() {
 
   const isForbidden =
     tenantsQuery.isError || overviewQuery.isError;
+
+  const tenantsLoading =
+    tenantsQuery.isLoading || (isSuper && tenantsModuleQuery.isLoading);
+
+  const toggleTenantSelect = (id: string, checked: boolean) => {
+    setSelectedTenantIds((prev) => {
+      const cur = Array.isArray(prev) ? prev : [];
+      if (checked) return cur.includes(id) ? cur : [...cur, id];
+      return cur.filter((x) => x !== id);
+    });
+  };
+
+  const allVisibleSelected =
+    tenants.length > 0 &&
+    tenants.every((t) => selectedTenantIds.includes(t.id));
 
   return (
     <AnimatedPage className="space-y-8">
@@ -252,11 +365,37 @@ export default function AdminConsolePage() {
           </div>
 
           <Card className="border-border/80 bg-card/90">
-            <CardHeader>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle>Tenants</CardTitle>
+              {isSuper ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                    disabled={
+                      selectedTenantIds.length === 0 || bulkDeprovision.isPending
+                    }
+                    onClick={() => {
+                      void bulkDeprovision
+                        .mutateAsync(selectedTenantIds)
+                        .then((rows) => {
+                          const ok = (rows ?? []).filter((r) => r.ok).length;
+                          toast.success(`Deprovisioned ${ok} tenant(s)`);
+                          setSelectedTenantIds([]);
+                        });
+                    }}
+                  >
+                    {bulkDeprovision.isPending
+                      ? "Deprovisioning…"
+                      : `Bulk deprovision (${selectedTenantIds.length})`}
+                  </Button>
+                </div>
+              ) : null}
             </CardHeader>
             <CardContent>
-              {tenantsQuery.isLoading ? (
+              {tenantsLoading ? (
                 <div className="space-y-2">
                   <Skeleton className="h-10 w-full bg-surface-inner" />
                   <Skeleton className="h-10 w-full bg-surface-inner" />
@@ -265,7 +404,25 @@ export default function AdminConsolePage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border/60 hover:bg-transparent">
+                      {isSuper ? (
+                        <TableHead className="w-10">
+                          <Checkbox
+                            checked={allVisibleSelected}
+                            onCheckedChange={(c) => {
+                              const on = c === true;
+                              if (on) {
+                                setSelectedTenantIds(tenants.map((x) => x.id));
+                              } else {
+                                setSelectedTenantIds([]);
+                              }
+                            }}
+                            aria-label="Select all tenants"
+                          />
+                        </TableHead>
+                      ) : null}
                       <TableHead>Name</TableHead>
+                      {isSuper ? <TableHead>Status</TableHead> : null}
+                      {isSuper ? <TableHead>Plan</TableHead> : null}
                       <TableHead>Created</TableHead>
                       <TableHead>Connectors</TableHead>
                       <TableHead>Health</TableHead>
@@ -283,47 +440,120 @@ export default function AdminConsolePage() {
                           : healthy === count
                             ? "green"
                             : "amber";
+                      const row = t as {
+                        id: string;
+                        name: string;
+                        created_at: string;
+                        tenant_status?: string;
+                        plan?: string;
+                        region?: string;
+                      };
+                      const expanded = expandedTenantId === row.id;
                       return (
-                        <TableRow key={t.id} className="border-border/60">
-                          <TableCell className="font-medium text-foreground">
-                            {t.name}
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">
-                            {new Date(t.created_at).toLocaleDateString()}
-                          </TableCell>
-                          <TableCell>{count}</TableCell>
-                          <TableCell>
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                healthLabel === "green" &&
-                                  "border-success/50 text-success",
-                                healthLabel === "amber" &&
-                                  "border-primary/50 text-primary",
-                                healthLabel === "idle" &&
-                                  "text-muted-foreground",
+                        <Fragment key={row.id}>
+                          <TableRow className="border-border/60">
+                            {isSuper ? (
+                              <TableCell>
+                                <Checkbox
+                                  checked={selectedTenantIds.includes(row.id)}
+                                  onCheckedChange={(c) =>
+                                    toggleTenantSelect(row.id, c === true)
+                                  }
+                                  aria-label={`Select ${row.name}`}
+                                />
+                              </TableCell>
+                            ) : null}
+                            <TableCell className="font-medium text-foreground">
+                              <div className="flex flex-col">
+                                <span>{row.name}</span>
+                                {row.region ? (
+                                  <span className="text-xs text-muted-foreground">
+                                    {row.region}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            {isSuper ? (
+                              <TableCell className="text-muted-foreground">
+                                {row.tenant_status ?? "—"}
+                              </TableCell>
+                            ) : null}
+                            {isSuper ? (
+                              <TableCell className="text-muted-foreground">
+                                {row.plan ?? "—"}
+                              </TableCell>
+                            ) : null}
+                            <TableCell className="text-muted-foreground">
+                              {new Date(row.created_at).toLocaleDateString()}
+                            </TableCell>
+                            <TableCell>{count}</TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  healthLabel === "green" &&
+                                    "border-success/50 text-success",
+                                  healthLabel === "amber" &&
+                                    "border-primary/50 text-primary",
+                                  healthLabel === "idle" &&
+                                    "text-muted-foreground",
+                                )}
+                              >
+                                {healthLabel}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {isSuper ? (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedTenantId((cur) =>
+                                      cur === row.id ? null : row.id,
+                                    )
+                                  }
+                                  aria-expanded={expanded}
+                                >
+                                  {expanded ? (
+                                    <ChevronUp className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                  )}
+                                  <span className="sr-only">Toggle monitor</span>
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  type="button"
+                                  disabled
+                                >
+                                  Impersonate
+                                </Button>
                               )}
-                            >
-                              {healthLabel}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              type="button"
-                              disabled
-                            >
-                              Impersonate
-                            </Button>
-                          </TableCell>
-                        </TableRow>
+                            </TableCell>
+                          </TableRow>
+                          {isSuper && expanded ? (
+                            <TableRow className="border-0">
+                              <TableCell
+                                colSpan={isSuper ? 8 : 5}
+                                className="p-0"
+                              >
+                                <TenantMonitorPanel
+                                  companyId={row.id}
+                                  open={expanded}
+                                />
+                              </TableCell>
+                            </TableRow>
+                          ) : null}
+                        </Fragment>
                       );
                     })}
                   </TableBody>
                 </Table>
               )}
-              {!tenantsQuery.isLoading && tenants.length === 0 ? (
+              {!tenantsLoading && tenants.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   No tenants returned. Assign super_admin or seed companies.
                 </p>
@@ -332,7 +562,8 @@ export default function AdminConsolePage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="provision" className="mt-6">
+        <TabsContent value="provision" className="mt-6 space-y-6">
+          <AdminTenantProvisionWizard />
           <Card className="border-border/80 bg-card/90">
             <CardHeader>
               <CardTitle>Create tenant</CardTitle>
@@ -547,6 +778,20 @@ export default function AdminConsolePage() {
                 />
                 <Label htmlFor="fe">Enabled</Label>
               </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Rollout {flagRollout}%</Label>
+                <Slider
+                  value={[flagRollout]}
+                  min={0}
+                  max={100}
+                  step={1}
+                  onValueChange={(v) => {
+                    const n = Array.isArray(v) ? v[0] : v;
+                    if (typeof n === "number") setFlagRollout(n);
+                  }}
+                  className="py-2"
+                />
+              </div>
               <Button
                 type="button"
                 variant="cta"
@@ -559,6 +804,7 @@ export default function AdminConsolePage() {
                       flagKey: flagKey.trim(),
                       companyId: cid ? cid : null,
                       enabled: flagEnabled,
+                      rollout: flagRollout,
                       payload: {},
                     })
                     .then((r) => {
@@ -586,6 +832,7 @@ export default function AdminConsolePage() {
                       <TableHead>Key</TableHead>
                       <TableHead>Scope</TableHead>
                       <TableHead>Enabled</TableHead>
+                      <TableHead>Rollout</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -598,6 +845,9 @@ export default function AdminConsolePage() {
                           {f.company_id ?? "global"}
                         </TableCell>
                         <TableCell>{f.enabled ? "yes" : "no"}</TableCell>
+                        <TableCell>
+                          {typeof f.rollout === "number" ? `${f.rollout}%` : "100%"}
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

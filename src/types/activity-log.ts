@@ -41,8 +41,10 @@ export interface FeatureFlagRow {
   flag_key: string;
   company_id: string | null;
   enabled: boolean;
+  rollout?: number;
   payload: Json | Record<string, unknown>;
   updated_at: string;
+  created_at?: string;
 }
 
 export const ACTIVITY_EVENT_TYPE_OPTIONS: { value: string; label: string }[] = [

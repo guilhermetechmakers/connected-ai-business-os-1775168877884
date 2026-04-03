@@ -181,6 +181,22 @@ export {
   type TenantUserRow,
 } from "@/api/user-profile";
 
+/** Multi-tenant company module (Edge Function `tenants-api` + Supabase RLS). */
+export {
+  applyOnboardingCompany,
+  bulkDeprovisionTenantsAdmin,
+  createTenantAdminModule,
+  deprovisionTenantAdmin,
+  fetchOnboardingTemplates,
+  fetchTenantAdminDetail,
+  fetchTenantConfigs,
+  fetchTenantIntegrationMonitor,
+  fetchTenantsAdminList,
+  patchTenantAdminModule,
+  upsertOnboardingTemplateAdmin,
+  upsertTenantConfig,
+} from "@/api/tenants";
+
 /** Internal modules & marketplace (Edge Function `modules-api` + Supabase RLS). */
 export {
   createInternalModule,

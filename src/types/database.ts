@@ -22,6 +22,14 @@ export interface Database {
           password_policy: Json;
           allowed_auth_methods: string[];
           activity_log_retention_days: number;
+          region: string;
+          tenant_status: string;
+          plan: string;
+          billing_id: string | null;
+          legal_name: string | null;
+          display_name: string | null;
+          country: string | null;
+          onboarding_completed_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -37,6 +45,14 @@ export interface Database {
           password_policy?: Json;
           allowed_auth_methods?: string[];
           activity_log_retention_days?: number;
+          region?: string;
+          tenant_status?: string;
+          plan?: string;
+          billing_id?: string | null;
+          legal_name?: string | null;
+          display_name?: string | null;
+          country?: string | null;
+          onboarding_completed_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -52,6 +68,14 @@ export interface Database {
           password_policy?: Json;
           allowed_auth_methods?: string[];
           activity_log_retention_days?: number;
+          region?: string;
+          tenant_status?: string;
+          plan?: string;
+          billing_id?: string | null;
+          legal_name?: string | null;
+          display_name?: string | null;
+          country?: string | null;
+          onboarding_completed_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -171,6 +195,8 @@ export interface Database {
           provider: string;
           status: string;
           config: Json;
+          last_sync_at: string | null;
+          error_message: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -180,6 +206,8 @@ export interface Database {
           provider: string;
           status?: string;
           config?: Json;
+          last_sync_at?: string | null;
+          error_message?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -189,6 +217,8 @@ export interface Database {
           provider?: string;
           status?: string;
           config?: Json;
+          last_sync_at?: string | null;
+          error_message?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -633,7 +663,9 @@ export interface Database {
           flag_key: string;
           company_id: string | null;
           enabled: boolean;
+          rollout: number;
           payload: Json;
+          created_at: string;
           updated_at: string;
         };
         Insert: {
@@ -641,7 +673,9 @@ export interface Database {
           flag_key: string;
           company_id?: string | null;
           enabled?: boolean;
+          rollout?: number;
           payload?: Json;
+          created_at?: string;
           updated_at?: string;
         };
         Update: {
@@ -649,7 +683,73 @@ export interface Database {
           flag_key?: string;
           company_id?: string | null;
           enabled?: boolean;
+          rollout?: number;
           payload?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      tenant_configs: {
+        Row: {
+          id: string;
+          company_id: string;
+          config_key: string;
+          config_value: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          config_key: string;
+          config_value?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          config_key?: string;
+          config_value?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      onboarding_templates: {
+        Row: {
+          id: string;
+          name: string;
+          template_type: string;
+          version: number;
+          data: Json;
+          is_active: boolean;
+          tenant_id: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          template_type?: string;
+          version?: number;
+          data?: Json;
+          is_active?: boolean;
+          tenant_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          template_type?: string;
+          version?: number;
+          data?: Json;
+          is_active?: boolean;
+          tenant_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
           updated_at?: string;
         };
       };
