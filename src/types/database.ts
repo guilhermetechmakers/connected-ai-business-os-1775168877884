@@ -1455,6 +1455,161 @@ export interface Database {
           created_at?: string;
         };
       };
+      module_templates: {
+        Row: {
+          id: string;
+          company_id: string | null;
+          slug: string;
+          name: string;
+          description: string | null;
+          preview_ui: string;
+          default_ui_entry: string;
+          bindings_template: Json;
+          dependencies: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id?: string | null;
+          slug?: string;
+          name: string;
+          description?: string | null;
+          preview_ui?: string;
+          default_ui_entry?: string;
+          bindings_template?: Json;
+          dependencies?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string | null;
+          slug?: string;
+          name?: string;
+          description?: string | null;
+          preview_ui?: string;
+          default_ui_entry?: string;
+          bindings_template?: Json;
+          dependencies?: Json;
+          created_at?: string;
+        };
+      };
+      internal_modules: {
+        Row: {
+          id: string;
+          company_id: string;
+          name: string;
+          description: string;
+          ui_entry: string;
+          status: string;
+          tenant_scope: Json;
+          tags: string[];
+          data_bindings: Json;
+          permissions: Json;
+          health_status: string;
+          last_deployed_at: string | null;
+          marketplace_template_id: string | null;
+          installed_from_template: boolean;
+          active_version_id: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          name: string;
+          description?: string;
+          ui_entry?: string;
+          status?: string;
+          tenant_scope?: Json;
+          tags?: string[];
+          data_bindings?: Json;
+          permissions?: Json;
+          health_status?: string;
+          last_deployed_at?: string | null;
+          marketplace_template_id?: string | null;
+          installed_from_template?: boolean;
+          active_version_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          name?: string;
+          description?: string;
+          ui_entry?: string;
+          status?: string;
+          tenant_scope?: Json;
+          tags?: string[];
+          data_bindings?: Json;
+          permissions?: Json;
+          health_status?: string;
+          last_deployed_at?: string | null;
+          marketplace_template_id?: string | null;
+          installed_from_template?: boolean;
+          active_version_id?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      module_versions: {
+        Row: {
+          id: string;
+          module_id: string;
+          version_tag: string;
+          changelog: string;
+          is_active: boolean;
+          migration_notes: string | null;
+          binding_diff: Json;
+          snapshot: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          module_id: string;
+          version_tag: string;
+          changelog?: string;
+          is_active?: boolean;
+          migration_notes?: string | null;
+          binding_diff?: Json;
+          snapshot?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          module_id?: string;
+          version_tag?: string;
+          changelog?: string;
+          is_active?: boolean;
+          migration_notes?: string | null;
+          binding_diff?: Json;
+          snapshot?: Json;
+          created_at?: string;
+        };
+      };
+      module_department_access: {
+        Row: {
+          id: string;
+          module_id: string;
+          department_id: string;
+          access_level: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          module_id: string;
+          department_id: string;
+          access_level?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          module_id?: string;
+          department_id?: string;
+          access_level?: string;
+          created_at?: string;
+        };
+      };
     };
     Views: {
       v_dashboard_entity_rollups: {

@@ -148,3 +148,28 @@ export {
   updateWorkflow,
   validateWorkflowDefinition,
 } from "@/api/workflows";
+
+/** Internal modules & marketplace (Edge Function `modules-api` + Supabase RLS). */
+export {
+  createInternalModule,
+  createModuleVersion,
+  deleteInternalModule,
+  deployInternalModule,
+  deployModule,
+  fetchInternalModuleDetail,
+  fetchInternalModules,
+  fetchMarketplaceTemplates,
+  fetchModuleDetail,
+  fetchModulePermissions,
+  fetchModuleVersions,
+  installMarketplaceTemplate,
+  installModuleFromTemplate,
+  publishModuleVersion,
+  putModuleDepartments,
+  putModulePermissions,
+  rollbackModule,
+  rollbackModuleVersion,
+  setModuleDepartmentBindings,
+  summarizeBindings,
+  updateInternalModule,
+} from "@/api/modules";

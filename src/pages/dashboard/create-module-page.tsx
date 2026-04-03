@@ -1,104 +1,83 @@
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { z } from "zod";
 
+import { CreateModulePanel } from "@/components/modules/create-module-panel";
 import { AnimatedPage } from "@/components/animated-page";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAuth } from "@/contexts/auth-context";
 import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-
-const schema = z.object({
-  name: z.string().min(2),
-  binding: z.string().min(2),
-  permissions: z.string().min(2),
-});
+  useCompanyRolesQuery,
+  useCreateModuleMutation,
+} from "@/hooks/use-modules";
 
 export default function CreateModulePage() {
-  const form = useForm<z.infer<typeof schema>>({
-    resolver: zodResolver(schema),
-    defaultValues: { name: "", binding: "unified_entities.deal", permissions: "" },
-  });
+  const navigate = useNavigate();
+  const { tenant, profile } = useAuth();
+  const { data: roleRows = [], isLoading: rolesLoading } =
+    useCompanyRolesQuery();
+  const createMutation = useCreateModuleMutation();
+
+  const roles = Array.isArray(roleRows) ? roleRows : [];
+  const tenantLabel = tenant?.name ?? "Your tenant";
+  const userRole =
+    Array.isArray(profile?.roles) && profile.roles.length > 0
+      ? String(profile.roles[0])
+      : "member";
 
   return (
     <AnimatedPage className="space-y-8">
       <PageHeader
         title="Create module"
-        description="Metadata, data model binding, permissions, preview, and publish to the tenant registry."
+        description="Metadata, unified data bindings, UI entry, permissions, and sandbox preview. Initial version 1.0.0 is created on save."
+        actions={
+          <Button variant="outline" asChild>
+            <Link to="/dashboard/modules">Back to hub</Link>
+          </Button>
+        }
       />
-      <Card className="border-border/80 bg-card/90 shadow-card">
-        <CardHeader>
-          <CardTitle>Module manifest</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit((v) =>
-                toast.success("Module staged", { description: v.name }),
-              )}
-              className="space-y-4"
-            >
-              <FormField
-                control={form.control}
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Name</FormLabel>
-                    <FormControl>
-                      <Input className="bg-surface-inner" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="binding"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Data binding</FormLabel>
-                    <FormControl>
-                      <Input className="bg-surface-inner" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="permissions"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Permissions JSON</FormLabel>
-                    <FormControl>
-                      <Textarea rows={4} className="bg-surface-inner" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex gap-3">
-                <Button type="submit" variant="cta">
-                  Publish
-                </Button>
-                <Button type="button" variant="outline">
-                  Preview
-                </Button>
-              </div>
-            </form>
-          </Form>
-        </CardContent>
-      </Card>
+
+      {rolesLoading ? (
+        <div className="grid gap-4 lg:grid-cols-12">
+          <Skeleton className="h-[480px] lg:col-span-7" />
+          <Skeleton className="h-[420px] lg:col-span-5" />
+        </div>
+      ) : (
+        <CreateModulePanel
+          previewContext={{
+            tenantLabel,
+            userRole,
+            department: "All departments",
+          }}
+          roleOptions={roles}
+          isSubmitting={createMutation.isPending}
+          onSubmitValid={async (payload) => {
+            const created = await createMutation.mutateAsync({
+              name: payload.name,
+              description: payload.description,
+              uiEntry: payload.uiEntry,
+              tenantScope: payload.tenantScope,
+              tags: payload.tags,
+              dataBindings: payload.dataBindings,
+              permissions: payload.permissions,
+            });
+            if (!created) {
+              toast.error("Could not create module", {
+                description:
+                  "Check Supabase configuration, deploy modules-api, run migrations, and ensure your role can create modules.",
+              });
+              return;
+            }
+            toast.success("Module created", {
+              description: `${created.name} · v1.0.0`,
+            });
+            navigate(`/dashboard/modules/${created.id}/manage`, {
+              replace: true,
+            });
+          }}
+        />
+      )}
     </AnimatedPage>
   );
 }
