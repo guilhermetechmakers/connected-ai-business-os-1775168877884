@@ -14,7 +14,7 @@ import {
   upsertPromptTemplate,
 } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import type { AiChatMode } from "@/types/ai";
+import type { AiChatMode, AiConversationRow } from "@/types/ai";
 
 export const aiQueryKeys = {
   root: ["ai"] as const,
@@ -29,9 +29,9 @@ export const aiQueryKeys = {
 };
 
 export function useAiConversationsList(limit = 20) {
-  return useQuery({
+  return useQuery<AiConversationRow[]>({
     queryKey: [...aiQueryKeys.conversations(), limit],
-    queryFn: () => listAiConversations(limit),
+    queryFn: (): Promise<AiConversationRow[]> => listAiConversations(limit),
     enabled: isSupabaseConfigured,
   });
 }
@@ -96,9 +96,12 @@ export function useAiDashboardSummary() {
 
 export function useCreateAiConversation() {
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (params?: { mode?: AiChatMode; title?: string }) =>
-      createAiConversation(params),
+  return useMutation<
+    AiConversationRow,
+    Error,
+    { mode?: AiChatMode; title?: string } | undefined
+  >({
+    mutationFn: (params): Promise<AiConversationRow> => createAiConversation(params),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: aiQueryKeys.conversations() });
     },

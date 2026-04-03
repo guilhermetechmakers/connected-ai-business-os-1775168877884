@@ -167,6 +167,7 @@ export interface Database {
           id: string;
           company_id: string;
           name: string;
+          description: string;
           permissions: Json;
           created_at: string;
           updated_at: string;
@@ -175,6 +176,7 @@ export interface Database {
           id?: string;
           company_id: string;
           name: string;
+          description?: string;
           permissions?: Json;
           created_at?: string;
           updated_at?: string;
@@ -183,6 +185,7 @@ export interface Database {
           id?: string;
           company_id?: string;
           name?: string;
+          description?: string;
           permissions?: Json;
           created_at?: string;
           updated_at?: string;
@@ -690,6 +693,116 @@ export interface Database {
           payload?: Json;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      tenant_data_policies: {
+        Row: {
+          id: string;
+          company_id: string;
+          retention_period_days: number;
+          export_allowed: boolean;
+          purge_scheduled: boolean;
+          audit_config: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          retention_period_days?: number;
+          export_allowed?: boolean;
+          purge_scheduled?: boolean;
+          audit_config?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          retention_period_days?: number;
+          export_allowed?: boolean;
+          purge_scheduled?: boolean;
+          audit_config?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      settings_audit_log: {
+        Row: {
+          id: string;
+          company_id: string;
+          actor_user_id: string | null;
+          action: string;
+          changes: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          actor_user_id?: string | null;
+          action: string;
+          changes?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          actor_user_id?: string | null;
+          action?: string;
+          changes?: Json;
+          created_at?: string;
+        };
+      };
+      profile_role_assignments: {
+        Row: {
+          profile_id: string;
+          role_id: string;
+          created_at: string;
+        };
+        Insert: {
+          profile_id: string;
+          role_id: string;
+          created_at?: string;
+        };
+        Update: {
+          profile_id?: string;
+          role_id?: string;
+          created_at?: string;
+        };
+      };
+      builder_api_keys: {
+        Row: {
+          id: string;
+          company_id: string;
+          profile_id: string;
+          name: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes: string[];
+          expires_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          profile_id: string;
+          name?: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes?: string[];
+          expires_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          profile_id?: string;
+          name?: string;
+          key_prefix?: string;
+          key_hash?: string;
+          scopes?: string[];
+          expires_at?: string | null;
+          created_at?: string;
         };
       };
       tenant_configs: {
