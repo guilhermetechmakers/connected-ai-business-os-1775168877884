@@ -30,7 +30,7 @@ import {
 } from "@/hooks/use-ai";
 import { streamAiChat } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import type { AiChatMode, AiMessageRow, AiPermittedAction, AiSourceCitation } from "@/types/ai";
+import type { AiAgentToolCall, AiChatMode, AiMessageRow, AiPermittedAction, AiSourceCitation } from "@/types/ai";
 
 const modes: AiChatMode[] = ["Ask", "Analyze", "Report", "Action"];
 
@@ -59,6 +59,7 @@ export default function AIWorkspacePage() {
   const [streamingText, setStreamingText] = useState("");
   const [liveCitations, setLiveCitations] = useState<AiSourceCitation[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [liveToolCalls, setLiveToolCalls] = useState<AiAgentToolCall[]>([]);
   const [actionDialog, setActionDialog] = useState<AiPermittedAction | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [suggestedIds, setSuggestedIds] = useState<string[]>([]);
@@ -153,6 +154,7 @@ export default function AIWorkspacePage() {
     setInput("");
     setStreamingText("");
     setLiveCitations([]);
+    setLiveToolCalls([]);
     setSuggestedIds([]);
     setIsStreaming(true);
 
@@ -166,6 +168,19 @@ export default function AIWorkspacePage() {
         setLiveCitations(next);
       },
       onChunk: (c) => setStreamingText((prev) => prev + c),
+      onToolCall: (call) => {
+        setLiveToolCalls((prev) => [
+          ...prev.filter((t) => t.id !== call.id),
+          { ...call, status: "running" },
+        ]);
+      },
+      onToolResult: (result) => {
+        setLiveToolCalls((prev) =>
+          prev.map((t) =>
+            t.id === result.id ? { ...t, preview: result.preview, status: "done" } : t,
+          ),
+        );
+      },
       onSuggestedActions: (actionIds) => {
         setSuggestedIds(Array.isArray(actionIds) ? actionIds : []);
       },
@@ -176,6 +191,7 @@ export default function AIWorkspacePage() {
           .then(() => {
             setStreamingText("");
             setLiveCitations([]);
+            setLiveToolCalls([]);
           });
         void qc.invalidateQueries({ queryKey: aiQueryKeys.dashboardSummary() });
       },
@@ -277,6 +293,7 @@ export default function AIWorkspacePage() {
           isStreaming={isStreaming}
           streamingText={streamingText}
           liveCitations={liveCitations}
+          liveToolCalls={liveToolCalls}
           input={input}
           onInputChange={setInput}
           onSend={send}

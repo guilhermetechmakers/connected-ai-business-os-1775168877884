@@ -1,4 +1,4 @@
-import { Loader2, Sparkles, Zap } from "lucide-react";
+import { Check, Loader2, Sparkles, WrenchIcon, Zap } from "lucide-react";
 
 import { ModeSwitch } from "@/components/ai-workspace/mode-switch";
 import { SourceCitationsBlock } from "@/components/ai-workspace/source-citations";
@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { AiChatMode, AiConversationRow, AiMessageRow, AiSourceCitation } from "@/types/ai";
+import type { AiAgentToolCall, AiChatMode, AiConversationRow, AiMessageRow, AiSourceCitation } from "@/types/ai";
 
 export function ConversationPanel({
   mode,
@@ -36,6 +36,7 @@ export function ConversationPanel({
   isStreaming: boolean;
   streamingText: string;
   liveCitations: AiSourceCitation[];
+  liveToolCalls: AiAgentToolCall[];
   input: string;
   onInputChange: (v: string) => void;
   onSend: () => void;
@@ -43,6 +44,7 @@ export function ConversationPanel({
   const convoList = Array.isArray(conversations) ? conversations : [];
   const msgList = Array.isArray(messages) ? messages : [];
   const cites = Array.isArray(liveCitations) ? liveCitations : [];
+  const toolCalls = Array.isArray(liveToolCalls) ? liveToolCalls : [];
 
   return (
     <Card className="border-border/80 bg-card/90 shadow-card lg:col-span-2">
@@ -111,6 +113,55 @@ export function ConversationPanel({
                   </div>
                 </li>
               ))}
+              {isStreaming && toolCalls.length > 0 ? (
+                <li aria-label="Agent tool activity">
+                  <div className="mr-4 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+                    <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                      <WrenchIcon className="h-3 w-3" aria-hidden />
+                      Agent working
+                    </span>
+                    <ul className="mt-2 space-y-2">
+                      {toolCalls.map((tc) => {
+                        const argEntries = tc.args ? Object.entries(tc.args).slice(0, 3) : [];
+                        const argSummary = argEntries
+                          .map(([k, v]) => `${k}: ${String(v).slice(0, 40)}`)
+                          .join(", ");
+                        return (
+                          <li key={tc.id} className="flex items-start gap-2 text-xs">
+                            {tc.status === "running" ? (
+                              <Loader2
+                                className="mt-0.5 h-3 w-3 shrink-0 animate-spin text-amber-500"
+                                aria-label="Running"
+                              />
+                            ) : (
+                              <Check
+                                className="mt-0.5 h-3 w-3 shrink-0 text-success"
+                                aria-label="Done"
+                              />
+                            )}
+                            <div className="min-w-0">
+                              <span className="font-medium text-foreground">
+                                {tc.name.replace(/_/g, " ")}
+                              </span>
+                              {argSummary ? (
+                                <span className="ml-1 text-muted-foreground">
+                                  ({argSummary})
+                                </span>
+                              ) : null}
+                              {tc.preview ? (
+                                <p className="mt-0.5 truncate text-muted-foreground">
+                                  {tc.preview.slice(0, 120)}
+                                  {tc.preview.length > 120 ? "…" : ""}
+                                </p>
+                              ) : null}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </li>
+              ) : null}
               {isStreaming ? (
                 <li>
                   <div className="mr-4 rounded-xl border border-success/30 bg-card/60 px-3 py-2">

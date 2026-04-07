@@ -156,6 +156,46 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     ],
   },
   {
+    key: "gmail",
+    label: "Gmail",
+    description:
+      "Read, search, and send emails. The AI agent can summarize threads, draft replies, and trigger email-based automations.",
+    capabilities: ["oauth2", "rate_limited", "read", "write"],
+    auth: "oauth2",
+    defaultMappings: [
+      {
+        sourceField: "message.id",
+        targetEntity: "Message",
+        targetField: "externalId",
+        dataType: "string",
+      },
+      {
+        sourceField: "message.subject",
+        targetEntity: "Message",
+        targetField: "title",
+        dataType: "string",
+      },
+      {
+        sourceField: "message.from",
+        targetEntity: "Contact",
+        targetField: "email",
+        dataType: "string",
+      },
+      {
+        sourceField: "message.date",
+        targetEntity: "Message",
+        targetField: "sentAt",
+        dataType: "timestamp",
+      },
+      {
+        sourceField: "message.snippet",
+        targetEntity: "Message",
+        targetField: "body",
+        dataType: "string",
+      },
+    ],
+  },
+  {
     key: "hubspot",
     label: "HubSpot",
     description:

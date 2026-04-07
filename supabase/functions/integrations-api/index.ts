@@ -47,6 +47,14 @@ const PROVIDER_CATALOG: {
     supportsApiKey: false,
   },
   {
+    id: "gmail",
+    name: "Gmail",
+    description:
+      "Read, search, and send emails. The AI agent can summarize threads, draft replies, and trigger email-based automations.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
     id: "hubspot",
     name: "HubSpot",
     description:
