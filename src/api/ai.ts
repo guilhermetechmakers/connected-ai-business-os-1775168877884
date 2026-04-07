@@ -9,6 +9,7 @@ export {
   fetchAiContexts,
   fetchAiDashboardInsights,
   fetchAiDashboardSummary,
+  runAiToolsDiagnostics,
   fetchExecutiveBrief,
   fetchAiPermissions,
   fetchWorkspaceDocuments,

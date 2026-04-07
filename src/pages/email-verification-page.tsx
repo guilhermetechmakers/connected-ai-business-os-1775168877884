@@ -21,8 +21,10 @@ import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 export default function EmailVerificationPage() {
   const [params] = useSearchParams();
   const tokenFromUrl = params.get("token") ?? "";
+  const emailFromUrl = params.get("email")?.trim() ?? "";
   const nextPath = params.get("next")?.trim() || "/onboarding/company";
   const [tokenInput, setTokenInput] = useState(tokenFromUrl);
+  const [resendEmail, setResendEmail] = useState(emailFromUrl);
   const [sessionVerified, setSessionVerified] = useState(false);
 
   useEffect(() => {
@@ -49,6 +51,26 @@ export default function EmailVerificationPage() {
     onSuccess: () => {
       toast.success("Email verified");
       setSessionVerified(true);
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+    },
+  });
+
+  const resendMutation = useMutation({
+    mutationFn: async (email: string) => {
+      return invokeAuthApi<{ ok: boolean; resent?: boolean; alreadyVerified?: boolean }>(
+        { op: "verify.email.resend", email: email.trim() },
+        { skipAuthHeader: true },
+      );
+    },
+    onSuccess: (data) => {
+      if (data.alreadyVerified) {
+        toast.success("Email already verified");
+        setSessionVerified(true);
+        return;
+      }
+      toast.success("Verification email sent");
     },
     onError: (err: Error) => {
       toast.error(err.message);
@@ -89,6 +111,17 @@ export default function EmailVerificationPage() {
                     autoComplete="one-time-code"
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="verify-email">Email for resend</Label>
+                  <Input
+                    id="verify-email"
+                    className="bg-surface-inner"
+                    value={resendEmail}
+                    onChange={(e) => setResendEmail(e.target.value)}
+                    placeholder="you@company.com"
+                    autoComplete="email"
+                  />
+                </div>
                 <Button
                   type="button"
                   variant="cta"
@@ -112,14 +145,10 @@ export default function EmailVerificationPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() =>
-                  toast.message("Resend email", {
-                    description:
-                      "Trigger resend from Supabase Auth admin or your notifications Edge Function.",
-                  })
-                }
+                disabled={!resendEmail.trim() || resendMutation.isPending}
+                onClick={() => resendMutation.mutate(resendEmail)}
               >
-                Resend email
+                {resendMutation.isPending ? "Sending…" : "Resend email"}
               </Button>
             </div>
           </CardContent>

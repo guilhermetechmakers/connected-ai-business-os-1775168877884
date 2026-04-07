@@ -5,14 +5,26 @@ import type { ReactNode } from "react";
 import { AuthProvider } from "@/contexts/auth-context";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { isApiUnauthorizedError } from "@/lib/edge-auth-errors";
+
+const maxQueryRetries = 1;
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60 * 5,
       gcTime: 1000 * 60 * 10,
-      retry: 1,
+      retry: (failureCount, error) => {
+        if (isApiUnauthorizedError(error)) return false;
+        return failureCount < maxQueryRetries;
+      },
       refetchOnWindowFocus: false,
+    },
+    mutations: {
+      retry: (failureCount, error) => {
+        if (isApiUnauthorizedError(error)) return false;
+        return failureCount < maxQueryRetries;
+      },
     },
   },
 });

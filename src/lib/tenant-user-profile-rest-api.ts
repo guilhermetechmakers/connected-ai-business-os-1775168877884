@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 export type TenantUserProfileRestRequest = {
@@ -36,7 +37,7 @@ export async function invokeTenantUserProfileRest<T>(
       body: req.body,
       query: req.query,
     },
-    headers: { Authorization: `Bearer ${token}` },
+    headers: edgeFunctionAuthHeaders(token),
   });
 
   if (error) {

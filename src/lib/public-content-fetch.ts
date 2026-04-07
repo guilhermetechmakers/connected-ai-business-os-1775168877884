@@ -1,3 +1,4 @@
+import { isSupabaseConfigured, supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 import type { Database } from "@/types/database";
 
 type PricingRow = Database["public"]["Tables"]["marketing_pricing_tiers"]["Row"];
@@ -5,10 +6,8 @@ type FeatureRow = Database["public"]["Tables"]["marketing_feature_highlights"]["
 type TestimonialRow = Database["public"]["Tables"]["marketing_testimonials"]["Row"];
 
 function getSupabaseRestConfig(): { base: string; key: string } | null {
-  const base = import.meta.env.VITE_SUPABASE_URL;
-  const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  if (typeof base !== "string" || !base || typeof key !== "string" || !key) return null;
-  return { base: base.replace(/\/$/, ""), key };
+  if (!isSupabaseConfigured) return null;
+  return { base: supabaseUrl.replace(/\/$/, ""), key: supabaseAnonKey };
 }
 
 async function restSelect<T>(path: string): Promise<T[]> {

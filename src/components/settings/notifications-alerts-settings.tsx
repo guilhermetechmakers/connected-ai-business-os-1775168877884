@@ -33,7 +33,7 @@ import {
   useNotificationPreferencesQuery,
   useNotificationSchedulesQuery,
   useTestFcmMutation,
-  useTestSendgridMutation,
+  useTestResendMutation,
   useUpdateAlertRuleMutation,
   useUpsertChannelSecretsMutation,
   useUpsertChannelSettingsMutation,
@@ -54,8 +54,8 @@ const preferencesFormSchema = z.object({
 type PreferencesForm = z.infer<typeof preferencesFormSchema>;
 
 const channelMetaSchema = z.object({
-  sendgrid_from_email: z.string().email().optional().or(z.literal("")),
-  sendgrid_reply_to: z.string().email().optional().or(z.literal("")),
+  resend_from_email: z.string().email().optional().or(z.literal("")),
+  resend_reply_to: z.string().email().optional().or(z.literal("")),
   fcm_sender_id: z.string().optional(),
   webhook_delivery_url: z.string().optional(),
 });
@@ -81,7 +81,7 @@ export function NotificationsPreferencesTab() {
   const chQ = useChannelSettingsQuery();
   const upsertMeta = useUpsertChannelSettingsMutation();
   const upsertSecrets = useUpsertChannelSecretsMutation();
-  const testSg = useTestSendgridMutation();
+  const testResend = useTestResendMutation();
   const testFcm = useTestFcmMutation();
 
   const prefData = prefQ.data ?? {};
@@ -109,14 +109,14 @@ export function NotificationsPreferencesTab() {
   const metaForm = useForm<z.infer<typeof channelMetaSchema>>({
     resolver: zodResolver(channelMetaSchema),
     values: {
-      sendgrid_from_email: String(chQ.data?.sendgrid_from_email ?? ""),
-      sendgrid_reply_to: String(chQ.data?.sendgrid_reply_to ?? ""),
+      resend_from_email: String(chQ.data?.resend_from_email ?? ""),
+      resend_reply_to: String(chQ.data?.resend_reply_to ?? ""),
       fcm_sender_id: String(chQ.data?.fcm_sender_id ?? ""),
       webhook_delivery_url: String(chQ.data?.webhook_delivery_url ?? ""),
     },
   });
 
-  const [sendgridKey, setSendgridKey] = useState("");
+  const [resendKey, setResendKey] = useState("");
   const [fcmKey, setFcmKey] = useState("");
   const [testEmail, setTestEmail] = useState("");
   const [testToken, setTestToken] = useState("");
@@ -288,8 +288,8 @@ export function NotificationsPreferencesTab() {
                   onSubmit={metaForm.handleSubmit((vals) => {
                     upsertMeta.mutate(
                       {
-                        sendgrid_from_email: vals.sendgrid_from_email || null,
-                        sendgrid_reply_to: vals.sendgrid_reply_to || null,
+                        resend_from_email: vals.resend_from_email || null,
+                        resend_reply_to: vals.resend_reply_to || null,
                         fcm_sender_id: vals.fcm_sender_id || null,
                         webhook_delivery_url: vals.webhook_delivery_url || null,
                       },
@@ -302,10 +302,10 @@ export function NotificationsPreferencesTab() {
                 >
                   <FormField
                     control={metaForm.control}
-                    name="sendgrid_from_email"
+                    name="resend_from_email"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>SendGrid from email</FormLabel>
+                        <FormLabel>Resend from email</FormLabel>
                         <FormControl>
                           <Input className="bg-surface-inner" {...field} />
                         </FormControl>
@@ -315,7 +315,7 @@ export function NotificationsPreferencesTab() {
                   />
                   <FormField
                     control={metaForm.control}
-                    name="sendgrid_reply_to"
+                    name="resend_reply_to"
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Reply-to (optional)</FormLabel>
@@ -368,35 +368,35 @@ export function NotificationsPreferencesTab() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label>SendGrid API key</Label>
+              <Label>Resend API key</Label>
               <Input
                 className="bg-surface-inner"
                 type="password"
                 autoComplete="off"
-                value={sendgridKey}
-                onChange={(e) => setSendgridKey(e.target.value)}
-                placeholder="SG…"
+                value={resendKey}
+                onChange={(e) => setResendKey(e.target.value)}
+                placeholder="re_…"
               />
               <Button
                 type="button"
                 size="sm"
                 variant="cta"
-                disabled={upsertSecrets.isPending || sendgridKey.length < 10}
+                disabled={upsertSecrets.isPending || resendKey.length < 10}
                 onClick={() => {
                   upsertSecrets.mutate(
-                    { provider: "sendgrid", sendgrid_api_key: sendgridKey },
+                    { provider: "resend", resend_api_key: resendKey },
                     {
                       onSuccess: (ok) => {
                         if (ok) {
-                          toast.success("SendGrid key stored");
-                          setSendgridKey("");
+                          toast.success("Resend key stored");
+                          setResendKey("");
                         } else toast.error("Could not store key");
                       },
                     },
                   );
                 }}
               >
-                Store SendGrid key
+                Store Resend key
               </Button>
             </div>
             <Separator className="bg-border/60" />
@@ -433,9 +433,9 @@ export function NotificationsPreferencesTab() {
             </div>
             <Separator className="bg-border/60" />
             <div className="space-y-2">
-              <Label htmlFor="sg-test">Test email recipient</Label>
+              <Label htmlFor="resend-test">Test email recipient</Label>
               <Input
-                id="sg-test"
+                id="resend-test"
                 className="bg-surface-inner"
                 type="email"
                 value={testEmail}
@@ -445,20 +445,20 @@ export function NotificationsPreferencesTab() {
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={testSg.isPending || !testEmail}
+                disabled={testResend.isPending || !testEmail}
                 onClick={() => {
-                  testSg.mutate(testEmail, {
+                  testResend.mutate(testEmail, {
                     onSuccess: (r) => {
-                      if (r.ok) toast.success("SendGrid test sent");
-                      else toast.error(r.error ?? "SendGrid test failed");
+                      if (r.ok) toast.success("Resend test sent");
+                      else toast.error(r.error ?? "Resend test failed");
                     },
                   });
                 }}
               >
-                {testSg.isPending ? (
+                {testResend.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : null}
-                Test SendGrid
+                Test Resend
               </Button>
             </div>
             <div className="space-y-2">

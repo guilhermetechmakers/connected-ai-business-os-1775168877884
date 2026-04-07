@@ -17,6 +17,7 @@ import {
   FileBarChart,
   Bell,
   Puzzle,
+  Database,
 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -51,6 +52,7 @@ const navGroups: {
     label: "Intelligence",
     items: [
       { to: "/dashboard/ai", label: "AI workspace", icon: Bot },
+      { to: "/dashboard/knowledge-base", label: "Knowledge base", icon: Database },
       { to: "/search", label: "Search", icon: Search },
     ],
   },

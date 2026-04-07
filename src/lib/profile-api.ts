@@ -1,5 +1,6 @@
 import { invokeAuthApi, invokeAuthApiEnvelope } from "@/lib/auth-api";
-import { supabase, isSupabaseConfigured } from "@/lib/supabase";
+import { invokeEdgeFunction } from "@/lib/edge-function-invoke";
+import { isSupabaseConfigured } from "@/lib/supabase";
 import type { Json } from "@/types/database";
 
 export type TenantSettingsRow = {
@@ -91,13 +92,13 @@ export async function uploadProfileAvatar(imageBase64: string, mimeType: string)
   if (!allowed.includes(mimeType as (typeof allowed)[number])) {
     throw new Error("Unsupported image type.");
   }
-  const { data, error } = await supabase.functions.invoke<{
+  const data = await invokeEdgeFunction<{
     data?: AvatarUploadResult | null;
     error?: { message?: string } | null;
   }>("profile-avatar", {
-    body: { imageBase64, mimeType },
+    imageBase64,
+    mimeType,
   });
-  if (error) throw new Error(error.message);
   const url = data && typeof data === "object" && data.data && typeof data.data.url === "string"
     ? data.data.url
     : null;

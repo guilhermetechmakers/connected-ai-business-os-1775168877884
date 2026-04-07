@@ -23,6 +23,7 @@ import DepartmentsListPage from "@/pages/dashboard/departments-list-page";
 import EditModulePage from "@/pages/dashboard/edit-module-page";
 import ExecutiveDashboardPage from "@/pages/dashboard/executive-dashboard-page";
 import GlobalDashboardPage from "@/pages/dashboard/global-dashboard-page";
+import KnowledgeBasePage from "@/pages/dashboard/knowledge-base-page";
 import ModulesHubPage from "@/pages/dashboard/modules-hub-page";
 import NotificationsPage from "@/pages/dashboard/notifications-page";
 import ProfileSettingsPage from "@/pages/dashboard/settings/profile-settings-page";
@@ -115,6 +116,7 @@ export default function App() {
             <Route path="departments" element={<DepartmentsListPage />} />
             <Route path="departments/:departmentId" element={<DepartmentWorkspacePage />} />
             <Route path="ai" element={<AIWorkspacePage />} />
+            <Route path="knowledge-base" element={<KnowledgeBasePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="activity" element={<ActivityLogPage />} />
             <Route path="settings" element={<SettingsLayout />}>

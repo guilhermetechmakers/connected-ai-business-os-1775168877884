@@ -1,4 +1,5 @@
 export { ActionDrawer } from "@/components/ai-workspace/action-drawer";
+export { AiDiagnosticsCard } from "@/components/ai-workspace/ai-diagnostics-card";
 export { ContextPanel } from "@/components/ai-workspace/context-panel";
 export { ConversationPanel } from "@/components/ai-workspace/conversation-panel";
 export { DocumentCard } from "@/components/ai-workspace/document-card";
@@ -7,4 +8,5 @@ export { KpiBar } from "@/components/ai-workspace/kpi-bar";
 export { ModeSwitch, AI_WORKSPACE_MODES } from "@/components/ai-workspace/mode-switch";
 export { PromptTemplateEditor } from "@/components/ai-workspace/prompt-template-editor";
 export { PromptTemplatePanel } from "@/components/ai-workspace/prompt-template-panel";
+export { KnowledgeBasePanel } from "@/components/ai-workspace/knowledge-base-panel";
 export { SourceCitationRenderer, SourceCitationsBlock } from "@/components/ai-workspace/source-citations";

@@ -7,6 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { toolsExecute, toolsList } from "../_shared/integrations-runtime.ts";
 
 const citationSchema = z.object({
   source: z.string(),
@@ -15,6 +16,9 @@ const citationSchema = z.object({
   docId: z.string().uuid().optional(),
   snippet: z.string().optional(),
   sourceProvider: z.string().optional(),
+  title: z.string().optional(),
+  similarity: z.number().optional(),
+  chunkIndex: z.number().int().optional(),
 });
 
 const jsonOpSchema = z.discriminatedUnion("op", [
@@ -114,6 +118,9 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     model: z.string().optional(),
     workspaceId: z.string().max(120).optional(),
   }),
+  z.object({
+    op: z.literal("tools.diagnostics.run"),
+  }),
 ]);
 
 const streamOpSchema = z.object({
@@ -125,21 +132,18 @@ const streamOpSchema = z.object({
   workspaceId: z.string().max(120).optional().default("global"),
 });
 
-type ProfileRow = { company_id: string | null; roles: string[] | null };
+type ProfileRow = { company_id: string | null; roles: string[] | null; department: string | null };
 
-const SENSITIVE_ACTIONS = new Set([
-  "advance_deal_stage",
-  "send_slack_digest",
-  "export_tenant_data",
-]);
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_DIM = 1536;
 
-const ACTION_DEFS = [
-  { id: "run_integration_sync", label: "Trigger integration sync", roles: ["admin", "manager"] },
-  { id: "draft_status_update", label: "Draft status update", roles: ["admin", "manager", "member"] },
-  { id: "advance_deal_stage", label: "Advance deal stage", roles: ["admin", "manager"] },
-  { id: "send_slack_digest", label: "Send Slack digest", roles: ["admin"] },
-  { id: "export_tenant_data", label: "Export tenant snapshot", roles: ["admin"] },
-] as const;
+type AiToolPermission = {
+  id: string;
+  label: string;
+  requiresConfirmation: boolean;
+  providerKey: string;
+  accessLevel: "read" | "write";
+};
 
 function normalizeRoles(roles: string[] | null | undefined): string[] {
   const r = Array.isArray(roles) ? roles : [];
@@ -151,17 +155,18 @@ function canAccessExecutiveBrief(roles: string[] | null | undefined): boolean {
   return ["admin", "executive", "manager", "company admin"].some((x) => r.has(x));
 }
 
-function roleMatches(defRoles: readonly string[], userRoles: string[]): boolean {
-  return defRoles.some((dr) =>
-    userRoles.some((ur) => ur.includes(dr) || dr.includes(ur))
-  );
-}
-
-function permittedActionsForRoles(userRoles: string[]) {
-  return ACTION_DEFS.filter((a) => roleMatches(a.roles, userRoles)).map((a) => ({
-    id: a.id,
-    label: a.label,
-    requiresConfirmation: SENSITIVE_ACTIONS.has(a.id),
+async function permittedActionsForRoles(
+  supabase: SupabaseClient,
+  companyId: string,
+  userRoles: string[],
+): Promise<AiToolPermission[]> {
+  const list = await toolsList(supabase, { companyId, roles: userRoles });
+  return list.map((t) => ({
+    id: t.id,
+    label: t.label,
+    requiresConfirmation: t.requiresConfirmation,
+    providerKey: t.providerKey,
+    accessLevel: t.accessLevel,
   }));
 }
 
@@ -172,25 +177,80 @@ function canEditPromptTemplates(userRoles: string[]) {
 
 function suggestedActionsForMode(
   mode: "Ask" | "Analyze" | "Report" | "Action",
-  permitted: ReturnType<typeof permittedActionsForRoles>,
+  permitted: AiToolPermission[],
 ): string[] {
-  const ids = permitted.map((p) => p.id);
   if (mode === "Action") {
-    return permitted.filter((p) => p.id !== "draft_status_update").slice(0, 4).map((p) => p.id);
+    return permitted
+      .sort((a, b) => (a.accessLevel === "write" ? -1 : 1) - (b.accessLevel === "write" ? -1 : 1))
+      .slice(0, 6)
+      .map((p) => p.id);
   }
   if (mode === "Report") {
     return permitted
-      .filter((p) => p.id === "draft_status_update" || p.id === "run_integration_sync")
+      .filter((p) => p.accessLevel === "read")
       .slice(0, 3)
       .map((p) => p.id);
   }
   if (mode === "Analyze") {
     return permitted
-      .filter((p) => p.id === "draft_status_update" || p.id === "advance_deal_stage")
+      .filter((p) => p.accessLevel === "read")
       .slice(0, 3)
       .map((p) => p.id);
   }
-  return permitted.filter((p) => ids.includes(p.id)).slice(0, 3).map((p) => p.id);
+  return permitted.slice(0, 3).map((p) => p.id);
+}
+
+function isElevatedRole(userRoles: string[]): boolean {
+  const r = new Set(normalizeRoles(userRoles));
+  return ["admin", "manager", "owner", "company admin", "executive"].some((x) => r.has(x));
+}
+
+function canReadIndexedPermission(
+  permissions: unknown,
+  userRoles: string[],
+  userDepartment: string | null | undefined,
+): boolean {
+  const p = permissions as Record<string, unknown> | null;
+  if (!p || p.scope === "tenant") return true;
+  if (isElevatedRole(userRoles)) return true;
+
+  const roles = Array.isArray(p.roles) ? (p.roles as string[]) : [];
+  const ur = new Set(normalizeRoles(userRoles));
+  const rolesAllowed = roles.length === 0 || roles.some((r) => ur.has(String(r).toLowerCase()));
+  if (!rolesAllowed) return false;
+
+  const deps = Array.isArray(p.departments) ? (p.departments as string[]) : [];
+  if (deps.length === 0) return true;
+  const d = (userDepartment ?? "").trim().toLowerCase();
+  if (!d) return false;
+  return deps.some((dep) => String(dep).trim().toLowerCase() === d);
+}
+
+function toVectorLiteral(values: number[]): string {
+  return `[${values.map((v) => Number(v.toFixed(8))).join(",")}]`;
+}
+
+async function embedQuery(apiKey: string, text: string): Promise<number[] | null> {
+  const q = text.trim();
+  if (!q) return null;
+  const res = await fetch("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: EMBEDDING_MODEL,
+      input: q.slice(0, 6000),
+    }),
+  });
+  if (!res.ok) return null;
+  const json = await res.json() as { data?: Array<{ embedding?: number[] }> };
+  const emb = Array.isArray(json.data) && Array.isArray(json.data[0]?.embedding)
+    ? json.data[0].embedding ?? []
+    : [];
+  if (emb.length !== EMBEDDING_DIM) return null;
+  return emb;
 }
 
 async function getProfile(
@@ -199,7 +259,7 @@ async function getProfile(
 ): Promise<{ profile: ProfileRow | null; error: string | null }> {
   const { data, error } = await supabase
     .from("profiles")
-    .select("company_id, roles")
+    .select("company_id, roles, department")
     .eq("id", userId)
     .maybeSingle();
   if (error) return { profile: null, error: error.message };
@@ -212,97 +272,154 @@ async function retrieveRagContext(
   workspaceId: string,
   query: string,
   limit: number,
+  opts?: { userRoles?: string[]; userDepartment?: string | null; apiKey?: string | null },
 ): Promise<{ contextText: string; citations: z.infer<typeof citationSchema>[] }> {
   const citations: z.infer<typeof citationSchema>[] = [];
   const parts: string[] = [];
   const q = query.trim().slice(0, 200);
 
-  const { data: docs } = await supabase
-    .from("documents")
-    .select("id, source_provider, text_content, metadata")
-    .eq("company_id", companyId)
-    .limit(limit);
+  const roles = Array.isArray(opts?.userRoles) ? opts?.userRoles ?? [] : [];
+  const userDepartment = opts?.userDepartment ?? null;
+  const apiKey = opts?.apiKey ?? Deno.env.get("OPENAI_API_KEY") ?? null;
+  const semanticCap = Math.max(6, Math.min(40, limit * 3));
+  const nowIso = new Date().toISOString();
 
-  const docList = Array.isArray(docs) ? docs : [];
-  for (const d of docList.slice(0, 8)) {
-    const text = typeof d.text_content === "string" ? d.text_content : "";
-    const snippet = q
-      ? text.split(/\n/).find((line) => line.toLowerCase().includes(q.toLowerCase())) ??
-        text.slice(0, 1200)
-      : text.slice(0, 1200);
-    if (!snippet.trim()) continue;
-    parts.push(`[Document ${d.source_provider}] ${snippet.slice(0, 1200)}`);
-    const prov = typeof d.source_provider === "string" ? d.source_provider : "unknown";
-    citations.push({
-      source: "documents",
-      reference: String(d.id),
-      docId: String(d.id),
-      sourceProvider: prov,
-      snippet: snippet.slice(0, 280),
-      retrievedAt: new Date().toISOString(),
-    });
+  if (apiKey && q) {
+    const queryEmbedding = await embedQuery(apiKey, q);
+    if (queryEmbedding) {
+      const { data: semanticRows } = await supabase.rpc("match_indexed_document_chunks", {
+        p_query_embedding: toVectorLiteral(queryEmbedding),
+        p_match_count: semanticCap,
+        p_min_similarity: 0.12,
+      });
+
+      const rows = Array.isArray(semanticRows) ? semanticRows : [];
+      for (const row of rows) {
+        const permissions = row.permissions ?? { scope: "tenant" };
+        if (!canReadIndexedPermission(permissions, roles, userDepartment)) continue;
+        const chunkText = typeof row.chunk_text === "string" ? row.chunk_text : "";
+        if (!chunkText.trim()) continue;
+        const title = typeof row.title === "string" && row.title
+          ? row.title
+          : String(row.source_provider ?? "indexed_document");
+        const similarity = typeof row.similarity === "number" ? row.similarity : undefined;
+        parts.push(`[KB: ${title}] ${chunkText.slice(0, 1200)}`);
+        citations.push({
+          source: `indexed_document_chunks:${String(row.source_provider ?? "unknown")}`,
+          reference: String(row.chunk_id),
+          docId: String(row.document_id),
+          sourceProvider: String(row.source_provider ?? "unknown"),
+          title,
+          snippet: chunkText.slice(0, 280),
+          similarity,
+          chunkIndex: typeof row.chunk_index === "number" ? row.chunk_index : undefined,
+          retrievedAt: nowIso,
+        });
+        if (parts.length >= Math.max(10, limit * 2)) break;
+      }
+    }
   }
 
-  const { data: entities } = await supabase
-    .from("unified_entities")
-    .select("id, entity_type, payload, source_references")
-    .eq("company_id", companyId)
-    .eq("is_deleted", false)
-    .limit(limit);
-
-  const entList = Array.isArray(entities) ? entities : [];
-  for (const e of entList) {
-    const payload = e.payload && typeof e.payload === "object" ? JSON.stringify(e.payload).slice(0, 800) : "";
-    if (!payload) continue;
-    parts.push(`[${e.entity_type}] ${payload}`);
-    citations.push({
-      source: "unified_entities",
-      reference: String(e.id),
-      retrievedAt: new Date().toISOString(),
-    });
+  const needFallback = parts.length < Math.max(4, Math.min(10, limit));
+  if (needFallback) {
+    const { data: docs } = await supabase
+      .from("documents")
+      .select("id, source_provider, text_content")
+      .eq("company_id", companyId)
+      .limit(limit);
+    const docList = Array.isArray(docs) ? docs : [];
+    for (const d of docList.slice(0, 8)) {
+      const text = typeof d.text_content === "string" ? d.text_content : "";
+      const snippet = q
+        ? text.split(/\n/).find((line) => line.toLowerCase().includes(q.toLowerCase())) ??
+          text.slice(0, 1200)
+        : text.slice(0, 1200);
+      if (!snippet.trim()) continue;
+      parts.push(`[Document ${d.source_provider}] ${snippet.slice(0, 1200)}`);
+      citations.push({
+        source: "documents",
+        reference: String(d.id),
+        docId: String(d.id),
+        sourceProvider: typeof d.source_provider === "string" ? d.source_provider : "unknown",
+        snippet: snippet.slice(0, 280),
+        retrievedAt: nowIso,
+      });
+      if (parts.length >= Math.max(10, limit * 2)) break;
+    }
   }
 
-  const { data: chunks } = await supabase
-    .from("ai_context_chunks")
-    .select("id, source_type, content, metadata")
-    .eq("company_id", companyId)
-    .eq("workspace_id", workspaceId)
-    .limit(limit);
+  if (parts.length < Math.max(10, limit * 2)) {
+    const { data: entities } = await supabase
+      .from("unified_entities")
+      .select("id, entity_type, payload")
+      .eq("company_id", companyId)
+      .eq("is_deleted", false)
+      .limit(limit);
 
-  const chunkList = Array.isArray(chunks) ? chunks : [];
-  for (const c of chunkList) {
-    const content = typeof c.content === "string" ? c.content : "";
-    if (!content) continue;
-    parts.push(`[Chunk ${c.source_type}] ${content.slice(0, 1000)}`);
-    citations.push({
-      source: "ai_context_chunks",
-      reference: String(c.id),
-      retrievedAt: new Date().toISOString(),
-    });
+    const entList = Array.isArray(entities) ? entities : [];
+    for (const e of entList) {
+      const payload = e.payload && typeof e.payload === "object" ? JSON.stringify(e.payload).slice(0, 800) : "";
+      if (!payload) continue;
+      parts.push(`[${e.entity_type}] ${payload}`);
+      citations.push({
+        source: "unified_entities",
+        reference: String(e.id),
+        retrievedAt: nowIso,
+      });
+      if (parts.length >= Math.max(10, limit * 2)) break;
+    }
   }
 
-  const { data: indexed } = await supabase
-    .from("indexed_documents")
-    .select("id, source_provider, external_id, title, snippet, full_text, metadata, department_id")
-    .eq("company_id", companyId)
-    .limit(Math.min(limit, 24));
+  if (parts.length < Math.max(10, limit * 2)) {
+    const { data: chunks } = await supabase
+      .from("ai_context_chunks")
+      .select("id, source_type, content")
+      .eq("company_id", companyId)
+      .eq("workspace_id", workspaceId)
+      .limit(limit);
+    const chunkList = Array.isArray(chunks) ? chunks : [];
+    for (const c of chunkList) {
+      const content = typeof c.content === "string" ? c.content : "";
+      if (!content) continue;
+      parts.push(`[Chunk ${c.source_type}] ${content.slice(0, 1000)}`);
+      citations.push({
+        source: "ai_context_chunks",
+        reference: String(c.id),
+        retrievedAt: nowIso,
+      });
+      if (parts.length >= Math.max(10, limit * 2)) break;
+    }
+  }
 
-  const indexedList = Array.isArray(indexed) ? indexed : [];
-  for (const doc of indexedList.slice(0, 10)) {
-    const body =
-      typeof doc.snippet === "string" && doc.snippet.trim()
-        ? doc.snippet
-        : typeof doc.full_text === "string"
-          ? doc.full_text.slice(0, 1200)
-          : "";
-    if (!body.trim()) continue;
-    const title = typeof doc.title === "string" ? doc.title : doc.source_provider;
-    parts.push(`[Indexed: ${title}] ${body.slice(0, 1200)}`);
-    citations.push({
-      source: `indexed_documents:${doc.source_provider}`,
-      reference: String(doc.id),
-      retrievedAt: new Date().toISOString(),
-    });
+  if (parts.length < Math.max(10, limit * 2)) {
+    const { data: indexed } = await supabase
+      .from("indexed_documents")
+      .select("id, source_provider, title, snippet, full_text, permissions")
+      .eq("company_id", companyId)
+      .limit(Math.min(limit, 24));
+
+    const indexedList = Array.isArray(indexed) ? indexed : [];
+    for (const doc of indexedList.slice(0, 10)) {
+      if (!canReadIndexedPermission(doc.permissions, roles, userDepartment)) continue;
+      const body =
+        typeof doc.snippet === "string" && doc.snippet.trim()
+          ? doc.snippet
+          : typeof doc.full_text === "string"
+            ? doc.full_text.slice(0, 1200)
+            : "";
+      if (!body.trim()) continue;
+      const title = typeof doc.title === "string" ? doc.title : String(doc.source_provider);
+      parts.push(`[Indexed: ${title}] ${body.slice(0, 1200)}`);
+      citations.push({
+        source: `indexed_documents:${String(doc.source_provider)}`,
+        reference: String(doc.id),
+        title,
+        snippet: body.slice(0, 280),
+        sourceProvider: String(doc.source_provider ?? "unknown"),
+        retrievedAt: nowIso,
+      });
+      if (parts.length >= Math.max(10, limit * 2)) break;
+    }
   }
 
   return {
@@ -321,6 +438,161 @@ function assembleTemplateText(template: string, slots: Record<string, string>): 
 
 function sseData(obj: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
+}
+
+async function runModeDiagnostics(params: {
+  supabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  userRoles: string[];
+  userDepartment: string | null;
+}): Promise<{
+  generatedAt: string;
+  overallOk: boolean;
+  checks: Array<{
+    mode: "Ask" | "Analyze" | "Report" | "Action";
+    ok: boolean;
+    latencyMs: number;
+    citationCount: number;
+    suggestedActions: string[];
+    responsePreview: string;
+    message: string;
+  }>;
+  actions: {
+    permitted: number;
+    hasSensitiveConfirmAction: boolean;
+  };
+  manualChecklist: string[];
+}> {
+  const generatedAt = new Date().toISOString();
+  const apiKey = Deno.env.get("OPENAI_API_KEY") ?? null;
+  const modes: Array<"Ask" | "Analyze" | "Report" | "Action"> = ["Ask", "Analyze", "Report", "Action"];
+  const permitted = await permittedActionsForRoles(
+    params.supabase,
+    params.companyId,
+    params.userRoles,
+  );
+  const checks: Array<{
+    mode: "Ask" | "Analyze" | "Report" | "Action";
+    ok: boolean;
+    latencyMs: number;
+    citationCount: number;
+    suggestedActions: string[];
+    responsePreview: string;
+    message: string;
+  }> = [];
+
+  for (const mode of modes) {
+    const t0 = performance.now();
+    const probe = `Diagnostics probe for mode ${mode}. Return one short sentence grounded in citations.`;
+    const { contextText, citations } = await retrieveRagContext(
+      params.supabase,
+      params.companyId,
+      "global",
+      probe,
+      8,
+      { userRoles: params.userRoles, userDepartment: params.userDepartment, apiKey },
+    );
+
+    let ok = true;
+    let responsePreview = "";
+    let message = "OK";
+
+    if (!apiKey) {
+      ok = false;
+      message = "OPENAI_API_KEY missing";
+    } else {
+      try {
+        const res = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            temperature: 0.2,
+            max_tokens: 120,
+            messages: [
+              {
+                role: "system",
+                content:
+                  `You are the Connected AI assistant. Mode: ${mode}. ` +
+                  "Respond with one concise sentence. If context is empty, say no citations were found.",
+              },
+              {
+                role: "user",
+                content: `Context:\n${contextText || "(none)"}\n\nPrompt: ${probe}`,
+              },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          ok = false;
+          message = `LLM request failed (${res.status})`;
+        } else {
+          const json = await res.json() as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          responsePreview = String(json.choices?.[0]?.message?.content ?? "").slice(0, 280);
+          if (!responsePreview.trim()) {
+            ok = false;
+            message = "Empty model response";
+          }
+        }
+      } catch (e) {
+        ok = false;
+        message = e instanceof Error ? e.message : "LLM error";
+      }
+    }
+
+    const suggestedActions = suggestedActionsForMode(mode, permitted);
+    if (mode === "Action" && permitted.length > 0 && suggestedActions.length === 0) {
+      ok = false;
+      message = "Action suggestions missing for Action mode";
+    }
+    if (citations.length === 0) {
+      ok = false;
+      message = message === "OK" ? "No citations returned by retrieval" : message;
+    }
+
+    checks.push({
+      mode,
+      ok,
+      latencyMs: Math.round(performance.now() - t0),
+      citationCount: citations.length,
+      suggestedActions,
+      responsePreview,
+      message,
+    });
+  }
+
+  await params.supabase.from("activity_logs").insert({
+    company_id: params.companyId,
+    actor_user_id: params.userId,
+    event_type: "ai.tools.diagnostics.run",
+    payload: {
+      generatedAt,
+      passed: checks.filter((c) => c.ok).length,
+      total: checks.length,
+    },
+  });
+
+  return {
+    generatedAt,
+    overallOk: checks.every((c) => c.ok),
+    checks,
+    actions: {
+      permitted: permitted.length,
+      hasSensitiveConfirmAction: permitted.some((a) => a.requiresConfirmation),
+    },
+    manualChecklist: [
+      "Open AI Workspace and run one prompt in each mode: Ask, Analyze, Report, Action.",
+      "Confirm each assistant answer renders at least one citation in the context panel.",
+      "Open Action drawer and confirm suggested actions change by mode and role.",
+      "Execute one non-sensitive action and verify audit entry appears in Activity Log.",
+    ],
+  };
 }
 
 serve(async (req) => {
@@ -386,7 +658,11 @@ serve(async (req) => {
     const body = streamParsed.data;
     const workspaceId = body.workspaceId ?? "global";
     const model = body.model ?? "gpt-4o-mini";
-    const permittedForStream = permittedActionsForRoles(userRoles);
+    const permittedForStream = await permittedActionsForRoles(
+      supabase,
+      companyId,
+      userRoles,
+    );
     const streamSuggested = suggestedActionsForMode(body.mode, permittedForStream);
 
     const { data: conv, error: convErr } = await supabase
@@ -407,6 +683,7 @@ serve(async (req) => {
       workspaceId,
       body.userMessage,
       8,
+      { userRoles, userDepartment: profile.department, apiKey },
     );
 
     const started = performance.now();
@@ -417,7 +694,7 @@ serve(async (req) => {
       ? `\n\n--- Retrieved context (tenant) ---\n${contextText}\n--- End context ---`
       : "";
 
-    const messagesForModel = [
+    const messagesForModel: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
       { role: "system" as const, content: systemPreamble + ctxBlock },
     ];
 
@@ -787,7 +1064,7 @@ serve(async (req) => {
         const filt = op.sourceFilter?.trim().toLowerCase();
         let idxQ = supabase
           .from("indexed_documents")
-          .select("id, source_provider, external_id, title, snippet, metadata, department_id, updated_at")
+          .select("id, source_provider, external_id, title, snippet, metadata, permissions, department_id, updated_at, index_status, chunk_count, last_indexed_at, index_error, storage_path, mime_type, file_size")
           .eq("company_id", companyId)
           .order("updated_at", { ascending: false })
           .limit(lim);
@@ -803,7 +1080,9 @@ serve(async (req) => {
           .order("updated_at", { ascending: false })
           .limit(Math.max(4, Math.floor(lim / 2)));
         if (docErr) throw docErr;
-        const indexedOut = (Array.isArray(idxRows) ? idxRows : []).map((d) => ({
+        const indexedOut = (Array.isArray(idxRows) ? idxRows : [])
+          .filter((d) => canReadIndexedPermission(d.permissions, userRoles, profile.department))
+          .map((d) => ({
           kind: "indexed" as const,
           id: String(d.id),
           sourceProvider: String(d.source_provider),
@@ -814,8 +1093,16 @@ serve(async (req) => {
               ? d.snippet.slice(0, 400)
               : "",
           metadata: d.metadata && typeof d.metadata === "object" ? d.metadata : {},
+          permissions: d.permissions && typeof d.permissions === "object" ? d.permissions : { scope: "tenant" },
           departmentId: d.department_id != null ? String(d.department_id) : null,
           updatedAt: d.updated_at,
+          indexStatus: typeof d.index_status === "string" ? d.index_status : "pending",
+          chunkCount: typeof d.chunk_count === "number" ? d.chunk_count : 0,
+          lastIndexedAt: d.last_indexed_at ?? null,
+          indexError: d.index_error ?? null,
+          storagePath: d.storage_path ?? null,
+          mimeType: d.mime_type ?? null,
+          fileSize: typeof d.file_size === "number" ? d.file_size : null,
         }));
         const legacyDocs = (Array.isArray(docRows) ? docRows : []).map((d) => {
           const text = typeof d.text_content === "string" ? d.text_content : "";
@@ -827,8 +1114,16 @@ serve(async (req) => {
             title: String(d.source_provider),
             snippet: text.slice(0, 400),
             metadata: d.metadata && typeof d.metadata === "object" ? d.metadata : {},
+            permissions: { scope: "tenant" } as Record<string, unknown>,
             departmentId: null as string | null,
             updatedAt: d.updated_at,
+            indexStatus: "ready",
+            chunkCount: 0,
+            lastIndexedAt: null,
+            indexError: null,
+            storagePath: null,
+            mimeType: null,
+            fileSize: null,
           };
         });
         return new Response(
@@ -851,13 +1146,32 @@ serve(async (req) => {
         });
       }
       case "actions.permissions": {
-        const actions = permittedActionsForRoles(userRoles);
+        const actions = await permittedActionsForRoles(supabase, companyId, userRoles);
         return new Response(JSON.stringify({ data: { actions } }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      case "tools.diagnostics.run": {
+        const report = await runModeDiagnostics({
+          supabase,
+          companyId,
+          userId: user.id,
+          userRoles,
+          userDepartment: profile.department,
+        });
+        return new Response(JSON.stringify({ data: report }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       case "actions.execute": {
-        const allowed = permittedActionsForRoles(userRoles);
+        const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+        if (!masterKey) {
+          return new Response(JSON.stringify({ error: "Server misconfigured" }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const allowed = await permittedActionsForRoles(supabase, companyId, userRoles);
         const found = allowed.find((a) => a.id === op.actionId);
         if (!found) {
           await supabase.from("ai_action_logs").insert({
@@ -873,32 +1187,54 @@ serve(async (req) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        if (found.requiresConfirmation && !op.confirmed) {
+        const exec = await toolsExecute(supabase, {
+          companyId,
+          userId: user.id,
+          roles: userRoles,
+          toolId: op.actionId,
+          args: op.payload ?? {},
+          confirmed: op.confirmed,
+          conversationId: op.conversationId,
+          source: "ai_chat",
+          masterKey,
+        });
+
+        if (exec.pendingConfirmation) {
           return new Response(
-            JSON.stringify({ error: "Confirmation required", requiresConfirmation: true }),
-            { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+            JSON.stringify({
+              data: {
+                ok: false,
+                pendingConfirmation: true,
+                preview: exec.preview ?? {},
+                actionId: op.actionId,
+                providerKey: found.providerKey,
+                requiresConfirmation: found.requiresConfirmation,
+              },
+            }),
+            { headers: { ...corsHeaders, "Content-Type": "application/json" } },
           );
         }
-        const { data: logRow, error: logErr } = await supabase
-          .from("ai_action_logs")
-          .insert({
+
+        if (op.conversationId) {
+          await supabase.from("ai_messages").insert({
+            conversation_id: op.conversationId,
             company_id: companyId,
-            user_id: user.id,
-            action_name: op.actionId,
-            status: "completed",
-            details: { payload: op.payload ?? {}, simulated: true },
-            conversation_id: op.conversationId ?? null,
-          })
-          .select("id, created_at")
-          .single();
-        if (logErr) throw logErr;
-        await supabase.from("activity_logs").insert({
-          company_id: companyId,
-          event_type: "ai.action.executed",
-          actor_user_id: user.id,
-          payload: { actionId: op.actionId, logId: logRow?.id },
-        });
-        return new Response(JSON.stringify({ data: { ok: true, log: logRow } }), {
+            role: "assistant",
+            content: `Executed tool ${op.actionId} successfully.`,
+            citations: exec.citations ?? [],
+            token_usage: { toolExecution: true },
+          });
+        }
+
+        return new Response(JSON.stringify({
+          data: {
+            ok: true,
+            actionId: op.actionId,
+            providerKey: found.providerKey,
+            result: exec.result ?? {},
+            citations: exec.citations ?? [],
+          },
+        }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
@@ -910,6 +1246,7 @@ serve(async (req) => {
           op.workspaceId,
           op.query ?? "",
           lim,
+          { userRoles, userDepartment: profile.department, apiKey: Deno.env.get("OPENAI_API_KEY") ?? null },
         );
         return new Response(JSON.stringify({ data: { snippets: contextText, citations } }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -960,7 +1297,7 @@ serve(async (req) => {
         const preset = op.datePreset ?? "7d";
         const lens = (op.roleView ?? "profile").trim().slice(0, 64);
         const userRoles = normalizeRoles(profile.roles);
-        const permitted = permittedActionsForRoles(userRoles);
+        const permitted = await permittedActionsForRoles(supabase, companyId, userRoles);
         const allowedActionIds = permitted.map((a) => a.id);
 
         const query =
@@ -971,6 +1308,7 @@ serve(async (req) => {
           "global",
           query,
           12,
+          { userRoles, userDepartment: profile.department, apiKey },
         );
 
         const id = crypto.randomUUID();
@@ -1085,6 +1423,7 @@ serve(async (req) => {
           "executive",
           `executive briefing timeframe ${tf}`,
           8,
+          { userRoles, userDepartment: profile.department, apiKey },
         );
         const model = "gpt-4o-mini";
         const sys =
@@ -1186,6 +1525,7 @@ serve(async (req) => {
           workspaceId,
           q,
           6,
+          { userRoles, userDepartment: profile.department, apiKey },
         );
         const mode = op.mode ?? "Ask";
         const sys =
@@ -1210,9 +1550,10 @@ serve(async (req) => {
         const text = data?.choices?.[0]?.message?.content ?? "";
         const latency = Math.round(performance.now() - started);
         const modeEnum = mode as "Ask" | "Analyze" | "Report" | "Action";
+        const permitted = await permittedActionsForRoles(supabase, companyId, userRoles);
         const chatActions = suggestedActionsForMode(
           modeEnum,
-          permittedActionsForRoles(userRoles),
+          permitted,
         );
 
         if (op.conversationId) {

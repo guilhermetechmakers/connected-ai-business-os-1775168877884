@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 export type DepartmentAiGenerateParams = {
@@ -42,7 +43,7 @@ export async function invokeDepartmentAiGenerate(
         contextSummary: params.contextSummary,
         mode: params.mode,
       },
-      headers: { Authorization: `Bearer ${token}` },
+      headers: edgeFunctionAuthHeaders(token),
     },
   );
 

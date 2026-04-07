@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+﻿import { useEffect } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { AnimatedPage } from "@/components/animated-page";
-import { IntegrationConnectionSetup } from "@/components/integrations-setup/integration-connection-setup";
+import { IntegrationConnectionSetup } from "@/components/integrations/onboarding/integration-connection-setup";
 import { PublicChrome } from "@/components/layout/public-chrome";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2 } from "lucide-react";
@@ -13,8 +13,8 @@ export default function IntegrationSetupPage() {
 
   useEffect(() => {
     if (params.get("welcome") === "1") {
-      toast.success("Welcome — finish connecting your stack", {
-        description: "Company onboarding data is saved. Add OAuth or API keys below.",
+      toast.success("Welcome - finish connecting your stack", {
+        description: "Company onboarding data is saved. Start your real OAuth connections below.",
       });
     }
   }, [params]);
@@ -40,8 +40,8 @@ export default function IntegrationSetupPage() {
                   Connect <span className="text-gradient-accent">integrations</span>
                 </h1>
                 <p className="mt-2 max-w-2xl text-muted-foreground">
-                  Guided OAuth/API key capture, field mapping preview, idempotent test sync, and
-                  scheduling. All secrets stay server-side via Edge Functions.
+                  Real OAuth connections, field mapping preview, idempotent sync runs, and workflow-ready
+                  provider actions. Secrets stay server-side in Edge Functions.
                 </p>
               </div>
               <Button variant="cta" asChild>
@@ -67,3 +67,4 @@ export default function IntegrationSetupPage() {
     </PublicChrome>
   );
 }
+

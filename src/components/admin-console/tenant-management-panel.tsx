@@ -63,60 +63,33 @@ function TenantMonitorPanel({
     );
   }
   const connectors = Array.isArray(q.data?.connectors) ? q.data.connectors : [];
-  const integrations = Array.isArray(q.data?.integrations)
-    ? q.data.integrations
-    : [];
   return (
     <div className="border-t border-border/60 bg-surface-inner/30 p-4 text-sm">
       <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-primary">
         Integration monitor
       </p>
-      <div className="grid gap-4 md:grid-cols-2">
-        <div>
-          <p className="mb-1 text-muted-foreground">Connectors</p>
-          {connectors.length === 0 ? (
-            <p className="text-muted-foreground">None</p>
-          ) : (
-            <ul className="space-y-2">
-              {connectors.map((c) => (
-                <li
-                  key={c.id}
-                  className="rounded-lg border border-border/50 px-2 py-1.5"
-                >
-                  <p className="font-mono text-xs text-foreground">
-                    {c.provider_key}
-                  </p>
-                  <IntegrationStatus
-                    status={c.status}
-                    lastSyncAt={c.last_sync_at}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div>
-          <p className="mb-1 text-muted-foreground">Legacy integrations</p>
-          {integrations.length === 0 ? (
-            <p className="text-muted-foreground">None</p>
-          ) : (
-            <ul className="space-y-2">
-              {integrations.map((i) => (
-                <li
-                  key={i.id}
-                  className="rounded-lg border border-border/50 px-2 py-1.5"
-                >
-                  <p className="text-xs text-foreground">{i.provider}</p>
-                  <IntegrationStatus
-                    status={i.status}
-                    lastSyncAt={i.last_sync_at}
-                    errorMessage={i.error_message}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+      <div>
+        <p className="mb-1 text-muted-foreground">Connectors</p>
+        {connectors.length === 0 ? (
+          <p className="text-muted-foreground">None</p>
+        ) : (
+          <ul className="space-y-2">
+            {connectors.map((c) => (
+              <li
+                key={c.id}
+                className="rounded-lg border border-border/50 px-2 py-1.5"
+              >
+                <p className="font-mono text-xs text-foreground">
+                  {c.provider_key}
+                </p>
+                <IntegrationStatus
+                  status={c.status}
+                  lastSyncAt={c.last_sync_at}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

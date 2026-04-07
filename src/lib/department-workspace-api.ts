@@ -1,4 +1,5 @@
 import { normalizeDepartmentDirectory } from "@/components/department-workspace";
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { DepartmentDirectoryRow } from "@/types/department-workspace";
 
@@ -79,7 +80,7 @@ export async function invokeDepartmentWorkspaceApi<T>(
     "department-workspace-api",
     {
       body,
-      headers: { Authorization: `Bearer ${token}` },
+      headers: edgeFunctionAuthHeaders(token),
     },
   );
 

@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
 export type TenantDataPolicyRow = {
@@ -79,12 +80,13 @@ async function invokeSettingsRaw(
   }
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData.session?.access_token;
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (!token) {
+    return { data: null, error: "Not signed in" };
+  }
 
   const { data, error } = await supabase.functions.invoke<unknown>("settings-api", {
     body,
-    headers,
+    headers: edgeFunctionAuthHeaders(token),
   });
   if (error) {
     return { data: null, error: error.message };

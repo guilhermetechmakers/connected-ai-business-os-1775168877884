@@ -13,7 +13,7 @@ import {
   fetchNotificationSchedules,
   fetchNotificationsList,
   testFcm,
-  testSendgrid,
+  testResend,
   updateAlertRule,
   upsertChannelSecrets,
   upsertChannelSettings,
@@ -197,9 +197,9 @@ export function useUpsertChannelSecretsMutation() {
 
 type ChannelTestResult = { ok: boolean; error?: string };
 
-export function useTestSendgridMutation() {
+export function useTestResendMutation() {
   return useMutation<ChannelTestResult, Error, string>({
-    mutationFn: (toEmail: string) => testSendgrid(toEmail),
+    mutationFn: (toEmail: string) => testResend(toEmail),
   });
 }
 

@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 /**
@@ -24,7 +25,7 @@ export async function invokeUnifiedDataApi<T>(
     "unified-data-api",
     {
       body,
-      headers: { Authorization: `Bearer ${token}` },
+      headers: edgeFunctionAuthHeaders(token),
     },
   );
 

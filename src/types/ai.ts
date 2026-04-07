@@ -45,6 +45,39 @@ export type AiPermittedAction = {
   id: string;
   label: string;
   requiresConfirmation: boolean;
+  providerKey?: string;
+  accessLevel?: "read" | "write";
+};
+
+export type AiActionExecutionResult = {
+  ok: boolean;
+  actionId: string;
+  providerKey?: string;
+  pendingConfirmation?: boolean;
+  preview?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  citations?: AiSourceCitation[];
+};
+
+export type AiModeDiagnosticResult = {
+  mode: AiChatMode;
+  ok: boolean;
+  latencyMs: number;
+  citationCount: number;
+  suggestedActions: string[];
+  responsePreview: string;
+  message: string;
+};
+
+export type AiDiagnosticsSummary = {
+  generatedAt: string;
+  overallOk: boolean;
+  checks: AiModeDiagnosticResult[];
+  actions: {
+    permitted: number;
+    hasSensitiveConfirmAction: boolean;
+  };
+  manualChecklist: string[];
 };
 
 export type AiDashboardSummary = {
@@ -102,6 +135,14 @@ export type AiWorkspaceDocumentItem = {
   title: string;
   snippet: string;
   metadata: Record<string, unknown>;
+  permissions?: Record<string, unknown>;
   departmentId: string | null;
   updatedAt: string;
+  indexStatus?: string;
+  chunkCount?: number;
+  lastIndexedAt?: string | null;
+  indexError?: string | null;
+  storagePath?: string | null;
+  mimeType?: string | null;
+  fileSize?: number | null;
 };

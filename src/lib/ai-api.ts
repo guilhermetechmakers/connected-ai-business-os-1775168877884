@@ -1,7 +1,11 @@
-import { supabase } from "@/lib/supabase";
+import { ApiUnauthorizedError } from "@/lib/edge-auth-errors";
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
+import { supabase, supabaseUrl } from "@/lib/supabase";
 import type {
+  AiActionExecutionResult,
   AiChatMode,
   AiConversationRow,
+  AiDiagnosticsSummary,
   AiDashboardInsightOutput,
   AiDashboardSummary,
   AiMessageRow,
@@ -14,21 +18,26 @@ import type {
 import type { ExecutiveBriefResult } from "@/types/dashboard";
 
 const fnUrl = (name: string) => {
-  const base = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+  const base = supabaseUrl.replace(/\/$/, "");
   return `${base}/functions/v1/${name}`;
 };
-
-const anonKey = () => import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
 
 async function authHeaders(): Promise<HeadersInit> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
-  if (!token) throw new Error("Unauthorized");
+  if (!token) throw new ApiUnauthorizedError("Not signed in");
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-    apikey: anonKey(),
+    ...edgeFunctionAuthHeaders(token),
   };
+}
+
+function isGatewayInvalidJwtJson(
+  json: { message?: string } | undefined,
+  status: number,
+): boolean {
+  const msg = json && typeof json.message === "string" ? json.message : "";
+  return status === 401 && msg.toLowerCase().includes("invalid jwt");
 }
 
 function normalizePromptTemplateRow(raw: unknown): AiPromptTemplateRow {
@@ -63,10 +72,33 @@ function normalizePromptTemplateRow(raw: unknown): AiPromptTemplateRow {
 }
 
 async function postAiJson<T>(body: Record<string, unknown>): Promise<T> {
-  const headers = await authHeaders();
-  const res = await fetch(fnUrl("ai-api"), { method: "POST", headers, body: JSON.stringify(body) });
-  const json = (await res.json()) as { data?: T; error?: string; requiresConfirmation?: boolean };
+  const doFetch = async () => {
+    const headers = await authHeaders();
+    const res = await fetch(fnUrl("ai-api"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    const json = (await res.json()) as {
+      data?: T;
+      error?: string;
+      message?: string;
+      requiresConfirmation?: boolean;
+    };
+    return { res, json };
+  };
+
+  let { res, json } = await doFetch();
+
+  if (isGatewayInvalidJwtJson(json, res.status)) {
+    await supabase.auth.refreshSession();
+    ({ res, json } = await doFetch());
+  }
+
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new ApiUnauthorizedError(json.error ?? json.message ?? "Unauthorized");
+    }
     throw new Error(json.error ?? `AI API ${res.status}`);
   }
   if (json.data === undefined) {
@@ -199,20 +231,34 @@ export async function fetchAiPermissions(): Promise<AiPermittedAction[]> {
   return Array.isArray(actions) ? actions : [];
 }
 
+export async function runAiToolsDiagnostics(): Promise<AiDiagnosticsSummary> {
+  return postAiJson<AiDiagnosticsSummary>({
+    op: "tools.diagnostics.run",
+  });
+}
+
 export async function executeAiAction(params: {
   actionId: string;
   confirmed: boolean;
   conversationId?: string;
   payload?: Record<string, unknown>;
-}): Promise<{ ok: boolean; log?: { id: string; created_at: string } }> {
-  const data = await postAiJson<{ ok: boolean; log?: { id: string; created_at: string } }>({
+}): Promise<AiActionExecutionResult> {
+  const data = await postAiJson<AiActionExecutionResult>({
     op: "actions.execute",
     actionId: params.actionId,
     confirmed: params.confirmed,
     conversationId: params.conversationId,
     payload: params.payload,
   });
-  return data;
+  return {
+    ok: Boolean(data?.ok),
+    actionId: typeof data?.actionId === "string" ? data.actionId : params.actionId,
+    providerKey: typeof data?.providerKey === "string" ? data.providerKey : undefined,
+    pendingConfirmation: Boolean(data?.pendingConfirmation),
+    preview: data?.preview && typeof data.preview === "object" ? data.preview : undefined,
+    result: data?.result && typeof data.result === "object" ? data.result : undefined,
+    citations: Array.isArray(data?.citations) ? data.citations : [],
+  };
 }
 
 export async function fetchAiDashboardSummary(): Promise<AiDashboardSummary> {
@@ -251,13 +297,13 @@ export async function completeAiChat(params: {
 }): Promise<{
   message: string;
   citations: AiSourceCitation[];
-  actions: string[];
+  actions: AiPermittedAction[];
   usage: Record<string, unknown>;
 }> {
   const raw = await postAiJson<{
     message: string;
     citations: AiSourceCitation[];
-    actions?: { id: string; label?: string; requiresConfirmation?: boolean }[];
+    actions?: AiPermittedAction[];
     usage: Record<string, unknown>;
   }>({
     op: "complete.chat",
@@ -267,15 +313,16 @@ export async function completeAiChat(params: {
     workspaceId: params.workspaceId ?? "global",
     model: params.model,
   });
-  const actionIds = Array.isArray(raw.actions)
+  const actions = Array.isArray(raw.actions)
     ? raw.actions
-        .map((a) => (a && typeof a === "object" && typeof a.id === "string" ? a.id : null))
-        .filter((x): x is string => Boolean(x))
+        .filter((a): a is AiPermittedAction =>
+          Boolean(a && typeof a === "object" && typeof a.id === "string"),
+        )
     : [];
   return {
     message: typeof raw.message === "string" ? raw.message : "",
     citations: Array.isArray(raw.citations) ? raw.citations : [],
-    actions: actionIds,
+    actions,
     usage: raw.usage && typeof raw.usage === "object" ? raw.usage : {},
   };
 }

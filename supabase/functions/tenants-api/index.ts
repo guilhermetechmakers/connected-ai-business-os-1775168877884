@@ -356,23 +356,14 @@ async function handleSuperAdmin(
     }
     case "tenants.admin.integrationMonitor": {
       const cid = body.companyId;
-      const [{ data: connectors, error: cErr }, { data: integrations, error: iErr }] =
-        await Promise.all([
-          admin.from("connectors").select("id, provider_key, status, last_sync_at").eq(
-            "company_id",
-            cid,
-          ),
-          admin.from("integrations").select("id, provider, status, last_sync_at, error_message").eq(
-            "company_id",
-            cid,
-          ),
-        ]);
+      const { data: connectors, error: cErr } = await admin
+        .from("connectors")
+        .select("id, provider_key, status, last_sync_at")
+        .eq("company_id", cid);
       if (cErr) return json({ error: cErr.message }, 500);
-      if (iErr) return json({ error: iErr.message }, 500);
       return json({
         data: {
           connectors: Array.isArray(connectors) ? connectors : [],
-          integrations: Array.isArray(integrations) ? integrations : [],
         },
       });
     }
@@ -498,35 +489,34 @@ async function handleOp(
           sampleMappings: { "file.id": "Document.externalId", "file.name": "Document.title" },
         },
         {
-          provider: "salesforce",
-          label: "Salesforce",
+          provider: "gmail",
+          label: "Gmail",
           type: "OAuth",
-          sampleMappings: { "Account.Id": "Account.externalId", "Opportunity.StageName": "Opportunity.stage" },
+          sampleMappings: { "message.id": "Message.externalId", "message.subject": "Message.title" },
+        },
+        {
+          provider: "google_calendar",
+          label: "Google Calendar",
+          type: "OAuth",
+          sampleMappings: { "event.id": "Activity.externalId", "event.summary": "Activity.title" },
         },
         {
           provider: "quickbooks",
           label: "QuickBooks",
-          type: "APIKey",
+          type: "OAuth",
           sampleMappings: { "Invoice.Id": "Document.externalId", "Line.Amount": "Opportunity.amount" },
         },
       ];
-      const [{ data: intRows }, { data: connRows }] = await Promise.all([
-        supabase.from("integrations").select("provider, status").eq("company_id", companyId),
-        supabase.from("connectors").select("provider_key, status").eq("company_id", companyId),
-      ]);
+      const { data: connRows } = await supabase
+        .from("connectors")
+        .select("provider_key, status")
+        .eq("company_id", companyId);
       const connected = new Set<string>();
       for (const r of Array.isArray(connRows) ? connRows : []) {
         const row = r as { provider_key?: string; status?: string };
         const st = String(row.status ?? "").toLowerCase();
         if (["connected", "healthy", "active"].includes(st)) {
           if (row.provider_key) connected.add(row.provider_key);
-        }
-      }
-      for (const r of Array.isArray(intRows) ? intRows : []) {
-        const row = r as { provider?: string; status?: string };
-        const st = String(row.status ?? "").toLowerCase();
-        if (["connected", "healthy", "active", "ok"].includes(st)) {
-          if (row.provider) connected.add(row.provider);
         }
       }
       const data = catalog.map((c) => ({

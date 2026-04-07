@@ -1,6 +1,7 @@
 import {
   DEFAULT_LANDING_BUNDLE,
 } from "@/data/landing-defaults";
+import { isSupabaseConfigured, supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 import type {
   LandingFeatureCard,
   LandingMarketingBundle,
@@ -172,17 +173,15 @@ async function fetchJsonSafe<T>(path: string): Promise<T | null> {
 }
 
 async function fetchSupabaseMarketingBundle(): Promise<unknown | null> {
-  const url = import.meta.env.VITE_SUPABASE_URL;
-  const anon = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  if (!url?.trim() || !anon?.trim()) return null;
+  if (!isSupabaseConfigured) return null;
   try {
     const res = await fetch(
-      `${url.replace(/\/$/, "")}/functions/v1/marketing-api`,
+      `${supabaseUrl.replace(/\/$/, "")}/functions/v1/marketing-api`,
       {
         method: "GET",
         headers: {
-          apikey: anon,
-          Authorization: `Bearer ${anon}`,
+          apikey: supabaseAnonKey,
+          Authorization: `Bearer ${supabaseAnonKey}`,
         },
       },
     );

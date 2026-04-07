@@ -1,10 +1,11 @@
 import {
+  CalendarDays,
   Cloud,
+  Mail,
   FileText,
   Landmark,
   MessageSquare,
   Plug,
-  Workflow,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -32,10 +33,12 @@ function ProviderIcon({ providerId }: { providerId: string }) {
       return <MessageSquare className={cls} aria-hidden />;
     case "google_drive":
       return <FileText className={cls} aria-hidden />;
-    case "salesforce":
-      return <Cloud className={cls} aria-hidden />;
+    case "gmail":
+      return <Mail className={cls} aria-hidden />;
+    case "google_calendar":
+      return <CalendarDays className={cls} aria-hidden />;
     case "hubspot":
-      return <Workflow className={cls} aria-hidden />;
+      return <Cloud className={cls} aria-hidden />;
     case "quickbooks":
       return <Landmark className={cls} aria-hidden />;
     default:
@@ -50,6 +53,7 @@ export interface IntegrationCatalogCardProps {
   onConnectApiKey: () => void;
   onConfigureMapping: () => void;
   onManageSync: () => void;
+  linkedAuthActive?: boolean;
 }
 
 export function IntegrationCatalogCard({
@@ -59,6 +63,7 @@ export function IntegrationCatalogCard({
   onConnectApiKey,
   onConfigureMapping,
   onManageSync,
+  linkedAuthActive = false,
 }: IntegrationCatalogCardProps) {
   const health = connector
     ? connectorRowToHealthStatus(connector)
@@ -109,6 +114,17 @@ export function IntegrationCatalogCard({
           />
         </div>
         {capabilityBadges}
+        {item.linkedGroup === "google_workspace" ? (
+          <Badge
+            variant="outline"
+            className={cn(
+              "w-fit border-primary/25 text-[10px] uppercase",
+              linkedAuthActive && "border-success/30 text-success",
+            )}
+          >
+            {linkedAuthActive ? "Linked Google auth active" : "Linked Google auth"}
+          </Badge>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-3">
         {connector?.last_error_message && health === "error" ? (

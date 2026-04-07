@@ -7,9 +7,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ActionConfirmDialog } from "@/components/ai-workspace/action-confirm-dialog";
 import {
   ActionDrawer,
+  AiDiagnosticsCard,
   ContextPanel,
   ConversationPanel,
   HistoryPanel,
+  KnowledgeBasePanel,
   KpiBar,
   PromptTemplateEditor,
   PromptTemplatePanel,
@@ -305,11 +307,16 @@ export default function AIWorkspacePage() {
 
           <ContextPanel />
 
+          <KnowledgeBasePanel />
+
+          <AiDiagnosticsCard />
+
           <div className="rounded-xl border border-border/60 bg-surface-inner/40 p-4 text-xs leading-relaxed text-muted-foreground">
             <p className="font-semibold text-foreground/90">RAG coverage</p>
             <p className="mt-1">
               Retrieval uses tenant <code className="text-primary">documents</code>,{" "}
               <code className="text-primary">indexed_documents</code>,{" "}
+              <code className="text-primary">indexed_document_chunks</code>,{" "}
               <code className="text-primary">unified_entities</code>, and{" "}
               <code className="text-primary">ai_context_chunks</code> for workspace{" "}
               <code className="text-primary">global</code>.

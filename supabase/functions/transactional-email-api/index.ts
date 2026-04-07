@@ -1,12 +1,13 @@
 /**
  * Transactional email templates — list defaults, tenant overrides, preview with placeholders.
- * Integrates with SendGrid only when SENDGRID_API_KEY is set (sendTest); never expose keys to client.
+ * Integrates with Resend only when RESEND_API_KEY is set (sendTest); never expose keys to client.
  * Client: supabase.functions.invoke('transactional-email-api', { body: { op, ... } }).
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { sendResendEmail } from "../_shared/resend-mail.ts";
 
 const BUILTIN = [
   {
@@ -291,10 +292,10 @@ serve(async (req) => {
         });
       }
       case "emailTemplates.sendTest": {
-        const key = Deno.env.get("SENDGRID_API_KEY");
+        const key = Deno.env.get("RESEND_API_KEY");
         if (!key) {
           return json({
-            data: { ok: false, message: "SENDGRID_API_KEY not configured on project" },
+            data: { ok: false, message: "RESEND_API_KEY not configured on project" },
           });
         }
         const sample = body.sample && typeof body.sample === "object" ? body.sample : {};
@@ -307,21 +308,17 @@ serve(async (req) => {
         const base = BUILTIN.find((b) => b.key === body.templateKey);
         const subject = applyPlaceholders(row?.subject ?? base?.subject ?? "", sample);
         const tplBody = applyPlaceholders(row?.body ?? base?.body ?? "", sample);
-        const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            personalizations: [{ to: [{ email: body.toEmail }], subject }],
-            from: { email: "noreply@connected-ai.local", name: "Connected AI OS" },
-            content: [{ type: "text/plain", value: tplBody }],
-          }),
-        });
-        if (!res.ok) {
-          const t = await res.text();
-          return json({ data: { ok: false, message: t.slice(0, 500) } }, 200);
+        try {
+          await sendResendEmail({
+            from: "Connected AI OS <noreply@connected-ai.local>",
+            to: body.toEmail,
+            subject,
+            text: tplBody,
+            apiKey: key,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to send with Resend";
+          return json({ data: { ok: false, message } }, 200);
         }
         await supabase.from("activity_logs").insert({
           company_id,

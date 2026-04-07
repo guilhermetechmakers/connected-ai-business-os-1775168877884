@@ -1,4 +1,4 @@
-import { Bot, ShieldCheck } from "lucide-react";
+﻿import { Bot, ShieldCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -59,8 +59,7 @@ export function ActionDrawer({
         <SheetHeader>
           <SheetTitle className="font-display">Permissioned actions</SheetTitle>
           <SheetDescription>
-            Suggested ids come from the current mode and your role. Sensitive operations require confirmation
-            in the dialog.
+            Suggested actions are mode-aware and role-aware. Sensitive operations require confirmation.
           </SheetDescription>
         </SheetHeader>
         <div className="mt-6 space-y-6">
@@ -83,8 +82,11 @@ export function ActionDrawer({
                       }}
                     >
                       {a.label}
+                      {a.providerKey ? (
+                        <span className="ml-2 text-[10px] text-muted-foreground">{a.providerKey}</span>
+                      ) : null}
                       {a.requiresConfirmation ? (
-                        <span className="ml-2 text-[10px] text-success">● confirm</span>
+                        <span className="ml-2 text-[10px] text-success">* confirm</span>
                       ) : null}
                     </Button>
                   </li>
@@ -112,8 +114,11 @@ export function ActionDrawer({
                     }}
                   >
                     {a.label}
+                    {a.providerKey ? (
+                      <span className="ml-2 text-[10px] text-muted-foreground">{a.providerKey}</span>
+                    ) : null}
                     {a.requiresConfirmation ? (
-                      <span className="ml-2 text-[10px] text-success">● confirm</span>
+                      <span className="ml-2 text-[10px] text-success">* confirm</span>
                     ) : null}
                   </Button>
                 </li>

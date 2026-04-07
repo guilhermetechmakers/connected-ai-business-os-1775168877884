@@ -8,6 +8,24 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
 import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
+import {
+  dequeueConnectorEvents,
+  enqueueConnectorEvent,
+  markConnectorEventFailed,
+  markConnectorEventProcessed,
+  toolsExecute,
+  type ConnectorEventQueueRow,
+  type ProviderKey,
+} from "../_shared/integrations-runtime.ts";
+
+const providerKeySchema = z.enum([
+  "slack",
+  "google_drive",
+  "gmail",
+  "google_calendar",
+  "hubspot",
+  "quickbooks",
+]);
 
 const nodeSchema = z.object({
   id: z.string().min(1).max(120),
@@ -134,6 +152,19 @@ const opSchema = z.discriminatedUnion("op", [
     runId: z.string().uuid(),
     decision: z.enum(["approved", "rejected"]),
     notes: z.string().max(2000).optional(),
+  }),
+  z.object({
+    op: z.literal("connectorEvents.enqueue"),
+    providerKey: providerKeySchema,
+    connectorId: z.string().uuid().optional(),
+    eventType: z.string().min(2).max(120),
+    externalEventId: z.string().min(2).max(300),
+    payload: z.record(z.unknown()),
+    availableAt: z.string().datetime().optional(),
+  }),
+  z.object({
+    op: z.literal("connectorEvents.process"),
+    limit: z.number().int().positive().max(100).optional(),
   }),
 ]);
 
@@ -384,6 +415,33 @@ async function appendRunLogs(
   if (error) throw error;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function workflowMatchesProviderEvent(
+  def: WorkflowDefinition,
+  providerKey: string,
+  eventType: string,
+): boolean {
+  const nodes = Array.isArray(def.nodes) ? def.nodes : [];
+  for (const node of nodes) {
+    if (node.type !== "trigger") continue;
+    const cfg = asRecord(node.config);
+    const kind = String(cfg.kind ?? "").toLowerCase();
+    if (kind !== "provider_event") continue;
+    const p = String(cfg.providerKey ?? cfg.provider ?? "").toLowerCase();
+    const e = String(cfg.eventType ?? "").toLowerCase();
+    if (p !== providerKey.toLowerCase()) continue;
+    if (e && e !== eventType.toLowerCase()) continue;
+    return true;
+  }
+  return false;
+}
+
 async function executeWorkflowRun(
   supabase: SupabaseClient,
   companyId: string,
@@ -392,6 +450,8 @@ async function executeWorkflowRun(
   runId: string,
   def: WorkflowDefinition,
   testMode: boolean,
+  roles: string[],
+  inputPayload?: Record<string, unknown>,
 ) {
   const validation = validateGraph(def);
   if (!validation.valid) {
@@ -480,7 +540,64 @@ async function executeWorkflowRun(
       return;
     }
 
-    if (node.type === "delay") {
+    if (node.type === "action") {
+      const cfg = asRecord(node.config);
+      const toolId = typeof cfg.toolId === "string"
+        ? cfg.toolId
+        : typeof cfg.actionId === "string"
+          ? cfg.actionId
+          : "";
+      if (!toolId) {
+        await appendRunLogs(supabase, runId, [
+          {
+            ts: new Date().toISOString(),
+            level: "info",
+            stepId,
+            stepStatus: "success",
+            message: "Action placeholder executed (no toolId configured)",
+          },
+        ]);
+      } else {
+        const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+        if (!masterKey) throw new Error("Server missing CREDENTIALS_MASTER_KEY");
+        const args = asRecord(cfg.args);
+        if (Object.keys(args).length === 0) {
+          for (const [k, v] of Object.entries(cfg)) {
+            if (["toolId", "actionId", "kind", "providerKey", "provider", "eventType"].includes(k)) {
+              continue;
+            }
+            args[k] = v;
+          }
+        }
+        if (inputPayload && Object.keys(inputPayload).length > 0 && args.payload === undefined) {
+          args.payload = inputPayload;
+        }
+        const exec = await toolsExecute(supabase, {
+          companyId,
+          userId,
+          roles,
+          toolId,
+          args,
+          confirmed: true,
+          workflowRunId: runId,
+          source: "workflow",
+          masterKey,
+        });
+        if (exec.pendingConfirmation) {
+          throw new Error(`Workflow tool requires confirmation: ${toolId}`);
+        }
+        await appendRunLogs(supabase, runId, [
+          {
+            ts: new Date().toISOString(),
+            level: "info",
+            stepId,
+            stepStatus: "success",
+            message: `Executed tool ${toolId}`,
+            toolResult: exec.result ?? {},
+          },
+        ]);
+      }
+    } else if (node.type === "delay") {
       await appendRunLogs(supabase, runId, [
         {
           ts: new Date().toISOString(),
@@ -554,6 +671,115 @@ async function executeWorkflowRun(
     status: "Completed",
     testMode,
   }, { entity: "workflow_run", id: runId });
+}
+
+async function findActiveWorkflowsForEvent(
+  supabase: SupabaseClient,
+  companyId: string,
+  providerKey: string,
+  eventType: string,
+): Promise<Array<{ id: string; definition: WorkflowDefinition; departmentId: string | null }>> {
+  const { data, error } = await supabase
+    .from("workflows")
+    .select("id, definition, status, department_id")
+    .eq("company_id", companyId);
+  if (error) throw error;
+  const rows = Array.isArray(data) ? data : [];
+  const matches: Array<{ id: string; definition: WorkflowDefinition; departmentId: string | null }> = [];
+  for (const row of rows) {
+    const status = String(row.status ?? "").toLowerCase();
+    if (status !== "active") continue;
+    const parsed = workflowDefinitionSchema.safeParse(row.definition);
+    if (!parsed.success) continue;
+    if (!workflowMatchesProviderEvent(parsed.data, providerKey, eventType)) continue;
+    matches.push({
+      id: String(row.id),
+      definition: parsed.data,
+      departmentId: row.department_id ? String(row.department_id) : null,
+    });
+  }
+  return matches;
+}
+
+async function processConnectorEventsQueue(
+  supabase: SupabaseClient,
+  params: {
+    companyId: string;
+    userId: string;
+    roles: string[];
+    limit: number;
+  },
+): Promise<{
+  processed: number;
+  failed: number;
+  runsStarted: number;
+}> {
+  const events = await dequeueConnectorEvents(supabase, params.companyId, params.limit);
+  let processed = 0;
+  let failed = 0;
+  let runsStarted = 0;
+
+  for (const event of events) {
+    try {
+      const matches = await findActiveWorkflowsForEvent(
+        supabase,
+        params.companyId,
+        String(event.provider_key),
+        String(event.event_type),
+      );
+      for (const wf of matches) {
+        const now = new Date().toISOString();
+        const inputPayload = {
+          triggerEvent: {
+            id: event.id,
+            providerKey: event.provider_key,
+            eventType: event.event_type,
+            externalEventId: event.external_event_id,
+            payload: event.payload,
+            createdAt: event.created_at,
+          },
+        };
+        const { data: runRow, error: runErr } = await supabase
+          .from("workflow_runs")
+          .insert({
+            workflow_id: wf.id,
+            status: "Running",
+            started_at: now,
+            logs: [{
+              ts: now,
+              level: "info",
+              message: `Triggered by ${event.provider_key}:${event.event_type}`,
+            }],
+            test_mode: false,
+            correlation_id: `${event.provider_key}:${event.external_event_id}`,
+            input_payload: inputPayload,
+          })
+          .select("id")
+          .single();
+        if (runErr || !runRow?.id) throw runErr ?? new Error("Failed to start triggered run");
+        await executeWorkflowRun(
+          supabase,
+          params.companyId,
+          params.userId,
+          wf.id,
+          String(runRow.id),
+          wf.definition,
+          false,
+          params.roles,
+          inputPayload,
+        );
+        runsStarted += 1;
+      }
+      await markConnectorEventProcessed(supabase, event.id);
+      processed += 1;
+    } catch (error) {
+      failed += 1;
+      const msg = error instanceof Error ? error.message : "Event processing failed";
+      await markConnectorEventFailed(supabase, event.id, msg);
+    }
+  }
+
+  return { processed, failed, runsStarted };
 }
 
 async function handleOp(
@@ -775,6 +1001,8 @@ async function handleOp(
           runId,
           parsedDef.data,
           testMode,
+          roles,
+          inputPayload as Record<string, unknown>,
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Execution failed";
@@ -950,18 +1178,121 @@ async function handleOp(
         .maybeSingle();
       return json({ data: updated });
     }
+    case "connectorEvents.enqueue": {
+      if (!mutate) return json({ error: "Forbidden" }, 403);
+      const result = await enqueueConnectorEvent(supabase, companyId, {
+        providerKey: body.providerKey as ProviderKey,
+        connectorId: body.connectorId ?? null,
+        eventType: body.eventType,
+        externalEventId: body.externalEventId,
+        payload: body.payload,
+        availableAt: body.availableAt,
+      });
+      await insertActivity(supabase, companyId, "workflow_trigger", userId, {
+        action: "connector_event.enqueue",
+        providerKey: body.providerKey,
+        eventType: body.eventType,
+        queueId: result.id,
+      });
+      return json({ data: { ok: true, ...result } });
+    }
+    case "connectorEvents.process": {
+      if (!mutate) return json({ error: "Forbidden" }, 403);
+      const outcome = await processConnectorEventsQueue(supabase, {
+        companyId,
+        userId,
+        roles,
+        limit: body.limit ?? 25,
+      });
+      await insertActivity(supabase, companyId, "workflow_trigger", userId, {
+        action: "connector_event.process",
+        ...outcome,
+      });
+      return json({ data: outcome });
+    }
     case "libraries.list": {
       const triggers = [
         { id: "tr-manual", type: "trigger", label: "Manual / UI", description: "Start from console or API", preset: { kind: "manual" } },
         { id: "tr-schedule", type: "trigger", label: "Schedule (cron)", description: "Time-based recurrence", preset: { kind: "schedule" } },
-        { id: "tr-webhook", type: "trigger", label: "Webhook", description: "HTTP callback ingress", preset: { kind: "webhook", path: "/hooks/tenant" } },
-        { id: "tr-event", type: "trigger", label: "Domain event", description: "Unified data layer event", preset: { kind: "event", topic: "entity.updated" } },
+        {
+          id: "tr-slack-message",
+          type: "trigger",
+          label: "Slack message event",
+          description: "Runs when Slack message.created events are enqueued.",
+          preset: { kind: "provider_event", providerKey: "slack", eventType: "message.created" },
+        },
+        {
+          id: "tr-hubspot-contact",
+          type: "trigger",
+          label: "HubSpot contact event",
+          description: "Runs for HubSpot contact sync/webhook events.",
+          preset: { kind: "provider_event", providerKey: "hubspot", eventType: "contact.synced" },
+        },
+        {
+          id: "tr-quickbooks-invoice",
+          type: "trigger",
+          label: "QuickBooks invoice event",
+          description: "Runs when invoice events arrive from QuickBooks.",
+          preset: { kind: "provider_event", providerKey: "quickbooks", eventType: "invoice.synced" },
+        },
+        {
+          id: "tr-google-calendar",
+          type: "trigger",
+          label: "Google Calendar event",
+          description: "Runs from normalized Google calendar poll events.",
+          preset: { kind: "provider_event", providerKey: "google_calendar", eventType: "event.synced" },
+        },
       ];
       const actions = [
-        { id: "ac-slack", type: "action", label: "Notify Slack", description: "Post to channel", preset: { channel: "slack", template: "default" } },
-        { id: "ac-email", type: "action", label: "Send email", description: "Transactional template", preset: { channel: "email", templateId: "notify" } },
-        { id: "ac-http", type: "action", label: "HTTP request", description: "Signed outbound call", preset: { method: "POST", url: "https://api.example.com/hook" } },
-        { id: "ac-crm", type: "action", label: "CRM update", description: "Patch lead / deal", preset: { integration: "crm", operation: "upsert" } },
+        {
+          id: "ac-slack-send",
+          type: "action",
+          label: "Slack send message",
+          description: "Execute tool slack.send_message",
+          preset: { toolId: "slack.send_message", args: { channel: "", text: "" } },
+        },
+        {
+          id: "ac-drive-search",
+          type: "action",
+          label: "Drive search files",
+          description: "Execute tool google_drive.search_files",
+          preset: { toolId: "google_drive.search_files", args: { query: "", pageSize: 20 } },
+        },
+        {
+          id: "ac-gmail-send",
+          type: "action",
+          label: "Gmail send email",
+          description: "Execute tool gmail.send_email",
+          preset: { toolId: "gmail.send_email", args: { to: "", subject: "", body: "" } },
+        },
+        {
+          id: "ac-calendar-create",
+          type: "action",
+          label: "Calendar create event",
+          description: "Execute tool google_calendar.create_event",
+          preset: { toolId: "google_calendar.create_event", args: { summary: "", start: "", end: "" } },
+        },
+        {
+          id: "ac-hubspot-upsert-contact",
+          type: "action",
+          label: "HubSpot upsert contact",
+          description: "Execute tool hubspot.upsert_contact",
+          preset: { toolId: "hubspot.upsert_contact", args: { email: "" } },
+        },
+        {
+          id: "ac-hubspot-update-deal",
+          type: "action",
+          label: "HubSpot update deal stage",
+          description: "Execute tool hubspot.update_deal_stage",
+          preset: { toolId: "hubspot.update_deal_stage", args: { dealId: "", dealstage: "" } },
+        },
+        {
+          id: "ac-qbo-reminder",
+          type: "action",
+          label: "QuickBooks send reminder",
+          description: "Execute tool quickbooks.send_invoice_reminder",
+          preset: { toolId: "quickbooks.send_invoice_reminder", args: { invoiceId: "" } },
+        },
       ];
       const logic = [
         { id: "lg-condition", type: "condition", label: "If / else", description: "Boolean gate on payload", preset: { expression: "payload.status == 'open'" } },
@@ -1082,6 +1413,8 @@ async function handleOp(
           newId,
           parsedDef.data,
           Boolean(oldRun.test_mode),
+          roles,
+          {},
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Execution failed";

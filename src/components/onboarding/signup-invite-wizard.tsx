@@ -53,10 +53,11 @@ const STEP_TITLES = [
 
 const SIGNUP_SUGGESTED_INTEGRATIONS = [
   { key: "slack", label: "Slack" },
-  { key: "hubspot", label: "HubSpot" },
+  { key: "google_drive", label: "Google Drive" },
+  { key: "gmail", label: "Gmail" },
   { key: "google_calendar", label: "Google Calendar" },
+  { key: "hubspot", label: "HubSpot" },
   { key: "quickbooks", label: "QuickBooks" },
-  { key: "salesforce", label: "Salesforce" },
 ] as const;
 
 export type SignupInviteWizardProps = {
@@ -547,7 +548,7 @@ export function SignupInviteWizard({ variant = "signup" }: SignupInviteWizardPro
                     </div>
                     <div className="space-y-3">
                       <div className="flex items-center justify-between gap-2">
-                        <FormLabel>Initial departments</FormLabel>
+                        <p className="text-sm font-medium leading-none">Initial departments</p>
                         <Button
                           type="button"
                           variant="outline"

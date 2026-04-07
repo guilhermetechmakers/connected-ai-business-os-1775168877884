@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import type { AdminActivityApiRow, AdminConsoleRestResponse } from "@/types/admin-console";
 
@@ -20,7 +21,7 @@ export async function adminConsoleRest<T>(
 
   const { data, error } = await supabase.functions.invoke<unknown>(FN, {
     body: { path, method: "GET", query },
-    headers: { Authorization: `Bearer ${token}` },
+    headers: edgeFunctionAuthHeaders(token),
   });
 
   if (error) {

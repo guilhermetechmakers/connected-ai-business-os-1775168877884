@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 export type ReportsAiSummaryPayload = {
@@ -39,7 +40,7 @@ export async function invokeReportsAiSummary(
         highlights: payload.highlights ?? [],
         kpiNames: payload.kpiNames ?? [],
       },
-      headers: { Authorization: `Bearer ${token}` },
+      headers: edgeFunctionAuthHeaders(token),
     },
   );
 

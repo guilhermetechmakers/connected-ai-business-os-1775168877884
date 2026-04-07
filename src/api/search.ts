@@ -9,6 +9,11 @@ import type {
   SearchAutosuggestItem,
   SearchIndexStatus,
 } from "@/types/global-search";
+import type {
+  KbDocumentRow,
+  KbIngestDocumentInput,
+  KbIngestResult,
+} from "@/types/knowledge-base";
 import type { SavedSearch, SearchPreviewPayload } from "@/types/search-results-page";
 
 function emptyFacets() {
@@ -122,6 +127,61 @@ export async function fetchSearchIndexStatus(): Promise<SearchIndexStatus | null
     recentJobs,
     errors,
   };
+}
+
+export async function ingestKnowledgeBaseDocuments(
+  documents: KbIngestDocumentInput[],
+): Promise<KbIngestResult | null> {
+  const { data, error } = await invokeSearchApi<KbIngestResult>({
+    op: "kb.documents.ingestBulk",
+    documents,
+  });
+  if (error || !data) return null;
+  const results = Array.isArray(data.results) ? data.results : [];
+  const summary =
+    data.summary && typeof data.summary === "object"
+      ? {
+          total: typeof data.summary.total === "number" ? data.summary.total : results.length,
+          failed: typeof data.summary.failed === "number" ? data.summary.failed : 0,
+          ready: typeof data.summary.ready === "number" ? data.summary.ready : 0,
+        }
+      : { total: results.length, failed: 0, ready: results.length };
+  return { results, summary };
+}
+
+export async function listKnowledgeBaseDocuments(params?: {
+  limit?: number;
+  sourceFilter?: string;
+  statusFilter?: "pending" | "indexing" | "ready" | "failed";
+}): Promise<KbDocumentRow[]> {
+  const { data, error } = await invokeSearchApi<{ items: KbDocumentRow[] }>({
+    op: "kb.documents.list",
+    limit: params?.limit,
+    sourceFilter: params?.sourceFilter,
+    statusFilter: params?.statusFilter,
+  });
+  if (error || !data?.items || !Array.isArray(data.items)) return [];
+  return data.items;
+}
+
+export async function deleteKnowledgeBaseDocument(documentId: string): Promise<boolean> {
+  const { data, error } = await invokeSearchApi<{ ok: boolean }>({
+    op: "kb.documents.delete",
+    documentId,
+  });
+  if (error) return false;
+  return data?.ok === true;
+}
+
+export async function reindexKnowledgeBaseDocument(
+  documentId: string,
+): Promise<KbDocumentRow | null> {
+  const { data, error } = await invokeSearchApi<{ ok: boolean; document?: KbDocumentRow }>({
+    op: "kb.documents.reindex",
+    documentId,
+  });
+  if (error || !data?.ok) return null;
+  return data.document ?? null;
 }
 
 type SavedSearchApiRow = {

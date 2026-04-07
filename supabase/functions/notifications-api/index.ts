@@ -1,6 +1,6 @@
 /**
  * Notifications & alerts API — in-app store, bulk updates, rules, schedules, preferences,
- * SendGrid/FCM test dispatch (tenant secrets encrypted with CREDENTIALS_MASTER_KEY).
+ * Resend/FCM test dispatch (tenant secrets encrypted with CREDENTIALS_MASTER_KEY).
  * Client: supabase.functions.invoke('notifications-api', { body: { op, ... } }).
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -11,10 +11,11 @@ import {
   decryptCredentialsJson,
   encryptCredentialsJson,
 } from "../_shared/credentials-crypto.ts";
+import { sendResendEmail } from "../_shared/resend-mail.ts";
 
 const notificationType = z.enum(["system", "in_app", "email", "push"]);
 const channel = z.enum(["in_app", "email", "push"]);
-const notifStatus = z.enum(["pending", "delivered", "failed", "acknowledged", "dismissed"]);
+const _notifStatus = z.enum(["pending", "delivered", "failed", "acknowledged", "dismissed"]);
 const triggerType = z.enum(["kpi", "workflow", "ai"]);
 
 const opSchema = z.discriminatedUnion("op", [
@@ -88,19 +89,19 @@ const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("channelSettings.get") }),
   z.object({
     op: z.literal("channelSettings.upsert"),
-    sendgrid_from_email: z.string().email().optional().nullable(),
-    sendgrid_reply_to: z.string().email().optional().nullable(),
+    resend_from_email: z.string().email().optional().nullable(),
+    resend_reply_to: z.string().email().optional().nullable(),
     fcm_sender_id: z.string().max(200).optional().nullable(),
     webhook_delivery_url: z.string().url().optional().nullable(),
   }),
   z.object({
     op: z.literal("channelSecrets.upsert"),
-    provider: z.enum(["sendgrid", "fcm"]),
-    sendgrid_api_key: z.string().min(10).optional(),
+    provider: z.enum(["resend", "fcm"]),
+    resend_api_key: z.string().min(10).optional(),
     fcm_server_key: z.string().min(10).optional(),
   }),
   z.object({
-    op: z.literal("channels.testSendgrid"),
+    op: z.literal("channels.testResend"),
     to_email: z.string().email(),
   }),
   z.object({
@@ -190,7 +191,7 @@ function serviceClient(): SupabaseClient {
 
 async function loadDecryptedSecret(
   companyId: string,
-  provider: "sendgrid" | "fcm",
+  provider: "resend" | "fcm",
 ): Promise<Record<string, unknown>> {
   const master = Deno.env.get("CREDENTIALS_MASTER_KEY");
   if (!master) return {};
@@ -209,27 +210,16 @@ async function loadDecryptedSecret(
   }
 }
 
-async function sendSendgrid(
+async function sendResend(
   args: { apiKey: string; from: string; to: string; subject: string; text: string },
 ) {
-  const payload = {
-    personalizations: [{ to: [{ email: args.to }] }],
-    from: { email: args.from },
+  await sendResendEmail({
+    from: args.from,
+    to: args.to,
     subject: args.subject,
-    content: [{ type: "text/plain", value: args.text }],
-  };
-  const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${args.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
+    text: args.text,
+    apiKey: args.apiKey,
   });
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error(`SendGrid: ${res.status} ${t.slice(0, 300)}`);
-  }
 }
 
 async function sendFcm(args: {
@@ -476,8 +466,8 @@ async function handleOp(
       if (!isAdmin) return json({ error: "Forbidden" }, 403);
       const row = {
         company_id: companyId,
-        sendgrid_from_email: body.sendgrid_from_email ?? null,
-        sendgrid_reply_to: body.sendgrid_reply_to ?? null,
+        resend_from_email: body.resend_from_email ?? null,
+        resend_reply_to: body.resend_reply_to ?? null,
         fcm_sender_id: body.fcm_sender_id ?? null,
         webhook_delivery_url: body.webhook_delivery_url ?? null,
         updated_at: new Date().toISOString(),
@@ -497,8 +487,8 @@ async function handleOp(
         return json({ error: "CREDENTIALS_MASTER_KEY not configured" }, 500);
       }
       const secret: Record<string, unknown> = {};
-      if (body.provider === "sendgrid" && body.sendgrid_api_key) {
-        secret.api_key = body.sendgrid_api_key;
+      if (body.provider === "resend" && body.resend_api_key) {
+        secret.api_key = body.resend_api_key;
       }
       if (body.provider === "fcm" && body.fcm_server_key) {
         secret.server_key = body.fcm_server_key;
@@ -520,24 +510,24 @@ async function handleOp(
       if (error) return json({ error: error.message }, 400);
       return json({ data: { ok: true, provider: body.provider } });
     }
-    case "channels.testSendgrid": {
+    case "channels.testResend": {
       if (!isAdmin) return json({ error: "Forbidden" }, 403);
-      const secrets = await loadDecryptedSecret(companyId, "sendgrid");
+      const secrets = await loadDecryptedSecret(companyId, "resend");
       const apiKey = typeof secrets.api_key === "string" ? secrets.api_key : "";
       if (!apiKey) {
-        return json({ error: "Store a SendGrid API key first" }, 400);
+        return json({ error: "Store a Resend API key first" }, 400);
       }
       const { data: settings } = await supabase
         .from("notification_channel_settings")
-        .select("sendgrid_from_email")
+        .select("resend_from_email")
         .eq("company_id", companyId)
         .maybeSingle();
-      const from = settings?.sendgrid_from_email?.trim();
+      const from = settings?.resend_from_email?.trim();
       if (!from) {
-        return json({ error: "Set sendgrid_from_email in channel settings" }, 400);
+        return json({ error: "Set resend_from_email in channel settings" }, 400);
       }
       try {
-        await sendSendgrid({
+        await sendResend({
           apiKey,
           from,
           to: body.to_email,
@@ -599,7 +589,7 @@ async function handleOp(
           .select("id")
           .eq("company_id", companyId);
         const targets = Array.isArray(profiles) ? profiles : [];
-        const channelsFromRule = actions.flatMap((a) => {
+        const channelsFromRule = actions.flatMap((a: unknown) => {
           if (!a || typeof a !== "object") return [];
           const ch = (a as Record<string, unknown>).channels;
           return Array.isArray(ch) ? ch.map((x) => String(x)) : ["in_app"];

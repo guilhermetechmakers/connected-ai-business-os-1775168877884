@@ -6,6 +6,7 @@ import {
   fetchAiContexts,
   fetchAiDashboardSummary,
   fetchAiPermissions,
+  runAiToolsDiagnostics,
   fetchWorkspaceDocuments,
   getAiConversation,
   listAiConversations,
@@ -23,6 +24,7 @@ export const aiQueryKeys = {
   templates: () => [...aiQueryKeys.root, "templates"] as const,
   permissions: () => [...aiQueryKeys.root, "permissions"] as const,
   dashboardSummary: () => [...aiQueryKeys.root, "dashboardSummary"] as const,
+  diagnostics: () => [...aiQueryKeys.root, "diagnostics"] as const,
   workspaceDocuments: (sourceFilter: string) =>
     [...aiQueryKeys.root, "workspaceDocuments", sourceFilter] as const,
   contextPreview: () => [...aiQueryKeys.root, "contextPreview"] as const,
@@ -91,6 +93,14 @@ export function useAiDashboardSummary() {
     queryKey: aiQueryKeys.dashboardSummary(),
     queryFn: () => fetchAiDashboardSummary(),
     enabled: isSupabaseConfigured,
+  });
+}
+
+export function useAiDiagnostics() {
+  return useQuery({
+    queryKey: aiQueryKeys.diagnostics(),
+    queryFn: () => runAiToolsDiagnostics(),
+    enabled: false,
   });
 }
 

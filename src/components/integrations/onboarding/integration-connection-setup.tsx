@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
-import { ApiKeyConnectModal } from "@/components/integrations/onboarding/api-key-connect-modal";
 import { ConnectionStatusBanner } from "@/components/integrations/onboarding/connection-status-banner";
 import { IntegrationCatalogCard } from "@/components/integrations/onboarding/integration-catalog-card";
 import { IntegrationOnboardingBreadcrumbs } from "@/components/integrations/onboarding/integration-onboarding-breadcrumbs";
@@ -21,51 +22,59 @@ import {
   useCreateConnectorMutation,
   useIntegrationCatalogQuery,
   useRemoveConnectorMutation,
-  useTestConnectionMutation,
-  useUpsertCredentialsMutation,
 } from "@/hooks/use-integrations";
 import { Button } from "@/components/ui/button";
-import type { ConnectorRow, ProviderCatalogItem } from "@/types/integrations";
+import { integrationsManagerApi } from "@/lib/integrations-manager-api";
+import type { ConnectorRow, IntegrationProviderKey, ProviderCatalogItem } from "@/types/integrations";
+
+const GOOGLE_KEYS: IntegrationProviderKey[] = ["google_drive", "gmail", "google_calendar"];
 
 function findConnectorForProvider(
   connectors: ConnectorRow[],
-  providerId: string,
+  providerId: IntegrationProviderKey,
 ): ConnectorRow | undefined {
   const list = Array.isArray(connectors) ? connectors : [];
   return list.find((c) => c.provider_key === providerId);
 }
 
-export function IntegrationConnectionSetup() {
+function withClearedOAuthParams(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.delete("code");
+  next.delete("state");
+  next.delete("error");
+  next.delete("error_description");
+  return next;
+}
+
+export interface IntegrationConnectionSetupProps {
+  showBreadcrumbs?: boolean;
+}
+
+export function IntegrationConnectionSetup({ showBreadcrumbs = true }: IntegrationConnectionSetupProps) {
+  const qc = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const catalogQuery = useIntegrationCatalogQuery();
   const connectorsQuery = useConnectorsQuery();
 
   const createConnector = useCreateConnectorMutation();
-  const upsertCreds = useUpsertCredentialsMutation();
-  const testConnection = useTestConnectionMutation();
   const removeConnector = useRemoveConnectorMutation();
 
   const [oauthItem, setOauthItem] = useState<ProviderCatalogItem | null>(null);
   const [oauthConnectorId, setOauthConnectorId] = useState<string | null>(null);
-
-  const [apiKeyItem, setApiKeyItem] = useState<ProviderCatalogItem | null>(null);
-  const [apiKeyConnectorId, setApiKeyConnectorId] = useState<string | null>(null);
-  const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [oauthStartingFor, setOauthStartingFor] = useState<IntegrationProviderKey | null>(null);
 
   const [mappingItem, setMappingItem] = useState<ProviderCatalogItem | null>(null);
   const [mappingConnectorId, setMappingConnectorId] = useState<string | null>(null);
 
   const [syncConnector, setSyncConnector] = useState<ConnectorRow | null>(null);
 
+  const callbackHandledRef = useRef<string>("");
+
   const catalog = Array.isArray(catalogQuery.data) ? catalogQuery.data : [];
   const connectors = Array.isArray(connectorsQuery.data) ? connectorsQuery.data : [];
 
   const isLoading = catalogQuery.isLoading || connectorsQuery.isLoading;
-
-  const resetApiKeySession = useCallback(() => {
-    setApiKeySaved(false);
-    setApiKeyConnectorId(null);
-    setApiKeyItem(null);
-  }, []);
 
   const ensureConnectorId = useCallback(
     async (item: ProviderCatalogItem): Promise<string> => {
@@ -82,6 +91,48 @@ export function IntegrationConnectionSetup() {
     [connectors, createConnector],
   );
 
+  useEffect(() => {
+    const code = searchParams.get("code");
+    const state = searchParams.get("state");
+    const oauthError = searchParams.get("error");
+    const oauthErrorDescription = searchParams.get("error_description");
+
+    const key = `${code ?? ""}:${state ?? ""}:${oauthError ?? ""}`;
+    if (!key || callbackHandledRef.current === key) return;
+
+    if (oauthError) {
+      callbackHandledRef.current = key;
+      toast.error("OAuth connection was cancelled or denied", {
+        description: oauthErrorDescription ?? oauthError,
+      });
+      setSearchParams(withClearedOAuthParams(searchParams), { replace: true });
+      return;
+    }
+
+    if (!code || !state) return;
+
+    callbackHandledRef.current = key;
+    void (async () => {
+      try {
+        const result = await integrationsManagerApi.completeOAuthCallback({ code, state });
+        toast.success("Integration connected", {
+          description: `OAuth completed for ${result.providerKey}.`,
+        });
+        setOauthItem(null);
+        setOauthConnectorId(null);
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ["integrations", "connectors"] }),
+          qc.invalidateQueries({ queryKey: ["integrations", "health"] }),
+          qc.invalidateQueries({ queryKey: ["integrations", "catalog"] }),
+        ]);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "OAuth callback failed");
+      } finally {
+        setSearchParams(withClearedOAuthParams(searchParams), { replace: true });
+      }
+    })();
+  }, [qc, searchParams, setSearchParams]);
+
   const openOAuth = (item: ProviderCatalogItem) => {
     const existing = findConnectorForProvider(connectors, item.id);
     setOauthConnectorId(existing?.id ?? null);
@@ -89,15 +140,9 @@ export function IntegrationConnectionSetup() {
   };
 
   const openApiKey = (item: ProviderCatalogItem) => {
-    setApiKeyItem(item);
-    setApiKeySaved(false);
-    setApiKeyConnectorId(null);
-    void ensureConnectorId(item)
-      .then((id) => setApiKeyConnectorId(id))
-      .catch((e: Error) => {
-        toast.error(e.message);
-        setApiKeyItem(null);
-      });
+    toast.info(`${item.name} uses OAuth in v1.`, {
+      description: "Use the OAuth connect flow for this provider.",
+    });
   };
 
   const openMapping = (item: ProviderCatalogItem) => {
@@ -119,96 +164,42 @@ export function IntegrationConnectionSetup() {
     setSyncConnector(c);
   };
 
-  const onOAuthComplete = (values: { client_id: string; client_secret: string }) => {
+  const onOAuthContinue = async () => {
     if (!oauthItem) return;
-    const finish = (connectorId: string) => {
-      upsertCreds.mutate(
-        {
-          connectorId,
-          credentials: { client_id: values.client_id, client_secret: values.client_secret },
-          metadata: { flow: "oauth_onboarding" },
-        },
-        {
-          onSuccess: () => {
-            toast.success("OAuth credentials secured");
-            setOauthItem(null);
-            setOauthConnectorId(null);
-          },
-          onError: (e) => toast.error(e.message),
-        },
-      );
-    };
-
-    if (oauthConnectorId) {
-      finish(oauthConnectorId);
-      return;
+    setOauthStartingFor(oauthItem.id);
+    try {
+      const connectorId = oauthConnectorId ?? (await ensureConnectorId(oauthItem));
+      const started = await integrationsManagerApi.startOAuth({
+        providerKey: oauthItem.id,
+        connectorId,
+      });
+      window.location.assign(started.authUrl);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to start OAuth");
+      setOauthStartingFor(null);
     }
-    createConnector.mutate(
-      { providerKey: oauthItem.id, displayName: oauthItem.name },
-      {
-        onSuccess: (res) => {
-          const id = res?.connector?.id;
-          if (!id) {
-            toast.error("Connector id missing");
-            return;
-          }
-          finish(id);
-        },
-        onError: (e) => toast.error(e.message),
-      },
-    );
   };
-
-  const onApiKeySave = (values: { api_key: string }) => {
-    if (!apiKeyConnectorId) {
-      toast.error("Connector not ready");
-      return;
-    }
-    upsertCreds.mutate(
-      {
-        connectorId: apiKeyConnectorId,
-        credentials: { api_key: values.api_key },
-        metadata: { flow: "api_key_onboarding" },
-      },
-      {
-        onSuccess: () => {
-          toast.success("API key stored securely");
-          setApiKeySaved(true);
-        },
-        onError: (e) => toast.error(e.message),
-      },
-    );
-  };
-
-  const onApiKeyTest = () => {
-    if (!apiKeyConnectorId) return;
-    testConnection.mutate(apiKeyConnectorId, {
-      onSuccess: (res) => {
-        if (res.ok) toast.success("Connection test passed");
-        else
-          toast.error(res.message ?? "Test failed", {
-            description: res.remediation,
-          });
-      },
-      onError: (e) => toast.error(e.message),
-    });
-  };
-
-  const oauthSubmitting =
-    Boolean(oauthItem) && (createConnector.isPending || upsertCreds.isPending);
 
   const sortedCatalog = useMemo(() => {
     const c = Array.isArray(catalog) ? catalog : [];
     return [...c].sort((a, b) => a.name.localeCompare(b.name));
   }, [catalog]);
 
+  const googleLinkedAuthActive = useMemo(() => {
+    return connectors.some((c) => {
+      if (!GOOGLE_KEYS.includes(c.provider_key as IntegrationProviderKey)) return false;
+      const status = String(c.status ?? "").toLowerCase();
+      return status === "connected" || status === "healthy";
+    });
+  }, [connectors]);
+
   return (
     <div className="space-y-8">
-      <IntegrationOnboardingBreadcrumbs currentIndex={1} />
+      {showBreadcrumbs ? <IntegrationOnboardingBreadcrumbs currentIndex={1} /> : null}
 
       <ConnectionStatusBanner variant="info">
-        <span className="font-medium text-foreground">Tenant-scoped catalog</span> — OAuth and API
-        keys are processed only inside Edge Functions. Sync logs exclude secret material.
+        <span className="font-medium text-foreground">Tenant-scoped catalog</span> - OAuth flows are
+        platform-managed through Edge Functions. Sync logs and activity payloads are redacted.
       </ConnectionStatusBanner>
 
       {isLoading ? (
@@ -230,6 +221,7 @@ export function IntegrationConnectionSetup() {
                   onConnectApiKey={() => openApiKey(item)}
                   onConfigureMapping={() => openMapping(item)}
                   onManageSync={() => openSync(item)}
+                  linkedAuthActive={item.linkedGroup === "google_workspace" ? googleLinkedAuthActive : false}
                 />
                 {connector?.id ? (
                   <Button
@@ -266,22 +258,10 @@ export function IntegrationConnectionSetup() {
           }
         }}
         provider={oauthItem}
-        isSubmitting={oauthSubmitting}
-        onComplete={onOAuthComplete}
-      />
-
-      <ApiKeyConnectModal
-        open={Boolean(apiKeyItem)}
-        onOpenChange={(o) => {
-          if (!o) resetApiKeySession();
+        isSubmitting={oauthItem ? oauthStartingFor === oauthItem.id : false}
+        onContinue={() => {
+          void onOAuthContinue();
         }}
-        provider={apiKeyItem}
-        connectorId={apiKeyConnectorId}
-        isSubmitting={upsertCreds.isPending}
-        isTesting={testConnection.isPending}
-        canTestConnection={apiKeySaved}
-        onTestConnection={onApiKeyTest}
-        onSave={onApiKeySave}
       />
 
       <MappingWizard
@@ -301,7 +281,7 @@ export function IntegrationConnectionSetup() {
           <DialogHeader>
             <DialogTitle className="font-display text-xl">Sync &amp; schedule</DialogTitle>
             <DialogDescription>
-              Manual sync uses idempotent keys. Adjust cadence for background pulls (stub).
+              Trigger a full sync now or tune recurring sync cadence for this connector.
             </DialogDescription>
           </DialogHeader>
           <SyncControlPanel integration={syncConnector} onClose={() => setSyncConnector(null)} />
@@ -310,3 +290,4 @@ export function IntegrationConnectionSetup() {
     </div>
   );
 }
+

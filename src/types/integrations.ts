@@ -6,10 +6,18 @@ export type ConnectorCapability =
   | "read"
   | "write";
 
+export type IntegrationProviderKey =
+  | "slack"
+  | "google_drive"
+  | "gmail"
+  | "google_calendar"
+  | "hubspot"
+  | "quickbooks";
+
 export type ConnectorRow = {
   id: string;
   company_id: string;
-  provider_key: string;
+  provider_key: IntegrationProviderKey | string;
   display_name: string | null;
   capabilities: unknown;
   config: Record<string, unknown>;
@@ -25,12 +33,13 @@ export type ConnectorRow = {
 
 /** Catalog entry for onboarding / settings (maps to REST catalog concept). */
 export type ProviderCatalogItem = {
-  id: string;
+  id: IntegrationProviderKey;
   name: string;
   description: string;
   logoUrl: string | null;
   supportsOAuth: boolean;
   supportsApiKey: boolean;
+  linkedGroup?: "google_workspace" | null;
 };
 
 /** Field mapping rule with optional transform (persisted as connector_field_mappings). */
@@ -87,12 +96,32 @@ export type FieldMappingRow = {
   created_at: string;
 };
 
+export type IntegrationToolDefinition = {
+  id: string;
+  label: string;
+  description?: string;
+  providerKey: IntegrationProviderKey;
+  accessLevel: "read" | "write";
+  requiresConfirmation: boolean;
+  argsShape?: Record<string, unknown>;
+};
+
+export type ToolExecuteResult = {
+  ok?: boolean;
+  pendingConfirmation?: boolean;
+  actionId?: string;
+  providerKey?: IntegrationProviderKey;
+  preview?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  citations?: Array<Record<string, unknown>>;
+};
+
 export type IntegrationOp =
   | { op: "connectors.list" }
   | { op: "catalog.list" }
   | {
       op: "connectors.create";
-      providerKey: string;
+      providerKey: IntegrationProviderKey;
       displayName?: string;
     }
   | {
@@ -109,6 +138,16 @@ export type IntegrationOp =
   | {
       op: "connection.test";
       connectorId: string;
+    }
+  | {
+      op: "oauth.start";
+      providerKey: IntegrationProviderKey;
+      connectorId?: string;
+    }
+  | {
+      op: "oauth.callback";
+      code: string;
+      state: string;
     }
   | {
       op: "credentials.upsert";
@@ -136,11 +175,20 @@ export type IntegrationOp =
       }[];
     }
   | { op: "mappings.list"; connectorId: string }
+  | { op: "tools.list" }
+  | {
+      op: "tools.execute";
+      toolId: string;
+      args?: Record<string, unknown>;
+      confirmed?: boolean;
+      conversationId?: string;
+      workflowRunId?: string;
+    }
   | { op: "admin.tenants" }
   | { op: "admin.integrationOverview" };
 
 export type ProviderDefinition = {
-  key: string;
+  key: IntegrationProviderKey;
   label: string;
   description: string;
   capabilities: ConnectorCapability[];

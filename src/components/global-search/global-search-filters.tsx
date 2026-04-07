@@ -27,7 +27,11 @@ const TYPE_OPTIONS: { id: GlobalSearchHitType; label: string }[] = [
 const SOURCE_OPTIONS = [
   { id: "unified", label: "Unified layer" },
   { id: "google_drive", label: "Google Drive" },
-  { id: "notion", label: "Notion" },
+  { id: "gmail", label: "Gmail" },
+  { id: "google_calendar", label: "Google Calendar" },
+  { id: "hubspot", label: "HubSpot" },
+  { id: "quickbooks", label: "QuickBooks" },
+  { id: "slack", label: "Slack" },
   { id: "uploads", label: "Uploads" },
   { id: "activity_log", label: "Activity log" },
   { id: "report_templates", label: "Reports" },

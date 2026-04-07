@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 /**
@@ -22,7 +23,7 @@ export async function invokeDashboardApi<T>(
 
   const { data, error } = await supabase.functions.invoke<unknown>("dashboard-api", {
     body,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: edgeFunctionAuthHeaders(token),
   });
 
   if (error) {

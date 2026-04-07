@@ -1431,6 +1431,85 @@ export interface Database {
           updated_at?: string;
         };
       };
+      connector_runtime_state: {
+        Row: {
+          id: string;
+          company_id: string;
+          connector_id: string;
+          state_key: string;
+          state_json: Json;
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          connector_id: string;
+          state_key: string;
+          state_json?: Json;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          connector_id?: string;
+          state_key?: string;
+          state_json?: Json;
+          updated_at?: string;
+          created_at?: string;
+        };
+      };
+      connector_event_queue: {
+        Row: {
+          id: string;
+          company_id: string;
+          connector_id: string | null;
+          provider_key: string;
+          event_type: string;
+          external_event_id: string | null;
+          payload: Json;
+          status: string;
+          attempts: number;
+          error_message: string | null;
+          available_at: string;
+          processed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          connector_id?: string | null;
+          provider_key: string;
+          event_type: string;
+          external_event_id?: string | null;
+          payload?: Json;
+          status?: string;
+          attempts?: number;
+          error_message?: string | null;
+          available_at?: string;
+          processed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          connector_id?: string | null;
+          provider_key?: string;
+          event_type?: string;
+          external_event_id?: string | null;
+          payload?: Json;
+          status?: string;
+          attempts?: number;
+          error_message?: string | null;
+          available_at?: string;
+          processed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
       connector_field_mappings: {
         Row: {
           id: string;
@@ -1965,24 +2044,24 @@ export interface Database {
       notification_channel_settings: {
         Row: {
           company_id: string;
-          sendgrid_from_email: string | null;
-          sendgrid_reply_to: string | null;
+          resend_from_email: string | null;
+          resend_reply_to: string | null;
           fcm_sender_id: string | null;
           webhook_delivery_url: string | null;
           updated_at: string;
         };
         Insert: {
           company_id: string;
-          sendgrid_from_email?: string | null;
-          sendgrid_reply_to?: string | null;
+          resend_from_email?: string | null;
+          resend_reply_to?: string | null;
           fcm_sender_id?: string | null;
           webhook_delivery_url?: string | null;
           updated_at?: string;
         };
         Update: {
           company_id?: string;
-          sendgrid_from_email?: string | null;
-          sendgrid_reply_to?: string | null;
+          resend_from_email?: string | null;
+          resend_reply_to?: string | null;
           fcm_sender_id?: string | null;
           webhook_delivery_url?: string | null;
           updated_at?: string;

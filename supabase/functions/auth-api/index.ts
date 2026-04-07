@@ -94,6 +94,10 @@ const opSchema = z.discriminatedUnion("op", [
     token: z.string().min(8),
   }),
   z.object({
+    op: z.literal("verify.email.resend"),
+    email: z.string().email(),
+  }),
+  z.object({
     op: z.literal("invitations.resolve"),
     token: z.string().min(4).max(500),
   }),
@@ -511,6 +515,7 @@ async function notifyEmail(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        apikey: key,
         Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({ kind, to, token }),
@@ -1187,6 +1192,54 @@ serve(async (req) => {
         const { data: prof } = await admin.from("profiles").select("company_id").eq("id", uid).maybeSingle();
         await logSecurityEvent(admin, prof?.company_id as string | null, uid, "email_verified", {});
         return jsonResponse({ data: { ok: true }, error: null, meta: {} });
+      }
+
+      case "verify.email.resend": {
+        const emailNorm = normalizeEmail(parsed.email);
+        const { data: profile } = await admin
+          .from("profiles")
+          .select("id,company_id")
+          .eq("email", emailNorm)
+          .maybeSingle();
+
+        // Keep response generic to avoid account enumeration.
+        if (!profile?.id) {
+          return jsonResponse({
+            data: { ok: true },
+            error: null,
+            meta: { notice: "If the account exists, a verification email was sent." },
+          });
+        }
+
+        const { data: userRow, error: userErr } = await admin.auth.admin.getUserById(profile.id as string);
+        if (!userErr && userRow?.user?.email_confirmed_at) {
+          return jsonResponse({
+            data: { ok: true, alreadyVerified: true },
+            error: null,
+            meta: {},
+          });
+        }
+
+        const vToken = randomToken();
+        const vExp = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString();
+        await admin.from("email_verification_tokens").insert({
+          token: vToken,
+          user_id: profile.id,
+          expires_at: vExp,
+        });
+        await notifyEmail("verification", parsed.email, vToken);
+        await logSecurityEvent(
+          admin,
+          profile.company_id as string | null,
+          profile.id as string,
+          "email_verification_resent",
+          {},
+        );
+        return jsonResponse({
+          data: { ok: true, resent: true },
+          error: null,
+          meta: {},
+        });
       }
 
       case "profile.ensure": {

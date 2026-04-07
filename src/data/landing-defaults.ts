@@ -58,7 +58,7 @@ export const DEFAULT_LANDING_TESTIMONIALS: LandingTestimonial[] = [
     id: "t3",
     logoUrl: "",
     quote:
-      "Workflow approvals across Slack and Salesforce just work—audit trail included.",
+      "Workflow approvals across Slack and HubSpot just work - audit trail included.",
     author: "Alex Rivera",
     role: "VP Operations, Harborstack",
   },
@@ -160,3 +160,4 @@ export const COMPARE_FEATURE_MATRIX: CompareFeatureRow[] = [
 
 /** Alias for React Query hooks and pages that expect this name */
 export const DEFAULT_COMPARE_MATRIX = COMPARE_FEATURE_MATRIX;
+

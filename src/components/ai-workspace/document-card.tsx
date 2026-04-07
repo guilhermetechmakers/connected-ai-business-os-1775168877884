@@ -1,5 +1,6 @@
 import { ExternalLink, FileText } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AiWorkspaceDocumentItem } from "@/types/ai";
@@ -27,12 +28,19 @@ export function DocumentCard({
       <div className="flex items-start gap-2">
         <FileText className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-            {item.sourceProvider}
-            <span className="ml-2 font-mono text-[10px] font-normal text-muted-foreground">
-              {item.kind}
-            </span>
-          </p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+              {item.sourceProvider}
+              <span className="ml-2 font-mono text-[10px] font-normal text-muted-foreground">
+                {item.kind}
+              </span>
+            </p>
+            {item.indexStatus ? (
+              <Badge variant="outline" className="h-5 text-[10px] uppercase">
+                {item.indexStatus}
+              </Badge>
+            ) : null}
+          </div>
           <p className="mt-1 line-clamp-2 text-sm font-medium text-foreground">{label}</p>
           {item.snippet ? (
             <p className="mt-1 line-clamp-3 text-xs leading-relaxed text-muted-foreground">

@@ -54,11 +54,4 @@ export interface TenantIntegrationMonitorRow {
     status: string;
     last_sync_at: string | null;
   }>;
-  integrations: Array<{
-    id: string;
-    provider: string;
-    status: string;
-    last_sync_at: string | null;
-    error_message: string | null;
-  }>;
 }

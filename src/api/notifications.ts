@@ -218,15 +218,15 @@ export async function fetchChannelSettings(): Promise<Record<
 }
 
 export async function upsertChannelSettings(payload: {
-  sendgrid_from_email?: string | null;
-  sendgrid_reply_to?: string | null;
+  resend_from_email?: string | null;
+  resend_reply_to?: string | null;
   fcm_sender_id?: string | null;
   webhook_delivery_url?: string | null;
 }): Promise<Record<string, unknown> | null> {
   const { data, error } = await invokeNotificationsApi<Record<string, unknown>>({
     op: "channelSettings.upsert",
-    sendgrid_from_email: payload.sendgrid_from_email,
-    sendgrid_reply_to: payload.sendgrid_reply_to,
+    resend_from_email: payload.resend_from_email,
+    resend_reply_to: payload.resend_reply_to,
     fcm_sender_id: payload.fcm_sender_id,
     webhook_delivery_url: payload.webhook_delivery_url,
   });
@@ -235,25 +235,25 @@ export async function upsertChannelSettings(payload: {
 }
 
 export async function upsertChannelSecrets(payload: {
-  provider: "sendgrid" | "fcm";
-  sendgrid_api_key?: string;
+  provider: "resend" | "fcm";
+  resend_api_key?: string;
   fcm_server_key?: string;
 }): Promise<boolean> {
   const { error } = await invokeNotificationsApi<{ ok: boolean }>({
     op: "channelSecrets.upsert",
     provider: payload.provider,
-    sendgrid_api_key: payload.sendgrid_api_key,
+    resend_api_key: payload.resend_api_key,
     fcm_server_key: payload.fcm_server_key,
   });
   return !error;
 }
 
-export async function testSendgrid(toEmail: string): Promise<{
+export async function testResend(toEmail: string): Promise<{
   ok: boolean;
   error?: string;
 }> {
   const { data, error } = await invokeNotificationsApi<{ ok: boolean }>({
-    op: "channels.testSendgrid",
+    op: "channels.testResend",
     to_email: toEmail,
   });
   if (error) return { ok: false, error };

@@ -1,4 +1,4 @@
-import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase, supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 
 export type AuthApiEnvelope<T> = {
   data: T | null;
@@ -32,9 +32,35 @@ function asEnvelope<T>(raw: unknown): AuthApiEnvelope<T> {
 }
 
 const getAuthFunctionUrl = () => {
-  const base = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+  const base = supabaseUrl.replace(/\/$/, "");
   return base ? `${base}/functions/v1/auth-api` : "";
 };
+
+async function buildAuthApiHeaders(options?: { skipAuthHeader?: boolean }): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    apikey: supabaseAnonKey,
+    Authorization: `Bearer ${supabaseAnonKey}`,
+  };
+
+  if (!options?.skipAuthHeader) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
+}
+
+async function responseLooksLikeInvalidJwt(res: Response): Promise<boolean> {
+  try {
+    const j = (await res.clone().json()) as { message?: string };
+    const msg = typeof j?.message === "string" ? j.message : "";
+    return res.status === 401 && msg.toLowerCase().includes("invalid jwt");
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Invoke auth-api Edge Function via native fetch; returns full envelope (no throw on API-level errors).
@@ -55,8 +81,7 @@ export async function invokeAuthApiEnvelope<T>(
   }
 
   const url = getAuthFunctionUrl();
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
-  if (!url || !anonKey) {
+  if (!url || !supabaseAnonKey) {
     return {
       data: null,
       error: { message: "Supabase URL or anon key missing" },
@@ -64,24 +89,30 @@ export async function invokeAuthApiEnvelope<T>(
     };
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    apikey: anonKey,
-    Authorization: `Bearer ${anonKey}`,
-  };
-
-  if (!options?.skipAuthHeader) {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
-
   try {
-    const res = await fetch(url, {
+    let headers = await buildAuthApiHeaders(options);
+    let res = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
     });
+
+    if (
+      res.status === 401 &&
+      !options?.skipAuthHeader &&
+      (await responseLooksLikeInvalidJwt(res))
+    ) {
+      const { error: refErr } = await supabase.auth.refreshSession();
+      if (!refErr) {
+        headers = await buildAuthApiHeaders(options);
+        res = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+      }
+    }
+
     const raw: unknown = await res.json().catch(() => null);
     return asEnvelope<T>(raw);
   } catch (e) {

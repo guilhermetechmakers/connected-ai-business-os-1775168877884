@@ -12,13 +12,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { AiPermittedAction } from "@/types/ai";
+import type { AiActionExecutionResult, AiPermittedAction } from "@/types/ai";
 
 type ExecuteFn = (params: {
   actionId: string;
   confirmed: boolean;
   conversationId?: string;
-}) => Promise<{ ok: boolean }>;
+}) => Promise<AiActionExecutionResult>;
 
 export function ActionConfirmDialog({
   action,
@@ -41,23 +41,23 @@ export function ActionConfirmDialog({
     if (!action) return;
     setLoading(true);
     try {
-      await executeAction({
+      const result = await executeAction({
         actionId: action.id,
         confirmed,
         conversationId,
       });
+      if (result.pendingConfirmation) {
+        toast.message("Confirmation required", {
+          description: "Review the pending write preview and confirm execution.",
+        });
+        return;
+      }
       toast.success(confirmed ? "Action executed" : "Action queued for confirmation");
       onSuccess();
       onOpenChange(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Action failed";
-      if (msg.includes("Confirmation required") || msg.includes("409")) {
-        toast.message("Confirmation required", {
-          description: "Use confirm for sensitive actions.",
-        });
-      } else {
-        toast.error(msg);
-      }
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

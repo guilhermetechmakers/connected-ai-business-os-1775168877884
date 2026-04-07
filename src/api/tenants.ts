@@ -157,10 +157,8 @@ export async function fetchTenantIntegrationMonitor(
   if (!inner || typeof inner !== "object") return null;
   const o = inner as Record<string, unknown>;
   const connectors = Array.isArray(o.connectors) ? o.connectors : [];
-  const integrations = Array.isArray(o.integrations) ? o.integrations : [];
   return {
     connectors: connectors as TenantIntegrationMonitorRow["connectors"],
-    integrations: integrations as TenantIntegrationMonitorRow["integrations"],
   };
 }
 
@@ -283,16 +281,23 @@ const STATIC_INTEGRATION_SUGGESTIONS: OnboardingIntegrationSuggestion[] = [
     sampleMappings: { "file.id": "Document.externalId" },
   },
   {
-    provider: "salesforce",
-    label: "Salesforce",
+    provider: "gmail",
+    label: "Gmail",
     type: "OAuth",
     status: "not_connected",
-    sampleMappings: { "Account.Id": "Account.externalId" },
+    sampleMappings: { "message.id": "Message.externalId" },
+  },
+  {
+    provider: "google_calendar",
+    label: "Google Calendar",
+    type: "OAuth",
+    status: "not_connected",
+    sampleMappings: { "event.id": "Activity.externalId" },
   },
   {
     provider: "quickbooks",
     label: "QuickBooks",
-    type: "APIKey",
+    type: "OAuth",
     status: "not_connected",
     sampleMappings: { "Invoice.Id": "Document.externalId" },
   },

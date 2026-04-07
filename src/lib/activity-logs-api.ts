@@ -1,3 +1,4 @@
+import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 export async function invokeActivityLogsApi<T>(
@@ -21,7 +22,7 @@ export async function invokeActivityLogsApi<T>(
     "activity-logs-api",
     {
       body,
-      headers: { Authorization: `Bearer ${token}` },
+      headers: edgeFunctionAuthHeaders(token),
     },
   );
 

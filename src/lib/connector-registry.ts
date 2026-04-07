@@ -6,8 +6,8 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     label: "Slack",
     description:
       "Post messages, ingest channel events, and attach conversations for AI retrieval.",
-    capabilities: ["oauth2", "api_key", "webhooks", "rate_limited", "read", "write"],
-    auth: "both",
+    capabilities: ["oauth2", "webhooks", "rate_limited", "read", "write"],
+    auth: "oauth2",
     defaultMappings: [
       {
         sourceField: "channel.id",
@@ -82,42 +82,82 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     ],
   },
   {
-    key: "salesforce",
-    label: "Salesforce",
+    key: "gmail",
+    label: "Gmail",
     description:
-      "Sync Accounts, Contacts, Opportunities, and custom objects with CRUD where permitted.",
+      "Sync mailbox threads and execute send/search actions from AI and workflows.",
     capabilities: ["oauth2", "rate_limited", "read", "write"],
     auth: "oauth2",
     defaultMappings: [
       {
-        sourceField: "Account.Id",
-        targetEntity: "Account",
+        sourceField: "message.id",
+        targetEntity: "Message",
         targetField: "externalId",
         dataType: "string",
       },
       {
-        sourceField: "Account.Name",
-        targetEntity: "Account",
-        targetField: "name",
+        sourceField: "message.subject",
+        targetEntity: "Message",
+        targetField: "title",
         dataType: "string",
       },
       {
-        sourceField: "Contact.Email",
-        targetEntity: "Contact",
-        targetField: "email",
+        sourceField: "message.from",
+        targetEntity: "Message",
+        targetField: "sender",
         dataType: "string",
       },
       {
-        sourceField: "Opportunity.Amount",
-        targetEntity: "Opportunity",
-        targetField: "amount",
-        dataType: "number",
+        sourceField: "thread.id",
+        targetEntity: "Conversation",
+        targetField: "externalId",
+        dataType: "string",
       },
       {
-        sourceField: "Opportunity.StageName",
-        targetEntity: "Opportunity",
-        targetField: "stage",
+        sourceField: "message.snippet",
+        targetEntity: "Message",
+        targetField: "body",
         dataType: "string",
+      },
+    ],
+  },
+  {
+    key: "google_calendar",
+    label: "Google Calendar",
+    description:
+      "Sync and update calendar events to coordinate workflows and scheduling actions.",
+    capabilities: ["oauth2", "rate_limited", "read", "write"],
+    auth: "oauth2",
+    defaultMappings: [
+      {
+        sourceField: "event.id",
+        targetEntity: "Activity",
+        targetField: "externalId",
+        dataType: "string",
+      },
+      {
+        sourceField: "event.summary",
+        targetEntity: "Activity",
+        targetField: "title",
+        dataType: "string",
+      },
+      {
+        sourceField: "event.start",
+        targetEntity: "Activity",
+        targetField: "startAt",
+        dataType: "timestamp",
+      },
+      {
+        sourceField: "event.end",
+        targetEntity: "Activity",
+        targetField: "endAt",
+        dataType: "timestamp",
+      },
+      {
+        sourceField: "event.attendees",
+        targetEntity: "Activity",
+        targetField: "participants",
+        dataType: "json",
       },
     ],
   },
@@ -125,9 +165,9 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     key: "quickbooks",
     label: "QuickBooks Online",
     description:
-      "Sync customers, invoices, and ledger lines into unified finance KPIs and reports.",
-    capabilities: ["api_key", "rate_limited", "read"],
-    auth: "api_key",
+      "Sync customers and invoices into unified finance entities and workflow-safe updates.",
+    capabilities: ["oauth2", "webhooks", "rate_limited", "read", "write"],
+    auth: "oauth2",
     defaultMappings: [
       {
         sourceField: "customer.id",
@@ -148,6 +188,12 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
         dataType: "string",
       },
       {
+        sourceField: "invoice.status",
+        targetEntity: "Document",
+        targetField: "status",
+        dataType: "string",
+      },
+      {
         sourceField: "invoice.totalAmt",
         targetEntity: "Opportunity",
         targetField: "amount",
@@ -159,9 +205,9 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     key: "hubspot",
     label: "HubSpot",
     description:
-      "Ingest contacts, companies, deals, and activities; push updates from workflows.",
-    capabilities: ["oauth2", "api_key", "rate_limited", "read", "write"],
-    auth: "both",
+      "Ingest contacts/companies/deals and execute CRM writes from chat and workflows.",
+    capabilities: ["oauth2", "webhooks", "rate_limited", "read", "write"],
+    auth: "oauth2",
     defaultMappings: [
       {
         sourceField: "contact.id",
@@ -179,6 +225,12 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
         sourceField: "company.name",
         targetEntity: "Account",
         targetField: "name",
+        dataType: "string",
+      },
+      {
+        sourceField: "deal.id",
+        targetEntity: "Opportunity",
+        targetField: "externalId",
         dataType: "string",
       },
       {

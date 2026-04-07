@@ -130,7 +130,7 @@ export function SyncControlPanel({ integration, onClose }: SyncControlPanelProps
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
-          Automated runs respect connector health and tenant rate limits (stub in template).
+          Automated runs respect connector health and tenant rate limits.
         </p>
       </div>
 

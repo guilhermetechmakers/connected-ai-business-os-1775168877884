@@ -343,8 +343,8 @@ export function createDefaultWorkflowDefinition(): WorkflowDefinition {
       {
         id: actionId,
         type: "action",
-        label: "Notify channel",
-        config: { channel: "slack", template: "default" },
+        label: "Slack send message",
+        config: { toolId: "slack.send_message", args: { channel: "", text: "" } },
         next: [],
         position: { x: 416, y: 80 },
       },

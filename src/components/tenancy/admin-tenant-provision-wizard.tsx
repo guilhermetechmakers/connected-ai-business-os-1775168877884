@@ -33,9 +33,10 @@ const STEPS = [
 
 const SUGGESTED_INTEGRATIONS = [
   { key: "slack", label: "Slack" },
+  { key: "google_drive", label: "Google Drive" },
+  { key: "gmail", label: "Gmail" },
+  { key: "google_calendar", label: "Google Calendar" },
   { key: "hubspot", label: "HubSpot" },
-  { key: "salesforce", label: "Salesforce" },
-  { key: "google", label: "Google Workspace" },
   { key: "quickbooks", label: "QuickBooks" },
 ] as const;
 

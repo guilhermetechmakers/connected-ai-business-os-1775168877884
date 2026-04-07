@@ -1,5 +1,5 @@
 import { buildDomainSuggestionsLocal } from "@/lib/domain-suggestions-local";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { isSupabaseConfigured, supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 
 export type DomainSuggestionsResponse = {
   suggestions: string[];
@@ -29,8 +29,8 @@ export async function fetchDomainSuggestions(base: string): Promise<string[]> {
     return buildDomainSuggestionsLocal(trimmed);
   }
 
-  const root = import.meta.env.VITE_SUPABASE_URL?.replace(/\/$/, "") ?? "";
-  const anon = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+  const root = supabaseUrl.replace(/\/$/, "");
+  const anon = supabaseAnonKey;
   if (!root || !anon) {
     return buildDomainSuggestionsLocal(trimmed);
   }
