@@ -8,25 +8,69 @@ import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
 import { encryptCredentialsJson } from "../_shared/credentials-crypto.ts";
 import {
-  connectionTest as runtimeConnectionTest,
-  enqueueConnectorEvent,
-  listProviderCatalog,
-  oauthCallback,
-  oauthStart,
-  syncTrigger as runtimeSyncTrigger,
-  toolsExecute,
-  toolsList,
-  type ProviderKey,
-} from "../_shared/integrations-runtime.ts";
+  decryptCredentialsJson,
+  encryptCredentialsJson,
+} from "../_shared/credentials-crypto.ts";
+import { runProviderSyncStub } from "../_shared/provider-sync-stubs.ts";
+import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
 
-const providerKeySchema = z.enum([
-  "slack",
-  "google_drive",
-  "gmail",
-  "google_calendar",
-  "hubspot",
-  "quickbooks",
-]);
+/** Static catalog — keep in sync with `src/lib/connector-registry.ts` provider keys. */
+const PROVIDER_CATALOG: {
+  id: string;
+  name: string;
+  description: string;
+  supportsOAuth: boolean;
+  supportsApiKey: boolean;
+}[] = [
+  {
+    id: "slack",
+    name: "Slack",
+    description:
+      "Post messages, ingest channel events, and attach conversations for AI retrieval.",
+    supportsOAuth: true,
+    supportsApiKey: true,
+  },
+  {
+    id: "google_drive",
+    name: "Google Drive",
+    description:
+      "Index files and metadata into unified Document entities for RAG and dashboards.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "salesforce",
+    name: "Salesforce",
+    description:
+      "Sync Accounts, Contacts, Opportunities, and custom objects with CRUD where permitted.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "gmail",
+    name: "Gmail",
+    description:
+      "Read, search, and send emails. The AI agent can summarize threads, draft replies, and trigger email-based automations.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "hubspot",
+    name: "HubSpot",
+    description:
+      "Ingest contacts, companies, deals, and activities; push updates from workflows.",
+    supportsOAuth: true,
+    supportsApiKey: true,
+  },
+  {
+    id: "quickbooks",
+    name: "QuickBooks Online",
+    description:
+      "Sync customers, invoices, and ledger activity into unified finance entities.",
+    supportsOAuth: false,
+    supportsApiKey: true,
+  },
+];
 
 const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("catalog.list") }),

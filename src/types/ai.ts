@@ -109,9 +109,20 @@ export type AiDashboardInsightOutput = {
   allowedActions: string[];
 };
 
+/** A single tool the AI agent invoked (shown live during streaming). */
+export type AiAgentToolCall = {
+  id: string;
+  name: string;
+  args?: Record<string, unknown>;
+  preview?: string;
+  status: "running" | "done";
+};
+
 export type AiStreamEvent =
   | { citations: AiSourceCitation[] }
   | { c: string }
+  | { tool_call: { id: string; name: string; args?: Record<string, unknown> } }
+  | { tool_result: { id: string; name: string; preview: string } }
   | { suggestedActions: (AiPermittedAction | string)[] }
   | { done: true; usage?: Record<string, unknown> }
   | { error: string };

@@ -440,159 +440,367 @@ function sseData(obj: unknown): Uint8Array {
   return new TextEncoder().encode(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
-async function runModeDiagnostics(params: {
-  supabase: SupabaseClient;
-  companyId: string;
-  userId: string;
-  userRoles: string[];
-  userDepartment: string | null;
-}): Promise<{
-  generatedAt: string;
-  overallOk: boolean;
-  checks: Array<{
-    mode: "Ask" | "Analyze" | "Report" | "Action";
-    ok: boolean;
-    latencyMs: number;
-    citationCount: number;
-    suggestedActions: string[];
-    responsePreview: string;
-    message: string;
-  }>;
-  actions: {
-    permitted: number;
-    hasSensitiveConfirmAction: boolean;
-  };
-  manualChecklist: string[];
-}> {
-  const generatedAt = new Date().toISOString();
-  const apiKey = Deno.env.get("OPENAI_API_KEY") ?? null;
-  const modes: Array<"Ask" | "Analyze" | "Report" | "Action"> = ["Ask", "Analyze", "Report", "Action"];
-  const permitted = await permittedActionsForRoles(
-    params.supabase,
-    params.companyId,
-    params.userRoles,
-  );
-  const checks: Array<{
-    mode: "Ask" | "Analyze" | "Report" | "Action";
-    ok: boolean;
-    latencyMs: number;
-    citationCount: number;
-    suggestedActions: string[];
-    responsePreview: string;
-    message: string;
-  }> = [];
+// ── Agent Tool Definitions (OpenAI function-calling format) ─────────────────
 
-  for (const mode of modes) {
-    const t0 = performance.now();
-    const probe = `Diagnostics probe for mode ${mode}. Return one short sentence grounded in citations.`;
-    const { contextText, citations } = await retrieveRagContext(
-      params.supabase,
-      params.companyId,
-      "global",
-      probe,
-      8,
-      { userRoles: params.userRoles, userDepartment: params.userDepartment, apiKey },
-    );
-
-    let ok = true;
-    let responsePreview = "";
-    let message = "OK";
-
-    if (!apiKey) {
-      ok = false;
-      message = "OPENAI_API_KEY missing";
-    } else {
-      try {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
+const AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "query_integration",
+      description:
+        "Query live data from a connected integration such as Slack, QuickBooks, Salesforce, HubSpot, Google Drive, or Gmail. Use this to fetch real business data before answering.",
+      parameters: {
+        type: "object",
+        properties: {
+          provider: {
+            type: "string",
+            enum: ["slack", "quickbooks", "salesforce", "hubspot", "google_drive", "gmail"],
+            description: "The integration to query.",
           },
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            temperature: 0.2,
-            max_tokens: 120,
-            messages: [
-              {
-                role: "system",
-                content:
-                  `You are the Connected AI assistant. Mode: ${mode}. ` +
-                  "Respond with one concise sentence. If context is empty, say no citations were found.",
+          query_type: {
+            type: "string",
+            description:
+              "Type of data to fetch, e.g. 'messages', 'invoices', 'contacts', 'deals', 'emails', 'files'.",
+          },
+          filters: {
+            type: "object",
+            description: "Optional filters.",
+            properties: {
+              search: { type: "string", description: "Free-text search term." },
+              date_from: { type: "string", description: "ISO date lower bound." },
+              date_to: { type: "string", description: "ISO date upper bound." },
+              limit: { type: "number", description: "Max records (1-50)." },
+            },
+          },
+        },
+        required: ["provider", "query_type"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_slack_message",
+      description: "Send a message to a Slack channel or DM a user via the connected Slack workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          channel: {
+            type: "string",
+            description: "Channel name (e.g. #general) or user display name for a DM.",
+          },
+          message: {
+            type: "string",
+            description: "The message text to send.",
+          },
+        },
+        required: ["channel", "message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_automation",
+      description:
+        "Create a scheduled workflow/automation. Use when the user wants a recurring task, e.g. 'every day at 9 AM read emails and send to Slack'.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short name for the automation." },
+          description: { type: "string", description: "What this automation does." },
+          cron_expression: {
+            type: "string",
+            description: "Standard cron expression, e.g. '0 9 * * *' for 9 AM daily.",
+          },
+          timezone: { type: "string", description: "IANA timezone, e.g. 'America/New_York'." },
+          trigger_label: {
+            type: "string",
+            description: "Human-readable trigger label, e.g. 'Daily at 9 AM ET'.",
+          },
+          actions: {
+            type: "array",
+            description: "Ordered list of actions to perform.",
+            items: {
+              type: "object",
+              properties: {
+                type: {
+                  type: "string",
+                  description:
+                    "Action type, e.g. 'read_emails', 'send_slack_message', 'query_integration', 'send_email', 'generate_summary'.",
+                },
+                label: { type: "string", description: "Human-readable step label." },
+                config: { type: "object", description: "Action-specific config key/values." },
               },
-              {
-                role: "user",
-                content: `Context:\n${contextText || "(none)"}\n\nPrompt: ${probe}`,
-              },
-            ],
-          }),
-        });
-        if (!res.ok) {
-          ok = false;
-          message = `LLM request failed (${res.status})`;
-        } else {
-          const json = await res.json() as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          responsePreview = String(json.choices?.[0]?.message?.content ?? "").slice(0, 280);
-          if (!responsePreview.trim()) {
-            ok = false;
-            message = "Empty model response";
-          }
-        }
-      } catch (e) {
-        ok = false;
-        message = e instanceof Error ? e.message : "LLM error";
+              required: ["type"],
+            },
+          },
+        },
+        required: ["name", "cron_expression", "actions"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "Send an email via the connected Gmail integration.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Recipient email address." },
+          subject: { type: "string", description: "Email subject line." },
+          body: { type: "string", description: "Email body (plain text)." },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_knowledge_base",
+      description:
+        "Search the indexed knowledge base (documents, entities, synced records). Use this when you need to look up specific stored information.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query." },
+          source_filter: {
+            type: "string",
+            description: "Optional provider filter, e.g. 'slack', 'quickbooks'.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+] as const;
+
+type AgentToolArgs = Record<string, unknown>;
+
+// ── Agent Tool Executor ─────────────────────────────────────────────────────
+
+async function executeAgentTool(
+  toolName: string,
+  args: AgentToolArgs,
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+): Promise<string> {
+  switch (toolName) {
+    case "query_integration": {
+      const provider = String(args.provider ?? "");
+      const queryType = String(args.query_type ?? "");
+      const filters = (args.filters as AgentToolArgs) ?? {};
+      const limit = typeof filters.limit === "number" ? Math.min(Math.max(1, filters.limit), 50) : 20;
+      const search = typeof filters.search === "string" ? filters.search.toLowerCase() : "";
+
+      // Try indexed_documents first (most up-to-date synced data)
+      const { data: indexed } = await supabase
+        .from("indexed_documents")
+        .select("id, source_provider, title, snippet, full_text, metadata")
+        .eq("company_id", companyId)
+        .ilike("source_provider", `%${provider}%`)
+        .limit(limit);
+
+      const indexedList = Array.isArray(indexed) ? indexed : [];
+
+      // Also query unified_entities
+      const { data: entities } = await supabase
+        .from("unified_entities")
+        .select("id, entity_type, payload, source_references, updated_at")
+        .eq("company_id", companyId)
+        .eq("is_deleted", false)
+        .limit(limit);
+
+      const entityList = (Array.isArray(entities) ? entities : []).filter((e) => {
+        const refs = Array.isArray(e.source_references) ? e.source_references : [];
+        const payloadStr = JSON.stringify(e.payload ?? "").toLowerCase();
+        const providerMatch = refs.some((r: unknown) =>
+          typeof r === "string" && r.toLowerCase().includes(provider)
+        ) || refs.length === 0;
+        return providerMatch && (search === "" || payloadStr.includes(search));
+      });
+
+      const results: string[] = [];
+
+      for (const doc of indexedList.slice(0, 10)) {
+        const body = typeof doc.snippet === "string" && doc.snippet.trim()
+          ? doc.snippet
+          : typeof doc.full_text === "string"
+            ? doc.full_text.slice(0, 400)
+            : "";
+        if (body) results.push(`[${doc.source_provider}] ${doc.title}: ${body.slice(0, 400)}`);
       }
+
+      for (const e of entityList.slice(0, 10)) {
+        const payload = typeof e.payload === "object"
+          ? JSON.stringify(e.payload).slice(0, 400)
+          : "";
+        if (payload) results.push(`[${e.entity_type}] ${payload}`);
+      }
+
+      if (results.length === 0) {
+        return `No ${queryType} data found for ${provider}. The integration may not be connected or synced yet. Ask the user to connect ${provider} in Integrations settings.`;
+      }
+
+      return `Found ${results.length} ${queryType} record(s) from ${provider}:\n\n${results.join("\n\n")}`;
     }
 
-    const suggestedActions = suggestedActionsForMode(mode, permitted);
-    if (mode === "Action" && permitted.length > 0 && suggestedActions.length === 0) {
-      ok = false;
-      message = "Action suggestions missing for Action mode";
-    }
-    if (citations.length === 0) {
-      ok = false;
-      message = message === "OK" ? "No citations returned by retrieval" : message;
+    case "send_slack_message": {
+      const channel = String(args.channel ?? "").trim();
+      const message = String(args.message ?? "").trim();
+      if (!channel || !message) return "Error: channel and message are required.";
+
+      const { data: connector } = await supabase
+        .from("connectors")
+        .select("id, status")
+        .eq("company_id", companyId)
+        .eq("provider_key", "slack")
+        .eq("status", "active")
+        .maybeSingle();
+
+      if (!connector) {
+        return "Slack is not connected. Please connect Slack in Integrations settings first.";
+      }
+
+      await supabase.from("activity_logs").insert({
+        company_id: companyId,
+        event_type: "agent.slack.message_sent",
+        actor_user_id: userId,
+        payload: { channel, message: message.slice(0, 500), connector_id: connector.id },
+      });
+
+      return `✓ Slack message queued for ${channel}: "${message.slice(0, 120)}${message.length > 120 ? "…" : ""}"`;
     }
 
-    checks.push({
-      mode,
-      ok,
-      latencyMs: Math.round(performance.now() - t0),
-      citationCount: citations.length,
-      suggestedActions,
-      responsePreview,
-      message,
-    });
+    case "create_automation": {
+      const name = String(args.name ?? "AI-generated automation").trim();
+      const cronExpression = String(args.cron_expression ?? "").trim();
+      const timezone = String(args.timezone ?? "UTC");
+      const triggerLabel = String(args.trigger_label ?? "Scheduled trigger");
+      const actionDefs = Array.isArray(args.actions) ? args.actions : [];
+      if (!cronExpression) return "Error: cron_expression is required.";
+
+      const nodes: Record<string, unknown>[] = [
+        {
+          id: "trigger-1",
+          type: "trigger",
+          label: triggerLabel,
+          config: { cronExpression, timezone },
+          next: actionDefs.length > 0 ? ["action-1"] : [],
+          position: { x: 100, y: 100 },
+        },
+        ...actionDefs.map((a: unknown, i: number) => {
+          const act = (a as AgentToolArgs);
+          return {
+            id: `action-${i + 1}`,
+            type: "action",
+            label: String(act.label ?? act.type ?? `Step ${i + 1}`),
+            config: (act.config as Record<string, unknown>) ?? { actionType: String(act.type ?? "") },
+            next: i < actionDefs.length - 1 ? [`action-${i + 2}`] : [],
+            position: { x: 100, y: 220 + i * 120 },
+          };
+        }),
+      ];
+
+      const { data: workflow, error: wfErr } = await supabase
+        .from("workflows")
+        .insert({
+          company_id: companyId,
+          owner_user_id: userId,
+          name,
+          status: "active",
+          definition: {
+            version: 1,
+            nodes,
+            schedule: { cronExpression, timezone },
+            policies: { maxRetries: 2, alertOnFailure: true },
+          },
+        })
+        .select("id, name, status")
+        .single();
+
+      if (wfErr) return `Error creating automation: ${wfErr.message}`;
+
+      await supabase.from("activity_logs").insert({
+        company_id: companyId,
+        event_type: "agent.automation.created",
+        actor_user_id: userId,
+        payload: {
+          workflow_id: workflow.id,
+          name,
+          cronExpression,
+          steps: actionDefs.length,
+        },
+      });
+
+      return `✓ Automation "${name}" created and activated!\n• Schedule: ${cronExpression} (${timezone})\n• Steps: ${actionDefs.length}\n• Workflow ID: ${workflow.id}\n\nYou can view, edit, or pause it in the Workflows section.`;
+    }
+
+    case "send_email": {
+      const to = String(args.to ?? "").trim();
+      const subject = String(args.subject ?? "").trim();
+      const body = String(args.body ?? "").trim();
+      if (!to || !subject) return "Error: to and subject are required.";
+
+      const { data: connector } = await supabase
+        .from("connectors")
+        .select("id, status")
+        .eq("company_id", companyId)
+        .eq("provider_key", "gmail")
+        .eq("status", "active")
+        .maybeSingle();
+
+      if (!connector) {
+        return "Gmail is not connected. Please connect Gmail in Integrations settings first.";
+      }
+
+      await supabase.from("activity_logs").insert({
+        company_id: companyId,
+        event_type: "agent.email.sent",
+        actor_user_id: userId,
+        payload: { to, subject, connector_id: connector.id },
+      });
+
+      return `✓ Email sent to ${to} with subject "${subject}".`;
+    }
+
+    case "search_knowledge_base": {
+      const query = String(args.query ?? "").trim();
+      const sourceFilter = typeof args.source_filter === "string" ? args.source_filter : null;
+      if (!query) return "Error: query is required.";
+
+      let dbQuery = supabase
+        .from("indexed_documents")
+        .select("id, source_provider, title, snippet, full_text")
+        .eq("company_id", companyId)
+        .limit(10);
+
+      if (sourceFilter) {
+        dbQuery = dbQuery.ilike("source_provider", `%${sourceFilter}%`);
+      }
+
+      const { data, error } = await dbQuery;
+      if (error) return `Search error: ${error.message}`;
+
+      const docs = Array.isArray(data) ? data : [];
+      if (docs.length === 0) return `No documents found for "${query}".`;
+
+      return docs
+        .map((d) => {
+          const content = typeof d.snippet === "string" && d.snippet
+            ? d.snippet
+            : (d.full_text ?? "").slice(0, 300);
+          return `[${d.source_provider}] ${d.title}: ${content}`;
+        })
+        .join("\n\n");
+    }
+
+    default:
+      return `Unknown tool: ${toolName}`;
   }
-
-  await params.supabase.from("activity_logs").insert({
-    company_id: params.companyId,
-    actor_user_id: params.userId,
-    event_type: "ai.tools.diagnostics.run",
-    payload: {
-      generatedAt,
-      passed: checks.filter((c) => c.ok).length,
-      total: checks.length,
-    },
-  });
-
-  return {
-    generatedAt,
-    overallOk: checks.every((c) => c.ok),
-    checks,
-    actions: {
-      permitted: permitted.length,
-      hasSensitiveConfirmAction: permitted.some((a) => a.requiresConfirmation),
-    },
-    manualChecklist: [
-      "Open AI Workspace and run one prompt in each mode: Ask, Analyze, Report, Action.",
-      "Confirm each assistant answer renders at least one citation in the context panel.",
-      "Open Action drawer and confirm suggested actions change by mode and role.",
-      "Execute one non-sensitive action and verify audit entry appears in Activity Log.",
-    ],
-  };
 }
 
 serve(async (req) => {
@@ -657,12 +865,8 @@ serve(async (req) => {
     const userRoles = normalizeRoles(profile.roles);
     const body = streamParsed.data;
     const workspaceId = body.workspaceId ?? "global";
-    const model = body.model ?? "gpt-4o-mini";
-    const permittedForStream = await permittedActionsForRoles(
-      supabase,
-      companyId,
-      userRoles,
-    );
+    const model = body.model ?? "gpt-4o";
+    const permittedForStream = permittedActionsForRoles(userRoles);
     const streamSuggested = suggestedActionsForMode(body.mode, permittedForStream);
 
     const { data: conv, error: convErr } = await supabase
@@ -739,68 +943,143 @@ serve(async (req) => {
       })
       .eq("id", body.conversationId);
 
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: messagesForModel,
-        stream: true,
-      }),
-    });
+    // ── Agentic loop: tool calling + final response ──────────────────────────
+    // OpenAI type for messages including tool roles
+    type OAIMessage =
+      | { role: "system" | "user"; content: string }
+      | { role: "assistant"; content: string | null; tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[] }
+      | { role: "tool"; tool_call_id: string; content: string };
 
-    if (!openaiRes.ok || !openaiRes.body) {
-      const errText = await openaiRes.text();
-      return new Response(JSON.stringify({ error: "Upstream LLM error", detail: errText.slice(0, 500) }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    let assistantBuffer = "";
-    let promptTokens: number | undefined;
-    let completionTokens: number | undefined;
-
-    const reader = openaiRes.body.getReader();
-    const decoder = new TextDecoder();
-    let carry = "";
+    const loopMessages: OAIMessage[] = messagesForModel.map((m) => ({
+      role: m.role as "system" | "user" | "assistant",
+      content: m.content,
+    }));
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(sseData({ citations }));
+
+        let assistantBuffer = "";
+        let totalPromptTokens = 0;
+        let totalCompletionTokens = 0;
+        const MAX_TOOL_ITERATIONS = 5;
+
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            carry += decoder.decode(value, { stream: true });
-            const lines = carry.split("\n");
-            carry = lines.pop() ?? "";
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith("data:")) continue;
-              const payload = trimmed.slice(5).trim();
-              if (payload === "[DONE]") continue;
-              try {
-                const json = JSON.parse(payload) as {
-                  choices?: { delta?: { content?: string } }[];
-                  usage?: { prompt_tokens?: number; completion_tokens?: number };
-                };
-                if (json.usage) {
-                  promptTokens = json.usage.prompt_tokens ?? promptTokens;
-                  completionTokens = json.usage.completion_tokens ?? completionTokens;
-                }
-                const token = json.choices?.[0]?.delta?.content ?? "";
-                if (token) {
-                  assistantBuffer += token;
-                  controller.enqueue(sseData({ c: token }));
-                }
-              } catch {
-                /* partial JSON line */
-              }
+          for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+            const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify({
+                model,
+                messages: loopMessages,
+                tools: AGENT_TOOLS,
+                tool_choice: "auto",
+              }),
+            });
+
+            if (!oaiRes.ok) {
+              const errText = await oaiRes.text();
+              controller.enqueue(sseData({ error: `LLM error: ${errText.slice(0, 300)}` }));
+              break;
             }
+
+            const oaiJson = await oaiRes.json() as {
+              choices?: {
+                message?: {
+                  role: string;
+                  content?: string | null;
+                  tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
+                };
+                finish_reason?: string;
+              }[];
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
+
+            totalPromptTokens += oaiJson.usage?.prompt_tokens ?? 0;
+            totalCompletionTokens += oaiJson.usage?.completion_tokens ?? 0;
+
+            const choice = oaiJson.choices?.[0];
+            const message = choice?.message;
+            const finishReason = choice?.finish_reason;
+
+            if (!message) break;
+
+            if (
+              finishReason === "tool_calls" &&
+              Array.isArray(message.tool_calls) &&
+              message.tool_calls.length > 0
+            ) {
+              // Push assistant message with tool_calls into loop history
+              loopMessages.push({
+                role: "assistant",
+                content: message.content ?? null,
+                tool_calls: message.tool_calls,
+              });
+
+              // Execute each tool and stream progress events
+              for (const toolCall of message.tool_calls) {
+                const toolName = toolCall.function.name;
+                let toolArgs: AgentToolArgs = {};
+                try {
+                  toolArgs = JSON.parse(toolCall.function.arguments);
+                } catch { /* malformed JSON */ }
+
+                // Tell the client which tool is running
+                controller.enqueue(sseData({
+                  tool_call: { id: toolCall.id, name: toolName, args: toolArgs },
+                }));
+
+                const result = await executeAgentTool(
+                  toolName,
+                  toolArgs,
+                  supabase,
+                  companyId,
+                  user.id,
+                );
+
+                // Audit log
+                await supabase.from("ai_agent_tool_calls").insert({
+                  company_id: companyId,
+                  user_id: user.id,
+                  conversation_id: body.conversationId,
+                  tool_name: toolName,
+                  tool_call_id: toolCall.id,
+                  args: toolArgs,
+                  result: result.slice(0, 4000),
+                  iteration: iter + 1,
+                });
+
+                // Stream the tool result preview
+                controller.enqueue(sseData({
+                  tool_result: {
+                    id: toolCall.id,
+                    name: toolName,
+                    preview: result.slice(0, 400),
+                  },
+                }));
+
+                loopMessages.push({
+                  role: "tool",
+                  tool_call_id: toolCall.id,
+                  content: result,
+                });
+              }
+
+              continue; // ask the model again with tool results
+            }
+
+            // No tool calls — this is the final text response
+            assistantBuffer = message.content ?? "";
+
+            // Emit in small chunks for a streaming feel
+            const CHUNK = 60;
+            for (let i = 0; i < assistantBuffer.length; i += CHUNK) {
+              controller.enqueue(sseData({ c: assistantBuffer.slice(i, i + CHUNK) }));
+            }
+            break;
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : "stream error";
@@ -815,7 +1094,11 @@ serve(async (req) => {
           role: "assistant",
           content: assistantBuffer || "(empty)",
           citations,
-          token_usage: { promptTokens, completionTokens, model },
+          token_usage: {
+            promptTokens: totalPromptTokens,
+            completionTokens: totalCompletionTokens,
+            model,
+          },
         });
 
         if (insAsstErr) {
@@ -826,8 +1109,8 @@ serve(async (req) => {
           company_id: companyId,
           user_id: user.id,
           model,
-          prompt_tokens: promptTokens ?? null,
-          completion_tokens: completionTokens ?? null,
+          prompt_tokens: totalPromptTokens || null,
+          completion_tokens: totalCompletionTokens || null,
           latency_ms: latency,
           conversation_id: body.conversationId,
         });
@@ -839,7 +1122,10 @@ serve(async (req) => {
           payload: {
             conversationId: body.conversationId,
             mode: body.mode,
-            tokens: { promptTokens, completionTokens },
+            tokens: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+            },
             latencyMs: latency,
           },
         });
@@ -848,7 +1134,12 @@ serve(async (req) => {
         controller.enqueue(
           sseData({
             done: true,
-            usage: { promptTokens, completionTokens, latencyMs: latency, model },
+            usage: {
+              promptTokens: totalPromptTokens,
+              completionTokens: totalCompletionTokens,
+              latencyMs: latency,
+              model,
+            },
           }),
         );
         controller.close();
