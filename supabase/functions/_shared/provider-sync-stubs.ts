@@ -26,7 +26,9 @@ export async function runProviderSyncStub(
           ? { recordsProcessed: 32, unifiedEntitiesUpserted: 28 }
           : providerKey === "quickbooks"
             ? { recordsProcessed: 18, unifiedEntitiesUpserted: 14 }
-            : { recordsProcessed: 0, unifiedEntitiesUpserted: 0 };
+            : providerKey === "gmail"
+              ? { recordsProcessed: 50, unifiedEntitiesUpserted: 50 }
+              : { recordsProcessed: 0, unifiedEntitiesUpserted: 0 };
 
   return { ...base, notes };
 }
