@@ -301,6 +301,8 @@ export async function streamAiChat(params: {
   workspaceId?: string;
   onCitations: (c: AiSourceCitation[]) => void;
   onChunk: (text: string) => void;
+  onToolCall?: (call: { id: string; name: string; args?: Record<string, unknown> }) => void;
+  onToolResult?: (result: { id: string; name: string; preview: string }) => void;
   onSuggestedActions?: (actionIds: string[]) => void;
   onDone: (usage?: Record<string, unknown>) => void;
   onError: (message: string) => void;
@@ -344,6 +346,12 @@ export async function streamAiChat(params: {
         params.onCitations(ev.citations);
       } else if ("c" in ev && typeof ev.c === "string") {
         params.onChunk(ev.c);
+      } else if ("tool_call" in ev && ev.tool_call && typeof ev.tool_call === "object") {
+        const tc = ev.tool_call as { id: string; name: string; args?: Record<string, unknown> };
+        params.onToolCall?.(tc);
+      } else if ("tool_result" in ev && ev.tool_result && typeof ev.tool_result === "object") {
+        const tr = ev.tool_result as { id: string; name: string; preview: string };
+        params.onToolResult?.(tr);
       } else if ("suggestedActions" in ev && Array.isArray(ev.suggestedActions)) {
         const ids = ev.suggestedActions
           .map((x) => {
