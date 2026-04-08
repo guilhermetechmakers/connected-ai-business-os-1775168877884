@@ -24,7 +24,7 @@ const SEVERITY_ORDER: Record<ExecutiveRiskIssue["severity"], number> = {
 const SEVERITY_COLOR: Record<ExecutiveRiskIssue["severity"], string> = {
   critical: "rgb(220, 80, 80)",
   high: "rgb(245, 158, 11)",
-  medium: "rgb(154, 208, 255)",
+  medium: "rgb(161, 161, 170)",
   low: "rgb(0, 210, 122)",
 };
 
@@ -77,11 +77,11 @@ export function RiskScoreboard({
               <Tooltip
                 cursor={{ fill: "rgb(255 255 255 / 0.04)" }}
                 contentStyle={{
-                  background: "rgb(15 23 32)",
-                  border: "1px solid rgb(21 78 120 / 0.4)",
+                  background: "rgb(var(--card))",
+                  border: "1px solid rgb(var(--border) / 0.8)",
                   borderRadius: 8,
                 }}
-                labelStyle={{ color: "rgb(247 250 255)" }}
+                labelStyle={{ color: "rgb(var(--foreground))" }}
               />
               <Bar dataKey="score" radius={[0, 4, 4, 0]} aria-label="Risk score by issue">
                 {chartData.map((entry) => (

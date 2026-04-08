@@ -7,26 +7,26 @@
 @layer base {
   /* Light theme (marketing / optional) */
   :root {
-    --background: 248 250 252;
-    --foreground: 8 16 23;
-    --card: 255 255 255;
-    --card-foreground: 8 16 23;
-    --popover: 255 255 255;
-    --popover-foreground: 8 16 23;
-    --surface-inner: 241 245 249;
-    --primary: 21 78 120;
-    --primary-foreground: 247 250 255;
+    --background: 10 10 10;
+    --foreground: 247 250 255;
+    --card: 10 10 10;
+    --card-foreground: 247 250 255;
+    --popover: 10 10 10;
+    --popover-foreground: 247 250 255;
+    --surface-inner: 10 10 10;
+    --primary: 24 24 27;
+    --primary-foreground: 250 250 250;
     --secondary: 226 232 240;
     --secondary-foreground: 8 16 23;
-    --muted: 241 245 249;
+    --muted: 10 10 10;
     --muted-foreground: 100 116 139;
-    --accent: 154 208 255;
+    --accent: 161 161 170;
     --accent-foreground: 8 16 23;
     --destructive: 220 80 80;
     --destructive-foreground: 247 250 255;
-    --border: 226 232 240;
-    --input: 241 245 249;
-    --ring: 154 208 255;
+    --border: 39 39 42;
+    --input: 10 10 10;
+    --ring: 113 113 122;
     --success: 0 210 122;
     --success-foreground: 255 255 255;
     --radius: 0.75rem;
@@ -34,26 +34,26 @@
 
   /* Dark theme — Connected AI Business OS primary palette */
   .dark {
-    --background: 5 6 10;
+    --background: 10 10 10;
     --foreground: 247 250 255;
-    --card: 15 23 32;
+    --card: 10 10 10;
     --card-foreground: 247 250 255;
-    --popover: 15 23 32;
+    --popover: 10 10 10;
     --popover-foreground: 247 250 255;
-    --surface-inner: 12 17 22;
-    --primary: 154 208 255;
-    --primary-foreground: 8 16 23;
-    --secondary: 21 78 120;
+    --surface-inner: 10 10 10;
+    --primary: 228 228 231;
+    --primary-foreground: 10 10 10;
+    --secondary: 39 39 42;
     --secondary-foreground: 247 250 255;
-    --muted: 17 32 43;
+    --muted: 10 10 10;
     --muted-foreground: 143 160 176;
-    --accent: 154 208 255;
+    --accent: 161 161 170;
     --accent-foreground: 8 16 23;
     --destructive: 220 80 80;
     --destructive-foreground: 247 250 255;
-    --border: 17 32 43;
-    --input: 12 17 22;
-    --ring: 154 208 255;
+    --border: 39 39 42;
+    --input: 10 10 10;
+    --ring: 161 161 170;
     --success: 0 210 122;
     --success-foreground: 5 6 10;
   }
@@ -88,16 +88,11 @@
   }
 
   html:not(.dark) body {
-    background-image:
-      radial-gradient(ellipse 70% 50% at 80% -10%, rgb(154 208 255 / 0.12), transparent),
-      linear-gradient(180deg, rgb(248 250 252) 0%, rgb(241 245 249) 100%);
+    background-image: none;
   }
 
   html.dark body {
-    background-image:
-      radial-gradient(ellipse 80% 60% at 50% -10%, rgb(7 18 40), transparent),
-      radial-gradient(ellipse 60% 50% at 50% 100%, rgb(11 26 42), transparent),
-      linear-gradient(180deg, rgb(5 6 10) 0%, rgb(5 6 10) 100%);
+    background-image: none;
   }
 
   h1,
@@ -114,10 +109,11 @@
   }
 
   .glow-ring-focus {
-    box-shadow: 0 0 0 3px rgb(154 208 255 / 0.16);
+    box-shadow: 0 0 0 3px rgb(161 161 170 / 0.16);
   }
 
   .grid-bg {
+    background-color: rgb(var(--background));
     background-image:
       linear-gradient(rgb(15 23 32 / 0.06) 1px, transparent 1px),
       linear-gradient(90deg, rgb(15 23 32 / 0.06) 1px, transparent 1px);
@@ -125,9 +121,10 @@
   }
 
   .dark .grid-bg {
+    background-color: rgb(10 10 10);
     background-image:
-      linear-gradient(rgb(255 255 255 / 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgb(255 255 255 / 0.03) 1px, transparent 1px);
+      linear-gradient(rgb(63 63 70 / 0.2) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(63 63 70 / 0.2) 1px, transparent 1px);
   }
 }
 
@@ -143,10 +140,10 @@
 }
 
 .dashboard-grid-root .react-grid-placeholder {
-  background: rgb(154 208 255 / 0.12);
+  background: rgb(161 161 170 / 0.12);
   border-radius: 0.75rem;
 }
 
 .dashboard-grid-root .react-resizable-handle::after {
-  border-color: rgb(154 208 255 / 0.35) !important;
+  border-color: rgb(161 161 170 / 0.35) !important;
 }

@@ -865,12 +865,36 @@ async function providerRequest(
   const res = await fetchWithRetry(url, { method, headers: initHeaders, body: payload }, 3);
   const json = await parseJsonSafe(res);
   if (!res.ok) {
-    const message = typeof json.error === "string"
+    const host = (() => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return "unknown-host";
+      }
+    })();
+    const errorObj = asObject(json.error);
+    const nestedErrors = Array.isArray(errorObj.errors) ? errorObj.errors : [];
+    const firstNested = nestedErrors.length > 0 ? asObject(nestedErrors[0]) : {};
+    const providerMessage = typeof json.error === "string"
       ? json.error
       : typeof json.message === "string"
         ? json.message
-        : `provider request failed (${res.status})`;
-    throw new Error(message);
+        : typeof errorObj.message === "string"
+          ? errorObj.message
+          : typeof firstNested.message === "string"
+            ? firstNested.message
+            : "";
+    const providerReason = typeof firstNested.reason === "string"
+      ? firstNested.reason
+      : typeof errorObj.status === "string"
+        ? errorObj.status
+        : "";
+    const detail = providerMessage || providerReason || "request failed";
+    const scopeHint = host.includes("gmail.googleapis.com") &&
+        /insufficient|permission|forbidden|scope|access/i.test(`${providerMessage} ${providerReason}`)
+      ? " Reconnect Gmail and grant gmail.readonly/gmail.send scopes."
+      : "";
+    throw new Error(`provider request failed (${res.status}) [${host}] ${detail}${scopeHint}`);
   }
   return json;
 }
@@ -1827,9 +1851,56 @@ async function providerToolExecute(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
       accessToken,
     );
+    const listedMessages = Array.isArray(out.messages) ? out.messages : [];
+    const enrichedMessages: Record<string, unknown>[] = [];
+    const metadataFetchLimit = Math.min(listedMessages.length, Math.min(maxResults, 10));
+    for (const rawMsg of listedMessages.slice(0, metadataFetchLimit)) {
+      const msg = asObject(rawMsg);
+      const id = typeof msg.id === "string" ? msg.id : "";
+      if (!id) continue;
+      try {
+        const detail = await providerRequest(
+          "GET",
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${
+            encodeURIComponent(id)
+          }?format=metadata`,
+          accessToken,
+        );
+        const payload = asObject(detail.payload);
+        const headers = Array.isArray(payload.headers) ? payload.headers : [];
+        const headerMap: Record<string, string> = {};
+        for (const h of headers) {
+          const headerObj = asObject(h);
+          if (typeof headerObj.name === "string" && typeof headerObj.value === "string") {
+            headerMap[headerObj.name.toLowerCase()] = headerObj.value;
+          }
+        }
+        enrichedMessages.push({
+          id,
+          threadId: detail.threadId ?? msg.threadId ?? null,
+          subject: headerMap.subject ?? "(no subject)",
+          from: headerMap.from ?? "",
+          snippet: typeof detail.snippet === "string" ? detail.snippet : "",
+          internalDate: detail.internalDate ?? null,
+          labelIds: Array.isArray(detail.labelIds) ? detail.labelIds : [],
+        });
+      } catch {
+        enrichedMessages.push({
+          id,
+          threadId: msg.threadId ?? null,
+          subject: "(unavailable)",
+          from: "",
+          snippet: "",
+          internalDate: null,
+        });
+      }
+    }
     return {
-      result: out,
-      citations: (Array.isArray(out.messages) ? out.messages : []).slice(0, 5).map((m) => {
+      result: {
+        ...out,
+        messages: enrichedMessages,
+      },
+      citations: enrichedMessages.slice(0, 5).map((m) => {
         const msg = asObject(m);
         return toolCitation("gmail", String(msg.id ?? crypto.randomUUID()));
       }),
@@ -2325,7 +2396,7 @@ export async function syncTrigger(
       .eq("connector_id", params.connectorId)
       .eq("idempotency_key", params.idempotencyKey)
       .maybeSingle();
-    if (dedupe && String(dedupe.status) === "completed") {
+    if (dedupe) {
       return {
         run: dedupe as Record<string, unknown>,
         summary: asObject(dedupe.result_summary),
@@ -2343,7 +2414,29 @@ export async function syncTrigger(
     })
     .select("*")
     .single();
-  if (runErr || !run) throw runErr ?? new Error("Could not start sync run");
+  if (runErr) {
+    const isDuplicateIdempotency = params.idempotencyKey &&
+      typeof runErr === "object" &&
+      runErr !== null &&
+      "code" in runErr &&
+      String((runErr as { code?: unknown }).code) === "23505";
+    if (isDuplicateIdempotency) {
+      const { data: existing } = await supabase
+        .from("connector_sync_runs")
+        .select("*")
+        .eq("connector_id", params.connectorId)
+        .eq("idempotency_key", params.idempotencyKey)
+        .maybeSingle();
+      if (existing) {
+        return {
+          run: existing as Record<string, unknown>,
+          summary: asObject(existing.result_summary),
+        };
+      }
+    }
+    throw runErr;
+  }
+  if (!run) throw new Error("Could not start sync run");
   const runId = String(run.id);
   await appendSyncLog(supabase, runId, "info", `Starting ${providerLabel(connector.provider_key)} sync`);
 

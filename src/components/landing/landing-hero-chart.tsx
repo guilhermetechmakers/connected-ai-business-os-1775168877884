@@ -24,25 +24,25 @@ export function LandingHeroChart() {
         <AreaChart data={data} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
           <defs>
             <linearGradient id="landingHeroFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgb(154 208 255)" stopOpacity={0.35} />
-              <stop offset="100%" stopColor="rgb(154 208 255)" stopOpacity={0} />
+              <stop offset="0%" stopColor="rgb(var(--primary))" stopOpacity={0.35} />
+              <stop offset="100%" stopColor="rgb(var(--primary))" stopOpacity={0} />
             </linearGradient>
           </defs>
           <XAxis dataKey="t" stroke="rgb(143 160 176 / 0.5)" tickLine={false} axisLine={false} fontSize={10} />
           <YAxis hide domain={["dataMin - 5", "dataMax + 5"]} />
           <Tooltip
             contentStyle={{
-              background: "rgb(15 23 32)",
-              border: "1px solid rgb(21 78 120 / 0.4)",
+              background: "rgb(var(--card))",
+              border: "1px solid rgb(var(--border) / 0.8)",
               borderRadius: "8px",
               fontSize: "12px",
             }}
-            labelStyle={{ color: "rgb(247 250 255)" }}
+            labelStyle={{ color: "rgb(var(--foreground))" }}
           />
           <Area
             type="monotone"
             dataKey="v"
-            stroke="rgb(154 208 255)"
+            stroke="rgb(var(--primary))"
             strokeWidth={1.5}
             fill="url(#landingHeroFill)"
             isAnimationActive={false}

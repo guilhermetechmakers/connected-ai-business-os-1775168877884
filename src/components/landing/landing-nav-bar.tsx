@@ -27,7 +27,7 @@ export function LandingNavBar({ links, ctaPrimary, className }: LandingNavBarPro
   return (
     <header
       className={cn(
-        "sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md",
+        "sticky top-0 z-40 border-b border-border/60 bg-background/85 backdrop-blur-md dark:bg-[#0a0a0a]/90",
         className,
       )}
     >

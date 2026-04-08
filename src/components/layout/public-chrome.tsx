@@ -45,6 +45,7 @@ export function PublicChrome({
   children,
   footer,
   extendedMarketingFooter = false,
+  showGridBackground = false,
   className,
 }: {
   children: ReactNode;
@@ -52,6 +53,8 @@ export function PublicChrome({
   footer?: ReactNode;
   /** Use the full marketing footer with demo form (same as passing footer=&lt;FooterResources /&gt;). */
   extendedMarketingFooter?: boolean;
+  /** Adds the decorative grid overlay used on marketing home only. */
+  showGridBackground?: boolean;
   className?: string;
 }) {
   const resolvedFooter = extendedMarketingFooter ? (
@@ -61,7 +64,7 @@ export function PublicChrome({
   );
 
   return (
-    <div className={cn("grid-bg flex min-h-screen flex-col", className)}>
+    <div className={cn("flex min-h-screen flex-col", showGridBackground && "grid-bg", className)}>
       <LandingNavBar
         links={DEFAULT_PUBLIC_NAV_LINKS}
         ctaPrimary={{ label: "Get started", href: "/auth/signup-invite" }}

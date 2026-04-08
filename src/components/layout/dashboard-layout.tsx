@@ -153,7 +153,7 @@ export function DashboardLayout() {
   const tenantDomain = tenant?.domain ?? null;
 
   return (
-    <div className="grid-bg min-h-screen">
+    <div className="min-h-screen">
       <div className="flex min-h-screen">
         <aside
           className={cn(

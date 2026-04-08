@@ -44,7 +44,7 @@ export default function LandingPage() {
   }, [pricing]);
 
   return (
-    <PublicChrome extendedMarketingFooter>
+    <PublicChrome extendedMarketingFooter showGridBackground>
       <AnimatedPage>
         <main id="main-content">
           <LandingHero

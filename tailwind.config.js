@@ -64,9 +64,9 @@ export default {
       },
       boxShadow: {
         card:
-          "inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 0 0 1px rgb(21 78 120 / 0.08), 0 8px 32px rgb(0 0 0 / 0.35)",
+          "inset 0 1px 0 0 rgb(255 255 255 / 0.04), 0 0 0 1px rgb(63 63 70 / 0.2), 0 8px 32px rgb(0 0 0 / 0.35)",
         "card-hover":
-          "inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(154 208 255 / 0.12), 0 16px 48px rgb(0 0 0 / 0.45)",
+          "inset 0 1px 0 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(161 161 170 / 0.2), 0 16px 48px rgb(0 0 0 / 0.45)",
       },
       keyframes: {
         "accordion-down": {

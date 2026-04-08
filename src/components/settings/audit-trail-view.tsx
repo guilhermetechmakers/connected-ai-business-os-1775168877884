@@ -122,13 +122,13 @@ export function AuditTrailView() {
                   <YAxis tick={{ fill: "rgb(143 160 176)", fontSize: 11 }} allowDecimals={false} />
                   <Tooltip
                     contentStyle={{
-                      background: "rgb(15 23 32)",
-                      border: "1px solid rgb(21 78 120 / 0.3)",
+                      background: "rgb(var(--card))",
+                      border: "1px solid rgb(var(--border) / 0.7)",
                       borderRadius: 8,
                     }}
-                    labelStyle={{ color: "rgb(247 250 255)" }}
+                    labelStyle={{ color: "rgb(var(--foreground))" }}
                   />
-                  <Bar dataKey="count" fill="rgb(154 208 255)" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="count" fill="rgb(var(--primary))" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

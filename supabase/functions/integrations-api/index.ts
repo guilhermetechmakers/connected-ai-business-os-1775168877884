@@ -8,69 +8,25 @@ import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
 import { encryptCredentialsJson } from "../_shared/credentials-crypto.ts";
 import {
-  decryptCredentialsJson,
-  encryptCredentialsJson,
-} from "../_shared/credentials-crypto.ts";
-import { runProviderSyncStub } from "../_shared/provider-sync-stubs.ts";
-import { redactPayloadJson } from "../_shared/activity-log-redact.ts";
+  connectionTest,
+  enqueueConnectorEvent,
+  listProviderCatalog,
+  oauthCallback,
+  oauthStart,
+  syncTrigger,
+  toolsExecute,
+  toolsList,
+  type ProviderKey,
+} from "../_shared/integrations-runtime.ts";
 
-/** Static catalog — keep in sync with `src/lib/connector-registry.ts` provider keys. */
-const PROVIDER_CATALOG: {
-  id: string;
-  name: string;
-  description: string;
-  supportsOAuth: boolean;
-  supportsApiKey: boolean;
-}[] = [
-  {
-    id: "slack",
-    name: "Slack",
-    description:
-      "Post messages, ingest channel events, and attach conversations for AI retrieval.",
-    supportsOAuth: true,
-    supportsApiKey: true,
-  },
-  {
-    id: "google_drive",
-    name: "Google Drive",
-    description:
-      "Index files and metadata into unified Document entities for RAG and dashboards.",
-    supportsOAuth: true,
-    supportsApiKey: false,
-  },
-  {
-    id: "salesforce",
-    name: "Salesforce",
-    description:
-      "Sync Accounts, Contacts, Opportunities, and custom objects with CRUD where permitted.",
-    supportsOAuth: true,
-    supportsApiKey: false,
-  },
-  {
-    id: "gmail",
-    name: "Gmail",
-    description:
-      "Read, search, and send emails. The AI agent can summarize threads, draft replies, and trigger email-based automations.",
-    supportsOAuth: true,
-    supportsApiKey: false,
-  },
-  {
-    id: "hubspot",
-    name: "HubSpot",
-    description:
-      "Ingest contacts, companies, deals, and activities; push updates from workflows.",
-    supportsOAuth: true,
-    supportsApiKey: true,
-  },
-  {
-    id: "quickbooks",
-    name: "QuickBooks Online",
-    description:
-      "Sync customers, invoices, and ledger activity into unified finance entities.",
-    supportsOAuth: false,
-    supportsApiKey: true,
-  },
-];
+const providerKeySchema = z.enum([
+  "slack",
+  "google_drive",
+  "gmail",
+  "google_calendar",
+  "hubspot",
+  "quickbooks",
+]);
 
 const opSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("catalog.list") }),
@@ -176,6 +132,129 @@ function json(data: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+type LogLevel = "info" | "warn" | "error";
+
+function writeLog(level: LogLevel, event: string, fields: Record<string, unknown>) {
+  const entry = {
+    level,
+    event,
+    timestamp: new Date().toISOString(),
+    ...fields,
+  };
+  const message = JSON.stringify(entry);
+  if (level === "error") {
+    console.error(message);
+    return;
+  }
+  if (level === "warn") {
+    console.warn(message);
+    return;
+  }
+  console.log(message);
+}
+
+function summarizeRawRequestBody(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const body = raw as Record<string, unknown>;
+  const summary: Record<string, unknown> = {};
+  if (typeof body.op === "string") summary.op = body.op;
+  if (typeof body.connectorId === "string") summary.connectorId = body.connectorId;
+  if (typeof body.providerKey === "string") summary.providerKey = body.providerKey;
+  if (typeof body.toolId === "string") summary.toolId = body.toolId;
+  if (typeof body.eventType === "string") summary.eventType = body.eventType;
+  if (typeof body.externalEventId === "string") summary.externalEventId = body.externalEventId;
+  return summary;
+}
+
+function summarizeZodIssues(error: z.ZodError): unknown[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.join("."),
+    code: issue.code,
+    message: issue.message,
+  }));
+}
+
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack ?? null,
+    };
+  }
+  if (typeof error === "object" && error !== null) {
+    const objectError = error as Record<string, unknown>;
+    let serialized: string | null = null;
+    try {
+      serialized = JSON.stringify(objectError);
+    } catch {
+      serialized = null;
+    }
+    return {
+      type: Object.prototype.toString.call(error),
+      keys: Object.keys(objectError),
+      message: typeof objectError.message === "string" ? objectError.message : null,
+      name: typeof objectError.name === "string" ? objectError.name : null,
+      status: typeof objectError.status === "number" ? objectError.status : null,
+      code: typeof objectError.code === "string" ? objectError.code : null,
+      details: typeof objectError.details === "string" ? objectError.details : null,
+      hint: typeof objectError.hint === "string" ? objectError.hint : null,
+      serialized,
+    };
+  }
+  return {
+    type: typeof error,
+    value: String(error),
+  };
+}
+
+function truncateString(value: string, max = 500): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}...`;
+}
+
+async function summarizeResponseBody(response: Response): Promise<unknown> {
+  try {
+    const text = await response.clone().text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return truncateString(text);
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function logCompletedRequest(
+  opLog: Record<string, unknown>,
+  startedAt: number,
+  response: Response,
+): Promise<void> {
+  const durationMs = Date.now() - startedAt;
+  const base = {
+    ...opLog,
+    status: response.status,
+    durationMs,
+  };
+  if (response.status >= 500) {
+    writeLog("error", "integrations_api.request_failed", {
+      ...base,
+      response: await summarizeResponseBody(response),
+    });
+    return;
+  }
+  if (response.status >= 400) {
+    writeLog("warn", "integrations_api.request_failed", {
+      ...base,
+      response: await summarizeResponseBody(response),
+    });
+    return;
+  }
+  writeLog("info", "integrations_api.request_completed", base);
 }
 
 async function requireUser(
@@ -413,7 +492,7 @@ async function handleOp(
     }
     case "connection.test": {
       if (!masterKey) return json({ error: "Server missing CREDENTIALS_MASTER_KEY" }, 500);
-      const test = await runtimeConnectionTest(supabase, {
+      const test = await connectionTest(supabase, {
         companyId,
         connectorId: body.connectorId,
         masterKey,
@@ -422,7 +501,7 @@ async function handleOp(
     }
     case "sync.trigger": {
       if (!masterKey) return json({ error: "Server missing CREDENTIALS_MASTER_KEY" }, 500);
-      const result = await runtimeSyncTrigger(supabase, {
+      const result = await syncTrigger(supabase, {
         companyId,
         userId,
         connectorId: body.connectorId,
@@ -524,19 +603,55 @@ async function handleOp(
     }
     case "tools.execute": {
       if (!masterKey) return json({ error: "Server missing CREDENTIALS_MASTER_KEY" }, 500);
-      const result = await toolsExecute(supabase, {
+      const safeArgs = body.args && typeof body.args === "object"
+        ? Object.keys(body.args as Record<string, unknown>)
+        : [];
+      writeLog("info", "integrations_api.tools_execute_attempt", {
+        op: body.op,
         companyId,
         userId,
-        roles,
         toolId: body.toolId,
-        args: body.args ?? {},
         confirmed: body.confirmed === true,
-        conversationId: body.conversationId,
-        workflowRunId: body.workflowRunId,
-        source: "integrations_api",
-        masterKey,
+        conversationId: body.conversationId ?? null,
+        workflowRunId: body.workflowRunId ?? null,
+        argKeys: safeArgs,
       });
-      return json(result, result.pendingConfirmation ? 202 : 200);
+      try {
+        const result = await toolsExecute(supabase, {
+          companyId,
+          userId,
+          roles,
+          toolId: body.toolId,
+          args: body.args ?? {},
+          confirmed: body.confirmed === true,
+          conversationId: body.conversationId,
+          workflowRunId: body.workflowRunId,
+          source: "integrations_api",
+          masterKey,
+        });
+        writeLog("info", "integrations_api.tools_execute_success", {
+          op: body.op,
+          companyId,
+          userId,
+          toolId: body.toolId,
+          pendingConfirmation: result.pendingConfirmation === true,
+          providerKey: result.providerKey ?? null,
+          connectorId: result.connectorId ?? null,
+        });
+        return json(result, result.pendingConfirmation ? 202 : 200);
+      } catch (error) {
+        const err = serializeError(error);
+        const errMsg = String(err.message ?? "");
+        writeLog("error", "integrations_api.tools_execute_failed", {
+          op: body.op,
+          companyId,
+          userId,
+          toolId: body.toolId,
+          error: err,
+        });
+        const status = /not authorized|permission|forbidden/i.test(errMsg) ? 403 : 500;
+        return json({ error: errMsg || "Tool execution failed" }, status);
+      }
     }
     case "events.enqueue": {
       const enqueued = await enqueueConnectorEvent(supabase, companyId, {
@@ -559,39 +674,92 @@ async function handleOp(
 }
 
 serve(async (req) => {
+  const startedAt = Date.now();
+  const url = new URL(req.url);
+  const requestId = crypto.randomUUID();
+  const baseLog = {
+    requestId,
+    method: req.method,
+    path: url.pathname,
+  };
+
+  writeLog("info", "integrations_api.request_received", {
+    ...baseLog,
+    userAgent: req.headers.get("user-agent"),
+  });
+
   if (req.method === "OPTIONS") {
+    writeLog("info", "integrations_api.options", baseLog);
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
     const { supabase, userId } = await requireUser(req);
+    writeLog("info", "integrations_api.authenticated", {
+      ...baseLog,
+      userId,
+    });
+
     const raw = await req.json().catch(() => null);
+    const rawSummary = summarizeRawRequestBody(raw);
     const parsed = opSchema.safeParse(raw);
     if (!parsed.success) {
+      writeLog("warn", "integrations_api.invalid_body", {
+        ...baseLog,
+        userId,
+        body: rawSummary,
+        issues: summarizeZodIssues(parsed.error),
+      });
       return json({ error: "Invalid body", details: parsed.error.flatten() }, 400);
     }
+
     const profile = await loadProfile(supabase, userId);
     const adminOps = parsed.data.op === "admin.tenants" ||
       parsed.data.op === "admin.integrationOverview";
+    const opLog = {
+      ...baseLog,
+      userId,
+      op: parsed.data.op,
+      companyId: profile.company_id,
+    };
+
     if (adminOps) {
-      return await handleOp(
+      const response = await handleOp(
         supabase,
         userId,
         profile.company_id ?? "",
         profile.roles,
         parsed.data,
       );
+      await logCompletedRequest(opLog, startedAt, response);
+      return response;
     }
+
     assertCompany(profile.company_id);
-    return await handleOp(
+    const response = await handleOp(
       supabase,
       userId,
       profile.company_id,
       profile.roles,
       parsed.data,
     );
+    await logCompletedRequest(opLog, startedAt, response);
+    return response;
   } catch (e) {
-    if (e instanceof Response) return e;
+    if (e instanceof Response) {
+      writeLog(e.status >= 500 ? "error" : "warn", "integrations_api.response_error", {
+        ...baseLog,
+        status: e.status,
+        durationMs: Date.now() - startedAt,
+      });
+      return e;
+    }
+
+    writeLog("error", "integrations_api.unhandled_error", {
+      ...baseLog,
+      durationMs: Date.now() - startedAt,
+      error: serializeError(e),
+    });
     const message = e instanceof Error ? e.message : "Unknown error";
     return json({ error: message }, 500);
   }

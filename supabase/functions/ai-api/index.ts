@@ -9,6 +9,60 @@ import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
 import { toolsExecute, toolsList } from "../_shared/integrations-runtime.ts";
 
+type LogLevel = "info" | "warn" | "error";
+
+function writeLog(level: LogLevel, event: string, fields: Record<string, unknown>) {
+  const entry = {
+    level,
+    event,
+    timestamp: new Date().toISOString(),
+    ...fields,
+  };
+  const message = JSON.stringify(entry);
+  if (level === "error") {
+    console.error(message);
+    return;
+  }
+  if (level === "warn") {
+    console.warn(message);
+    return;
+  }
+  console.log(message);
+}
+
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack ?? null,
+    };
+  }
+  if (typeof error === "object" && error !== null) {
+    const objectError = error as Record<string, unknown>;
+    return {
+      type: Object.prototype.toString.call(error),
+      message: typeof objectError.message === "string" ? objectError.message : null,
+      code: typeof objectError.code === "string" ? objectError.code : null,
+      status: typeof objectError.status === "number" ? objectError.status : null,
+      keys: Object.keys(objectError),
+    };
+  }
+  return { type: typeof error, value: String(error) };
+}
+
+function summarizeRawBody(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const body = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof body.op === "string") out.op = body.op;
+  if (typeof body.conversationId === "string") out.conversationId = body.conversationId;
+  if (typeof body.mode === "string") out.mode = body.mode;
+  if (typeof body.actionId === "string") out.actionId = body.actionId;
+  if (typeof body.model === "string") out.model = body.model;
+  return out;
+}
+
 const citationSchema = z.object({
   source: z.string(),
   reference: z.string().optional(),
@@ -448,19 +502,19 @@ const AGENT_TOOLS = [
     function: {
       name: "query_integration",
       description:
-        "Query live data from a connected integration such as Slack, QuickBooks, Salesforce, HubSpot, Google Drive, or Gmail. Use this to fetch real business data before answering.",
+        "Query live data from a connected integration via provider tool calls. Use this before answering integration questions.",
       parameters: {
         type: "object",
         properties: {
           provider: {
             type: "string",
-            enum: ["slack", "quickbooks", "salesforce", "hubspot", "google_drive", "gmail"],
+            enum: ["gmail", "google_calendar"],
             description: "The integration to query.",
           },
           query_type: {
             type: "string",
             description:
-              "Type of data to fetch, e.g. 'messages', 'invoices', 'contacts', 'deals', 'emails', 'files'.",
+              "Type of data to fetch, e.g. 'messages', 'emails', 'calendar_events', 'meetings'.",
           },
           filters: {
             type: "object",
@@ -579,6 +633,24 @@ const AGENT_TOOLS = [
 
 type AgentToolArgs = Record<string, unknown>;
 
+function parseDateFilter(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function defaultTodayTomorrowWindow(): { timeMin: string; timeMax: string } {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  end.setHours(23, 59, 59, 999);
+  return { timeMin: start.toISOString(), timeMax: end.toISOString() };
+}
+
 // ── Agent Tool Executor ─────────────────────────────────────────────────────
 
 async function executeAgentTool(
@@ -587,65 +659,172 @@ async function executeAgentTool(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
+  userRoles: string[],
 ): Promise<string> {
   switch (toolName) {
     case "query_integration": {
-      const provider = String(args.provider ?? "");
-      const queryType = String(args.query_type ?? "");
+      const provider = String(args.provider ?? "").trim().toLowerCase();
       const filters = (args.filters as AgentToolArgs) ?? {};
       const limit = typeof filters.limit === "number" ? Math.min(Math.max(1, filters.limit), 50) : 20;
-      const search = typeof filters.search === "string" ? filters.search.toLowerCase() : "";
-
-      // Try indexed_documents first (most up-to-date synced data)
-      const { data: indexed } = await supabase
-        .from("indexed_documents")
-        .select("id, source_provider, title, snippet, full_text, metadata")
-        .eq("company_id", companyId)
-        .ilike("source_provider", `%${provider}%`)
-        .limit(limit);
-
-      const indexedList = Array.isArray(indexed) ? indexed : [];
-
-      // Also query unified_entities
-      const { data: entities } = await supabase
-        .from("unified_entities")
-        .select("id, entity_type, payload, source_references, updated_at")
-        .eq("company_id", companyId)
-        .eq("is_deleted", false)
-        .limit(limit);
-
-      const entityList = (Array.isArray(entities) ? entities : []).filter((e) => {
-        const refs = Array.isArray(e.source_references) ? e.source_references : [];
-        const payloadStr = JSON.stringify(e.payload ?? "").toLowerCase();
-        const providerMatch = refs.some((r: unknown) =>
-          typeof r === "string" && r.toLowerCase().includes(provider)
-        ) || refs.length === 0;
-        return providerMatch && (search === "" || payloadStr.includes(search));
-      });
-
-      const results: string[] = [];
-
-      for (const doc of indexedList.slice(0, 10)) {
-        const body = typeof doc.snippet === "string" && doc.snippet.trim()
-          ? doc.snippet
-          : typeof doc.full_text === "string"
-            ? doc.full_text.slice(0, 400)
-            : "";
-        if (body) results.push(`[${doc.source_provider}] ${doc.title}: ${body.slice(0, 400)}`);
+      const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+      const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      const runtimeSupabase = (supabaseUrl && serviceRoleKey)
+        ? createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } })
+        : supabase;
+      if (!masterKey) {
+        return "Live integration queries are unavailable because CREDENTIALS_MASTER_KEY is not configured.";
       }
 
-      for (const e of entityList.slice(0, 10)) {
-        const payload = typeof e.payload === "object"
-          ? JSON.stringify(e.payload).slice(0, 400)
-          : "";
-        if (payload) results.push(`[${e.entity_type}] ${payload}`);
+      if (provider === "gmail") {
+        const query = typeof filters.search === "string" && filters.search.trim()
+          ? filters.search.trim()
+          : "in:inbox";
+        writeLog("info", "ai_api.gmail_live_fetch_attempt", {
+          toolName,
+          companyId,
+          userId,
+          query,
+          limit: Math.min(limit, 10),
+        });
+        try {
+          const exec = await toolsExecute(runtimeSupabase, {
+            companyId,
+            userId,
+            roles: userRoles,
+            toolId: "gmail.search_messages",
+            args: { query, maxResults: Math.min(limit, 10) },
+            confirmed: true,
+            source: "ai_chat",
+            masterKey: masterKey,
+          });
+          const resultObj = (exec.result ?? {}) as Record<string, unknown>;
+          const messages = Array.isArray(resultObj.messages) ? resultObj.messages : [];
+          if (messages.length === 0) {
+            writeLog("warn", "ai_api.gmail_live_fetch_empty", {
+              toolName,
+              companyId,
+              userId,
+              query,
+            });
+            return `No Gmail messages found for query "${query}".`;
+          }
+          writeLog("info", "ai_api.gmail_live_fetch_success", {
+            toolName,
+            companyId,
+            userId,
+            query,
+            messageCount: messages.length,
+            connectorId: exec.connectorId ?? null,
+          });
+          const lines = messages.slice(0, 5).map((m, i) => {
+            const msg = (m ?? {}) as Record<string, unknown>;
+            const subject = typeof msg.subject === "string" ? msg.subject : "(no subject)";
+            const from = typeof msg.from === "string" ? msg.from : "unknown sender";
+            const snippet = typeof msg.snippet === "string" ? msg.snippet : "";
+            return `${i + 1}. Subject: ${subject}\n   From: ${from}\n   Snippet: ${snippet}`;
+          });
+          return `Latest Gmail messages:\n\n${lines.join("\n\n")}`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Gmail search failed";
+          writeLog("error", "ai_api.gmail_live_fetch_failed", {
+            toolName,
+            companyId,
+            userId,
+            query,
+            error: serializeError(e),
+          });
+          if (/not authorized|permission|forbidden|connector/i.test(msg.toLowerCase())) {
+            return "Gmail is connected but cannot be accessed right now. Please reconnect Gmail in Integrations and try again.";
+          }
+          return `Unable to fetch live Gmail data: ${msg}`;
+        }
       }
 
-      if (results.length === 0) {
-        return `No ${queryType} data found for ${provider}. The integration may not be connected or synced yet. Ask the user to connect ${provider} in Integrations settings.`;
+      if (provider === "google_calendar") {
+        const dateFrom = parseDateFilter(filters.date_from);
+        const dateTo = parseDateFilter(filters.date_to);
+        if (dateFrom && dateTo && new Date(dateTo).getTime() < new Date(dateFrom).getTime()) {
+          return "Invalid date range: filters.date_to must be greater than or equal to filters.date_from.";
+        }
+        const fallbackWindow = defaultTodayTomorrowWindow();
+        const timeMin = dateFrom ?? fallbackWindow.timeMin;
+        const timeMax = dateTo ?? fallbackWindow.timeMax;
+        writeLog("info", "ai_api.calendar_live_fetch_attempt", {
+          toolName,
+          companyId,
+          userId,
+          timeMin,
+          timeMax,
+          limit,
+        });
+        try {
+          const exec = await toolsExecute(runtimeSupabase, {
+            companyId,
+            userId,
+            roles: userRoles,
+            toolId: "google_calendar.list_events",
+            args: {
+              calendarId: "primary",
+              timeMin,
+              timeMax,
+              maxResults: limit,
+            },
+            confirmed: true,
+            source: "ai_chat",
+            masterKey: masterKey,
+          });
+          const resultObj = (exec.result ?? {}) as Record<string, unknown>;
+          const items = Array.isArray(resultObj.items) ? resultObj.items : [];
+          if (items.length === 0) {
+            return `No calendar events found between ${timeMin} and ${timeMax}.`;
+          }
+          const lines = items.slice(0, 10).map((item, index) => {
+            const eventObj = (item ?? {}) as Record<string, unknown>;
+            const summary = typeof eventObj.summary === "string" && eventObj.summary.trim()
+              ? eventObj.summary
+              : "(untitled)";
+            const status = typeof eventObj.status === "string" ? eventObj.status : "unknown";
+            const startObj = (typeof eventObj.start === "object" && eventObj.start !== null)
+              ? eventObj.start as Record<string, unknown>
+              : {};
+            const endObj = (typeof eventObj.end === "object" && eventObj.end !== null)
+              ? eventObj.end as Record<string, unknown>
+              : {};
+            const startValue = typeof startObj.dateTime === "string"
+              ? startObj.dateTime
+              : (typeof startObj.date === "string" ? startObj.date : "unscheduled");
+            const endValue = typeof endObj.dateTime === "string"
+              ? endObj.dateTime
+              : (typeof endObj.date === "string" ? endObj.date : "unscheduled");
+            return `${index + 1}. ${summary}\n   Start: ${startValue}\n   End: ${endValue}\n   Status: ${status}`;
+          });
+          writeLog("info", "ai_api.calendar_live_fetch_success", {
+            toolName,
+            companyId,
+            userId,
+            eventCount: items.length,
+            connectorId: exec.connectorId ?? null,
+          });
+          return `Calendar events between ${timeMin} and ${timeMax}:\n\n${lines.join("\n\n")}`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Calendar query failed";
+          writeLog("error", "ai_api.calendar_live_fetch_failed", {
+            toolName,
+            companyId,
+            userId,
+            timeMin,
+            timeMax,
+            error: serializeError(e),
+          });
+          if (/not authorized|permission|forbidden|connector|token|credential|scope/i.test(msg.toLowerCase())) {
+            return "Google Calendar cannot be accessed right now. Please reconnect or re-authorize Google Calendar in Integrations and try again.";
+          }
+          return `Unable to fetch live Google Calendar data: ${msg}`;
+        }
       }
 
-      return `Found ${results.length} ${queryType} record(s) from ${provider}:\n\n${results.join("\n\n")}`;
+      return `Live integration query is not implemented for provider "${provider}". Supported providers: gmail, google_calendar.`;
     }
 
     case "send_slack_message": {
@@ -804,12 +983,24 @@ async function executeAgentTool(
 }
 
 serve(async (req) => {
+  const startedAt = Date.now();
+  const url = new URL(req.url);
+  const requestId = crypto.randomUUID();
+  const baseLog = {
+    requestId,
+    method: req.method,
+    path: url.pathname,
+  };
+  writeLog("info", "ai_api.request_received", baseLog);
+
   if (req.method === "OPTIONS") {
+    writeLog("info", "ai_api.options", baseLog);
     return new Response("ok", { headers: corsHeaders });
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
+    writeLog("warn", "ai_api.missing_auth_header", baseLog);
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -827,6 +1018,10 @@ serve(async (req) => {
     error: authError,
   } = await supabase.auth.getUser();
   if (authError || !user) {
+    writeLog("warn", "ai_api.auth_failed", {
+      ...baseLog,
+      error: authError?.message ?? null,
+    });
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -837,6 +1032,10 @@ serve(async (req) => {
   try {
     raw = await req.json();
   } catch {
+    writeLog("warn", "ai_api.invalid_json", {
+      ...baseLog,
+      userId: user.id,
+    });
     return new Response(JSON.stringify({ error: "Invalid JSON" }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -845,8 +1044,17 @@ serve(async (req) => {
 
   const streamParsed = streamOpSchema.safeParse(raw);
   if (streamParsed.success) {
+    writeLog("info", "ai_api.stream_chat_received", {
+      ...baseLog,
+      userId: user.id,
+      body: summarizeRawBody(streamParsed.data),
+    });
     const apiKey = Deno.env.get("OPENAI_API_KEY");
     if (!apiKey) {
+      writeLog("error", "ai_api.missing_openai_key", {
+        ...baseLog,
+        userId: user.id,
+      });
       return new Response(JSON.stringify({ error: "Server misconfigured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -866,7 +1074,7 @@ serve(async (req) => {
     const body = streamParsed.data;
     const workspaceId = body.workspaceId ?? "global";
     const model = body.model ?? "gpt-4o";
-    const permittedForStream = permittedActionsForRoles(userRoles);
+    const permittedForStream = await permittedActionsForRoles(supabase, companyId, userRoles);
     const streamSuggested = suggestedActionsForMode(body.mode, permittedForStream);
 
     const { data: conv, error: convErr } = await supabase
@@ -1038,6 +1246,7 @@ serve(async (req) => {
                   supabase,
                   companyId,
                   user.id,
+                  userRoles,
                 );
 
                 // Audit log
@@ -1158,6 +1367,12 @@ serve(async (req) => {
 
   const parsed = jsonOpSchema.safeParse(raw);
   if (!parsed.success) {
+    writeLog("warn", "ai_api.invalid_body", {
+      ...baseLog,
+      userId: user.id,
+      body: summarizeRawBody(raw),
+      issues: parsed.error.flatten(),
+    });
     return new Response(JSON.stringify({ error: "Invalid body", issues: parsed.error.flatten() }), {
       status: 400,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1167,6 +1382,11 @@ serve(async (req) => {
   const op = parsed.data;
   const { profile, error: pErr } = await getProfile(supabase, user.id);
   if (pErr || !profile?.company_id) {
+    writeLog("warn", "ai_api.profile_not_ready", {
+      ...baseLog,
+      userId: user.id,
+      error: pErr ?? null,
+    });
     return new Response(JSON.stringify({ error: "Profile not ready" }), {
       status: 403,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1174,6 +1394,13 @@ serve(async (req) => {
   }
   const companyId = profile.company_id;
   const userRoles = normalizeRoles(profile.roles);
+  writeLog("info", "ai_api.op_received", {
+    ...baseLog,
+    userId: user.id,
+    companyId,
+    op: op.op,
+    body: summarizeRawBody(op),
+  });
 
   try {
     switch (op.op) {
@@ -1887,6 +2114,12 @@ serve(async (req) => {
         });
     }
   } catch (e) {
+    writeLog("error", "ai_api.unhandled_error", {
+      ...baseLog,
+      userId: user.id,
+      durationMs: Date.now() - startedAt,
+      error: serializeError(e),
+    });
     const message = e instanceof Error ? e.message : "Server error";
     return new Response(JSON.stringify({ error: message }), {
       status: 500,

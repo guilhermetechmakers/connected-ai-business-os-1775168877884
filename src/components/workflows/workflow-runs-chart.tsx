@@ -54,16 +54,16 @@ export function WorkflowRunsChart({ runs }: WorkflowRunsChartProps) {
           />
           <Tooltip
             contentStyle={{
-              backgroundColor: "rgb(15 23 32)",
-              border: "1px solid rgb(21 78 120 / 0.35)",
+              backgroundColor: "rgb(var(--card))",
+              border: "1px solid rgb(var(--border) / 0.7)",
               borderRadius: "12px",
-              color: "rgb(247 250 255)",
+              color: "rgb(var(--foreground))",
             }}
-            labelStyle={{ color: "rgb(154 208 255)" }}
+            labelStyle={{ color: "rgb(var(--primary))" }}
           />
           <Bar
             dataKey="count"
-            fill="rgb(154 208 255)"
+            fill="rgb(var(--primary))"
             radius={[6, 6, 0, 0]}
             maxBarSize={36}
           />

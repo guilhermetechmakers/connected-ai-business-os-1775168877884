@@ -21,6 +21,7 @@ export function ConversationPanel({
   isStreaming,
   streamingText,
   liveCitations,
+  liveToolCalls,
   input,
   onInputChange,
   onSend,
