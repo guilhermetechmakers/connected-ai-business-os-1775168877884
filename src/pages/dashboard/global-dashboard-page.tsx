@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { DashboardFrameworkShell } from "@/components/dashboard/dashboard-framework-shell";
 import { AIWorkspaceAccessBridge } from "@/components/global-dashboard/ai-workspace-access-bridge";
@@ -15,8 +15,15 @@ import { useAuth } from "@/contexts/auth-context";
 
 export default function GlobalDashboardPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { profile, tenant, demoSession } = useAuth();
   const profileRoles = Array.isArray(profile?.roles) ? profile.roles : [];
+  const layoutName = (() => {
+    const raw = searchParams.get("layout");
+    if (!raw) return "Default";
+    const clean = raw.trim().slice(0, 120);
+    return clean.length > 0 ? clean : "Default";
+  })();
 
   const [rolePreview, setRolePreview] = useState<RolePreviewMode>("actual");
   const [dateRange, setDateRange] = useState(() => buildDateRangePreset("7d"));
@@ -58,6 +65,7 @@ export default function GlobalDashboardPage() {
   return (
     <DashboardFrameworkShell
       kind="global"
+      layoutName={layoutName}
       title="Global dashboard"
       description="Aggregated KPIs, alerts, and quick actions across connected systems — scoped to your tenant and role. Drag widgets while editing; changes debounce-save to your layout."
       omitHeader

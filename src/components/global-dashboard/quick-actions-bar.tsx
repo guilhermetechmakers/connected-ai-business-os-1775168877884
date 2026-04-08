@@ -32,7 +32,7 @@ export function QuickActionsBar({ className }: QuickActionsBarProps) {
         className="gap-2 rounded-full border-border/70 transition-transform duration-150 hover:scale-[1.02] motion-reduce:hover:scale-100"
         asChild
       >
-        <Link to="/dashboard/ai">
+        <Link to="/chat">
           <Bot className="h-4 w-4" aria-hidden />
           Open AI assistant
         </Link>

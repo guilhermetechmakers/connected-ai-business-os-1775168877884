@@ -1,4 +1,61 @@
 export type AiChatMode = "Ask" | "Analyze" | "Report" | "Action";
+export type AiConversationExecutionMode = "confirm" | "auto";
+
+export type AiDashboardArtifactLayoutSnapshot = {
+  payloadVersion: number;
+  layout: {
+    id: string;
+    name: string;
+    dashboardKind: "global" | "executive";
+    layoutJson: Record<string, unknown>;
+  };
+  widgets: Array<{
+    id: string;
+    widgetType: string;
+    widgetDefinitionId?: string | null;
+    config?: Record<string, unknown>;
+    isVisible?: boolean;
+  }>;
+  widgetConfigs?: Record<string, Record<string, unknown>>;
+  focus?: string | null;
+  widgetTypes?: string[];
+  reused?: boolean;
+};
+
+export type AiChatArtifact =
+  | {
+      id: string;
+      type: "dashboard";
+      title: string;
+      dashboardKind?: string;
+      layoutId?: string;
+      route?: string;
+      payload?: Record<string, unknown> | AiDashboardArtifactLayoutSnapshot;
+      createdAt?: string;
+    }
+  | {
+      id: string;
+      type: "report";
+      title: string;
+      reportId?: string;
+      route?: string;
+      payload?: Record<string, unknown>;
+      createdAt?: string;
+    }
+  | {
+      id: string;
+      type: "pdf";
+      title: string;
+      reportId?: string;
+      exportJobId?: string;
+      route?: string;
+      fileName?: string;
+      mimeType?: string;
+      storagePath?: string;
+      downloadUrl?: string;
+      payload?: Record<string, unknown>;
+      createdAt?: string;
+    };
 
 /** RAG / provenance citation (stored in `ai_messages.citations` JSONB). */
 export type AiSourceCitation = {
@@ -14,6 +71,7 @@ export type AiSourceCitation = {
 export type AiConversationRow = {
   id: string;
   mode: AiChatMode;
+  execution_mode?: AiConversationExecutionMode;
   title: string | null;
   created_at: string;
   updated_at: string;
@@ -24,6 +82,7 @@ export type AiMessageRow = {
   role: "user" | "assistant" | "system";
   content: string;
   citations: AiSourceCitation[] | null;
+  artifacts?: AiChatArtifact[] | null;
   token_usage: Record<string, unknown> | null;
   created_at: string;
 };
@@ -36,7 +95,7 @@ export type AiPromptTemplateRow = {
   template_text: string;
   slots: unknown;
   is_active: boolean;
-  /** DB column `workspace_mode` — maps to AI Workspace mode tabs. */
+  /** DB column `workspace_mode` - maps to AI chat mode tabs. */
   workspace_mode?: AiChatMode;
   version?: number;
 };
@@ -47,6 +106,10 @@ export type AiPermittedAction = {
   requiresConfirmation: boolean;
   providerKey?: string;
   accessLevel?: "read" | "write";
+  domain?: string;
+  toolSource?: "integration" | "app";
+  adapterTarget?: string;
+  argsSchema?: Record<string, unknown>;
 };
 
 export type AiActionExecutionResult = {
@@ -57,6 +120,7 @@ export type AiActionExecutionResult = {
   preview?: Record<string, unknown>;
   result?: Record<string, unknown>;
   citations?: AiSourceCitation[];
+  artifacts?: AiChatArtifact[];
 };
 
 export type AiModeDiagnosticResult = {
@@ -123,6 +187,21 @@ export type AiStreamEvent =
   | { c: string }
   | { tool_call: { id: string; name: string; args?: Record<string, unknown> } }
   | { tool_result: { id: string; name: string; preview: string } }
+  | {
+      pending_confirmation: {
+        actionId: string;
+        label: string;
+        preview?: Record<string, unknown>;
+      };
+    }
+  | {
+      pendingConfirmation: {
+        actionId: string;
+        label: string;
+        preview?: Record<string, unknown>;
+      };
+    }
+  | { artifact: AiChatArtifact }
   | { suggestedActions: (AiPermittedAction | string)[] }
   | { done: true; usage?: Record<string, unknown> }
   | { error: string };

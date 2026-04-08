@@ -6,6 +6,7 @@ import {
   fetchAiContexts,
   fetchAiDashboardSummary,
   fetchAiPermissions,
+  fetchAiToolsCatalog,
   runAiToolsDiagnostics,
   fetchWorkspaceDocuments,
   getAiConversation,
@@ -15,7 +16,7 @@ import {
   upsertPromptTemplate,
 } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import type { AiChatMode, AiConversationRow } from "@/types/ai";
+import type { AiChatMode, AiConversationExecutionMode, AiConversationRow } from "@/types/ai";
 
 export const aiQueryKeys = {
   root: ["ai"] as const,
@@ -23,6 +24,7 @@ export const aiQueryKeys = {
   conversation: (id: string) => [...aiQueryKeys.root, "conversation", id] as const,
   templates: () => [...aiQueryKeys.root, "templates"] as const,
   permissions: () => [...aiQueryKeys.root, "permissions"] as const,
+  toolsCatalog: () => [...aiQueryKeys.root, "toolsCatalog"] as const,
   dashboardSummary: () => [...aiQueryKeys.root, "dashboardSummary"] as const,
   diagnostics: () => [...aiQueryKeys.root, "diagnostics"] as const,
   workspaceDocuments: (sourceFilter: string) =>
@@ -88,6 +90,14 @@ export function useAiActionPermissions() {
   });
 }
 
+export function useAiToolsCatalog() {
+  return useQuery({
+    queryKey: aiQueryKeys.toolsCatalog(),
+    queryFn: () => fetchAiToolsCatalog(),
+    enabled: isSupabaseConfigured,
+  });
+}
+
 export function useAiDashboardSummary() {
   return useQuery({
     queryKey: aiQueryKeys.dashboardSummary(),
@@ -109,7 +119,7 @@ export function useCreateAiConversation() {
   return useMutation<
     AiConversationRow,
     Error,
-    { mode?: AiChatMode; title?: string } | undefined
+    { mode?: AiChatMode; title?: string; executionMode?: AiConversationExecutionMode } | undefined
   >({
     mutationFn: (params): Promise<AiConversationRow> => createAiConversation(params),
     onSuccess: () => {
@@ -123,7 +133,11 @@ export function useUpdateAiConversation() {
   return useMutation({
     mutationFn: (params: {
       conversationId: string;
-      patch: { mode?: AiChatMode; title?: string };
+      patch: {
+        mode?: AiChatMode;
+        title?: string;
+        executionMode?: AiConversationExecutionMode;
+      };
     }) => updateAiConversation(params.conversationId, params.patch),
     onSuccess: (_, v) => {
       void qc.invalidateQueries({ queryKey: aiQueryKeys.conversations() });

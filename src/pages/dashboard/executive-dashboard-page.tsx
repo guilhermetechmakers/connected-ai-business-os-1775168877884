@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { DashboardFrameworkShell } from "@/components/dashboard/dashboard-framework-shell";
 import { ExecutiveDashboardHero, ExportScheduleBar } from "@/components/executive-dashboard";
@@ -32,8 +33,15 @@ const EMPTY_SNAPSHOT: ExecutiveDashboardSnapshot = {
 };
 
 export default function ExecutiveDashboardPage() {
+  const [searchParams] = useSearchParams();
   const { profile, tenant, demoSession } = useAuth();
   const profileRoles = Array.isArray(profile?.roles) ? profile.roles : [];
+  const layoutName = (() => {
+    const raw = searchParams.get("layout");
+    if (!raw) return "Default";
+    const clean = raw.trim().slice(0, 120);
+    return clean.length > 0 ? clean : "Default";
+  })();
 
   const [rolePreview, setRolePreview] = useState<RolePreviewMode>("actual");
   const [dateRange, setDateRange] = useState<DashboardDateRange>(() => buildDateRangePreset("7d"));
@@ -90,6 +98,7 @@ export default function ExecutiveDashboardPage() {
   return (
     <DashboardFrameworkShell
       kind="executive"
+      layoutName={layoutName}
       title="Executive dashboard"
       description="Top-line KPIs, risk scoreboard, AI executive brief, and cross-department heatmap — tenant and role aware."
       omitHeader

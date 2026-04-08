@@ -18,6 +18,7 @@ import type { DashboardKind, DashboardLayoutJson, DataAdapterContext } from "@/t
 
 export type DashboardFrameworkShellProps = {
   kind: DashboardKind;
+  layoutName?: string;
   title: string;
   description: string;
   headerActions?: ReactNode;
@@ -36,6 +37,7 @@ export type DashboardFrameworkShellProps = {
 
 export function DashboardFrameworkShell({
   kind,
+  layoutName = "Default",
   title,
   description,
   headerActions,
@@ -73,7 +75,10 @@ export function DashboardFrameworkShell({
   );
 
   const defsQ = useDashboardDefinitions();
-  const { layoutJson: remoteLayout, layoutId, persist, layoutQuery } = useDashboardLayoutModel(kind);
+  const { layoutJson: remoteLayout, layoutId, persist, layoutQuery } = useDashboardLayoutModel(
+    kind,
+    layoutName,
+  );
 
   const definitions = useMemo(() => {
     const raw = defsQ.data ?? [];

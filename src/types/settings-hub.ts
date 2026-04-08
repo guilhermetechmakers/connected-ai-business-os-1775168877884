@@ -7,7 +7,7 @@ export const SETTINGS_PERMISSION_CATALOG: { key: string; label: string }[] = [
   { key: "integrations.read", label: "View integrations" },
   { key: "integrations.write", label: "Manage integrations & credentials" },
   { key: "workflows.run", label: "Run workflows" },
-  { key: "ai.workspace.use", label: "Use AI workspace" },
+  { key: "ai.workspace.use", label: "Use AI chat" },
   { key: "ai.actions.execute", label: "Execute AI-suggested actions" },
   { key: "reports.export", label: "Export reports" },
   { key: "audit.read", label: "View audit trails" },

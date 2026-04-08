@@ -19,7 +19,7 @@ export function AIAndSecuritySettings() {
             AI governance
           </CardTitle>
           <CardDescription>
-            Grounding, action gating, and model access for the AI Workspace. Tenant-scoped RAG and prompts
+            Grounding, action gating, and model access for the AI chat. Tenant-scoped RAG and prompts
             remain enforced by Edge Functions.
           </CardDescription>
         </CardHeader>

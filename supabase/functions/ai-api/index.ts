@@ -58,6 +58,7 @@ function summarizeRawBody(raw: unknown): Record<string, unknown> {
   if (typeof body.op === "string") out.op = body.op;
   if (typeof body.conversationId === "string") out.conversationId = body.conversationId;
   if (typeof body.mode === "string") out.mode = body.mode;
+  if (typeof body.executionMode === "string") out.executionMode = body.executionMode;
   if (typeof body.actionId === "string") out.actionId = body.actionId;
   if (typeof body.model === "string") out.model = body.model;
   return out;
@@ -80,6 +81,7 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     op: z.literal("conversations.create"),
     mode: z.enum(["Ask", "Analyze", "Report", "Action"]).optional(),
     title: z.string().max(200).optional(),
+    executionMode: z.enum(["confirm", "auto"]).optional(),
   }),
   z.object({
     op: z.literal("conversations.get"),
@@ -94,6 +96,7 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     conversationId: z.string().uuid(),
     mode: z.enum(["Ask", "Analyze", "Report", "Action"]).optional(),
     title: z.string().max(200).optional(),
+    executionMode: z.enum(["confirm", "auto"]).optional(),
   }),
   z.object({
     op: z.literal("messages.add"),
@@ -101,6 +104,7 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     role: z.enum(["user", "assistant", "system"]),
     content: z.string().min(0).max(32000),
     citations: z.array(citationSchema).optional(),
+    artifacts: z.array(z.record(z.unknown())).optional(),
     tokenUsage: z.record(z.unknown()).optional(),
   }),
   z.object({
@@ -133,6 +137,9 @@ const jsonOpSchema = z.discriminatedUnion("op", [
   }),
   z.object({
     op: z.literal("actions.permissions"),
+  }),
+  z.object({
+    op: z.literal("tools.catalog"),
   }),
   z.object({
     op: z.literal("actions.execute"),
@@ -182,6 +189,7 @@ const streamOpSchema = z.object({
   conversationId: z.string().uuid(),
   userMessage: z.string().min(1).max(32000),
   mode: z.enum(["Ask", "Analyze", "Report", "Action"]),
+  executionMode: z.enum(["confirm", "auto"]).optional().default("confirm"),
   model: z.string().optional(),
   workspaceId: z.string().max(120).optional().default("global"),
 });
@@ -190,14 +198,350 @@ type ProfileRow = { company_id: string | null; roles: string[] | null; departmen
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const EMBEDDING_DIM = 1536;
+const REPORT_EXPORT_BUCKET = "report-exports";
+const REPORT_EXPORT_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
+
+type AiProviderType = "openai" | "anthropic";
+
+type AiProviderToolCall = {
+  id: string;
+  type: string;
+  function: { name: string; arguments: string };
+};
+
+type AiProviderChatResponse = {
+  choices?: {
+    message?: {
+      role?: string;
+      content?: string | null;
+      tool_calls?: AiProviderToolCall[];
+    };
+    finish_reason?: string;
+  }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+};
+
+type AiProviderEmbeddingsResponse = {
+  data?: Array<{ embedding?: number[] }>;
+};
+
+type AiProviderChatRequest = {
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  tools?: unknown;
+  tool_choice?: "auto" | "none" | Record<string, unknown>;
+  response_format?: { type: "json_object" };
+};
+
+type AiProviderAdapter = {
+  type: AiProviderType;
+  chatCompletions: (payload: AiProviderChatRequest) => Promise<AiProviderChatResponse>;
+  createEmbeddings: (payload: { model: string; input: string | string[] }) => Promise<AiProviderEmbeddingsResponse>;
+};
+
+function configuredProviderType(): AiProviderType {
+  const raw = (Deno.env.get("AI_MODEL_PROVIDER") ?? "openai").trim().toLowerCase();
+  return raw === "anthropic" || raw === "claude" ? "anthropic" : "openai";
+}
+
+function defaultModelForProvider(providerType: AiProviderType): string {
+  return providerType === "openai" ? "gpt-4o" : "claude-3-5-sonnet-latest";
+}
+
+function resolveModelProvider(): {
+  providerType: AiProviderType;
+  adapter: AiProviderAdapter | null;
+  error: string | null;
+} {
+  const providerType = configuredProviderType();
+  if (providerType !== "openai") {
+    return {
+      providerType,
+      adapter: null,
+      error: `Provider "${providerType}" is configured but not enabled yet. Set AI_MODEL_PROVIDER=openai.`,
+    };
+  }
+
+  const apiKey = Deno.env.get("OPENAI_API_KEY");
+  if (!apiKey) {
+    return {
+      providerType,
+      adapter: null,
+      error: "OPENAI_API_KEY is not configured",
+    };
+  }
+
+  const openAiAdapter: AiProviderAdapter = {
+    type: "openai",
+    chatCompletions: async (payload) => {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`LLM error (${res.status}): ${detail.slice(0, 300)}`);
+      }
+      return await res.json() as AiProviderChatResponse;
+    },
+    createEmbeddings: async (payload) => {
+      const res = await fetch("https://api.openai.com/v1/embeddings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`Embedding error (${res.status}): ${detail.slice(0, 300)}`);
+      }
+      return await res.json() as AiProviderEmbeddingsResponse;
+    },
+  };
+
+  return {
+    providerType,
+    adapter: openAiAdapter,
+    error: null,
+  };
+}
 
 type AiToolPermission = {
   id: string;
   label: string;
   requiresConfirmation: boolean;
-  providerKey: string;
+  providerKey?: string;
+  domain: string;
+  toolSource: "integration" | "app";
+  adapterTarget: string;
+  argsSchema: Record<string, unknown>;
   accessLevel: "read" | "write";
 };
+
+type AppActionDefinition = {
+  id: string;
+  label: string;
+  domain: string;
+  description: string;
+  accessLevel: "read" | "write";
+  requiresConfirmation: boolean;
+  argsSchema: Record<string, unknown>;
+  adapterTarget: string;
+};
+
+const APP_ACTIONS: AppActionDefinition[] = [
+  {
+    id: "app.workflows.list",
+    label: "Workflows: list",
+    domain: "workflows",
+    description: "List workflows in this tenant.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?", status: "string?" },
+    adapterTarget: "workflows-api",
+  },
+  {
+    id: "app.workflows.create",
+    label: "Workflows: create",
+    domain: "workflows",
+    description: "Create a new workflow/automation.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { name: "string", definition: "object?", status: "string?" },
+    adapterTarget: "workflows-api",
+  },
+  {
+    id: "app.modules.list",
+    label: "Modules: list",
+    domain: "modules",
+    description: "List internal modules.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?", search: "string?" },
+    adapterTarget: "modules-api",
+  },
+  {
+    id: "app.modules.create",
+    label: "Modules: create",
+    domain: "modules",
+    description: "Create a module.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { name: "string", description: "string?", status: "string?" },
+    adapterTarget: "modules-api",
+  },
+  {
+    id: "app.departments.list",
+    label: "Departments: list",
+    domain: "departments",
+    description: "List departments/workspaces.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?" },
+    adapterTarget: "department-workspace-api",
+  },
+  {
+    id: "app.departments.create",
+    label: "Departments: create",
+    domain: "departments",
+    description: "Create a department workspace.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { name: "string", departmentType: "string?" },
+    adapterTarget: "department-workspace-api",
+  },
+  {
+    id: "app.reports.list",
+    label: "Reports: list",
+    domain: "reports",
+    description: "List reports.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?", search: "string?" },
+    adapterTarget: "reports-center-api",
+  },
+  {
+    id: "app.reports.create",
+    label: "Reports: create",
+    domain: "reports",
+    description: "Create a report.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { name: "string", description: "string?", status: "draft|active|archived?" },
+    adapterTarget: "reports-center-api",
+  },
+  {
+    id: "app.reports.export_pdf",
+    label: "Reports: export PDF",
+    domain: "reports",
+    description: "Generate a PDF export for a report.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { reportId: "uuid", fileName: "string?" },
+    adapterTarget: "reports-center-api",
+  },
+  {
+    id: "app.dashboards.list",
+    label: "Dashboards: list",
+    domain: "dashboards",
+    description: "List dashboard layouts.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { dashboardKind: "global|executive?" },
+    adapterTarget: "dashboard-api",
+  },
+  {
+    id: "app.dashboards.create_layout",
+    label: "Dashboards: create layout",
+    domain: "dashboards",
+    description: "Ensure dashboard layout exists.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: {
+      dashboardKind: "global|executive",
+      name: "string?",
+      focus: "string?",
+      reuseIfExists: "boolean?",
+    },
+    adapterTarget: "dashboard-api",
+  },
+  {
+    id: "app.knowledge_base.list",
+    label: "Knowledge base: list",
+    domain: "knowledge_base",
+    description: "List indexed knowledge base documents.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?", sourceFilter: "string?" },
+    adapterTarget: "search-api",
+  },
+  {
+    id: "app.knowledge_base.add_text",
+    label: "Knowledge base: add text",
+    domain: "knowledge_base",
+    description: "Create a knowledge base text document.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { title: "string", text: "string", sourceProvider: "string?" },
+    adapterTarget: "search-api",
+  },
+  {
+    id: "app.integrations.list",
+    label: "Integrations: list",
+    domain: "integrations",
+    description: "List configured integrations/connectors.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: {},
+    adapterTarget: "integrations-api",
+  },
+  {
+    id: "app.integrations.create",
+    label: "Integrations: create connector",
+    domain: "integrations",
+    description: "Create a connector shell for a provider.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { providerKey: "string", displayName: "string?" },
+    adapterTarget: "integrations-api",
+  },
+  {
+    id: "app.settings.flags.list",
+    label: "Settings: list feature flags",
+    domain: "settings",
+    description: "List tenant feature flags.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: {},
+    adapterTarget: "settings-api",
+  },
+  {
+    id: "app.settings.flags.upsert",
+    label: "Settings: upsert feature flag",
+    domain: "settings",
+    description: "Update a tenant feature flag.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { flagKey: "string", enabled: "boolean", rollout: "number?" },
+    adapterTarget: "settings-api",
+  },
+  {
+    id: "app.notifications.list",
+    label: "Notifications: list",
+    domain: "notifications",
+    description: "List notifications.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { limit: "number?", status: "string?" },
+    adapterTarget: "notifications-api",
+  },
+  {
+    id: "app.notifications.create_rule",
+    label: "Notifications: create alert rule",
+    domain: "notifications",
+    description: "Create an alert rule.",
+    accessLevel: "write",
+    requiresConfirmation: true,
+    argsSchema: { name: "string", condition: "object", channels: "array" },
+    adapterTarget: "notifications-api",
+  },
+  {
+    id: "app.search.query",
+    label: "Search: query",
+    domain: "search",
+    description: "Run unified search for entities/documents.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: { query: "string", limit: "number?" },
+    adapterTarget: "search-api",
+  },
+];
 
 function normalizeRoles(roles: string[] | null | undefined): string[] {
   const r = Array.isArray(roles) ? roles : [];
@@ -215,13 +559,32 @@ async function permittedActionsForRoles(
   userRoles: string[],
 ): Promise<AiToolPermission[]> {
   const list = await toolsList(supabase, { companyId, roles: userRoles });
-  return list.map((t) => ({
+  const integrationActions = list.map((t) => ({
     id: t.id,
     label: t.label,
     requiresConfirmation: t.requiresConfirmation,
     providerKey: t.providerKey,
+    domain: "integrations",
+    toolSource: "integration" as const,
+    adapterTarget: "integrations-runtime",
+    argsSchema: {},
     accessLevel: t.accessLevel,
   }));
+  const canWrite = isElevatedRole(userRoles);
+  const appActions = APP_ACTIONS
+    .filter((a) => (a.accessLevel === "write" ? canWrite : true))
+    .map((a) => ({
+      id: a.id,
+      label: a.label,
+      requiresConfirmation: a.requiresConfirmation,
+      providerKey: undefined,
+      domain: a.domain,
+      toolSource: "app" as const,
+      adapterTarget: a.adapterTarget,
+      argsSchema: a.argsSchema,
+      accessLevel: a.accessLevel,
+    }));
+  return [...integrationActions, ...appActions];
 }
 
 function canEditPromptTemplates(userRoles: string[]) {
@@ -254,9 +617,1187 @@ function suggestedActionsForMode(
   return permitted.slice(0, 3).map((p) => p.id);
 }
 
+function summarizeArgsSchema(argsSchema: Record<string, unknown>): string {
+  const entries = Object.entries(argsSchema ?? {});
+  if (entries.length === 0) return "none";
+  return entries.slice(0, 8).map(([key, value]) => `${key}:${String(value)}`).join(", ");
+}
+
+function buildPermittedAppActionsPromptBlock(permitted: AiToolPermission[]): string {
+  const appActions = permitted
+    .filter((tool) => tool.toolSource === "app")
+    .sort((a, b) => {
+      if (a.accessLevel === b.accessLevel) return a.id.localeCompare(b.id);
+      return a.accessLevel === "write" ? 1 : -1;
+    });
+
+  if (appActions.length === 0) return "- none";
+
+  return appActions
+    .map((tool) =>
+      `- ${tool.id} [${tool.accessLevel}] domain=${tool.domain} adapter=${tool.adapterTarget} args={${summarizeArgsSchema(tool.argsSchema)}}`
+    )
+    .join("\n");
+}
+
+function inferDashboardKindFromText(text: string): "global" | "executive" {
+  const lower = text.toLowerCase();
+  if (/\b(executive|leadership|board|c-suite|c suite|ceo|cfo)\b/.test(lower)) {
+    return "executive";
+  }
+  return "global";
+}
+
+function normalizeDashboardCreateArgs(
+  rawArgs: Record<string, unknown>,
+  userMessage: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...rawArgs };
+  const currentFocus = typeof next.focus === "string" && next.focus.trim().length > 0
+    ? next.focus.trim()
+    : userMessage.trim();
+  next.focus = currentFocus;
+
+  if (!(typeof next.name === "string" && next.name.trim().length > 0)) {
+    next.name = deriveDashboardBaseName(null, currentFocus);
+  }
+  if (!(next.dashboardKind === "global" || next.dashboardKind === "executive")) {
+    next.dashboardKind = inferDashboardKindFromText(userMessage);
+  }
+  if (typeof next.reuseIfExists !== "boolean") {
+    const asksReuse = /\b(reuse|use existing|existing dashboard|same dashboard)\b/i.test(userMessage);
+    next.reuseIfExists = asksReuse;
+  }
+  return next;
+}
+
 function isElevatedRole(userRoles: string[]): boolean {
   const r = new Set(normalizeRoles(userRoles));
   return ["admin", "manager", "owner", "company admin", "executive"].some((x) => r.has(x));
+}
+
+type UnifiedActionExecution = {
+  ok: boolean;
+  pendingConfirmation?: boolean;
+  preview?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  citations?: Array<Record<string, unknown>>;
+  artifacts?: Array<Record<string, unknown>>;
+  providerKey?: string;
+};
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function normalizeLimit(value: unknown, fallback = 20, max = 100): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
+}
+
+function toIsoNow() {
+  return new Date().toISOString();
+}
+
+function citationForDomain(
+  domain: string,
+  reference: string,
+  snippet?: string,
+): Record<string, unknown> {
+  return {
+    source: `app:${domain}`,
+    reference,
+    snippet: snippet ?? "",
+    retrievedAt: toIsoNow(),
+  };
+}
+
+function escapePdfText(input: string): string {
+  return input
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function buildSimplePdf(lines: string[]): Uint8Array {
+  const safeLines = lines
+    .filter((line) => typeof line === "string" && line.trim().length > 0)
+    .slice(0, 36);
+  const streamContent = safeLines
+    .map((line, index) => {
+      const y = 770 - index * 20;
+      return `BT /F1 12 Tf 40 ${y} Td (${escapePdfText(line.slice(0, 160))}) Tj ET`;
+    })
+    .join("\n");
+
+  const objects = [
+    "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+    "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+    "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+    "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+    `5 0 obj << /Length ${streamContent.length} >> stream\n${streamContent}\nendstream endobj`,
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (const object of objects) {
+    offsets.push(pdf.length);
+    pdf += `${object}\n`;
+  }
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i < offsets.length; i++) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\n`;
+  pdf += `startxref\n${xrefStart}\n%%EOF`;
+  return new TextEncoder().encode(pdf);
+}
+
+function sanitizeFileName(input: string): string {
+  const trimmed = input.trim();
+  const safe = trimmed
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return safe.length > 0 ? safe.slice(0, 180) : "report-export";
+}
+
+async function uploadReportExportFile(params: {
+  supabase: SupabaseClient;
+  companyId: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}): Promise<{ filePath: string; downloadUrl: string; fileSize: number }> {
+  const safeName = sanitizeFileName(params.fileName);
+  const filePath = `${params.companyId}/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}-${safeName}`;
+
+  const { error: uploadError } = await params.supabase.storage
+    .from(REPORT_EXPORT_BUCKET)
+    .upload(filePath, params.bytes, {
+      contentType: params.mimeType,
+      upsert: false,
+    });
+  if (uploadError) {
+    throw new Error(`Upload failed: ${uploadError.message}`);
+  }
+
+  const { data: signed, error: signedError } = await params.supabase.storage
+    .from(REPORT_EXPORT_BUCKET)
+    .createSignedUrl(filePath, REPORT_EXPORT_URL_TTL_SECONDS);
+  if (signedError || !signed?.signedUrl) {
+    throw new Error(signedError?.message ?? "Could not create signed URL");
+  }
+
+  return {
+    filePath,
+    downloadUrl: signed.signedUrl,
+    fileSize: params.bytes.byteLength,
+  };
+}
+
+function defaultWorkflowDefinition(name: string): Record<string, unknown> {
+  return {
+    version: 1,
+    nodes: [
+      {
+        id: "trigger-1",
+        type: "trigger",
+        label: "Manual trigger",
+        config: { kind: "manual" },
+        next: ["action-1"],
+        position: { x: 64, y: 80 },
+      },
+      {
+        id: "action-1",
+        type: "action",
+        label: "AI generated step",
+        config: { summary: `Generated for ${name}` },
+        next: [],
+        position: { x: 260, y: 80 },
+      },
+    ],
+    schedule: { cronExpression: "", timezone: "UTC" },
+    policies: { maxRetries: 2, alertOnFailure: true },
+  };
+}
+
+function sanitizeDashboardName(input: string): string {
+  const clean = input
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s\-()/&]/g, "")
+    .trim()
+    .slice(0, 120);
+  return clean.length > 0 ? clean : "AI dashboard";
+}
+
+function workflowFocusFromText(text: string): boolean {
+  const q = text.toLowerCase();
+  return /(workflow|run health|run status|automation health|pipeline health|failure rate|sla)/.test(q);
+}
+
+function deriveDashboardBaseName(requestedName: string | null, focus: string | null): string {
+  if (requestedName && requestedName.trim().length > 0) {
+    return sanitizeDashboardName(requestedName);
+  }
+  if (focus && focus.trim().length > 0) {
+    if (workflowFocusFromText(focus)) return "Workflow runs health dashboard";
+    const shortFocus = sanitizeDashboardName(focus).slice(0, 64);
+    return `${shortFocus} dashboard`;
+  }
+  return "AI dashboard";
+}
+
+async function resolveUniqueDashboardName(params: {
+  supabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  dashboardKind: "global" | "executive";
+  baseName: string;
+  reuseIfExists: boolean;
+}): Promise<{ name: string; existingId?: string }> {
+  const cleanBase = sanitizeDashboardName(params.baseName);
+  const { data: existing, error } = await params.supabase
+    .from("dashboard_layouts")
+    .select("id, name")
+    .eq("company_id", params.companyId)
+    .eq("user_id", params.userId)
+    .eq("dashboard_kind", params.dashboardKind)
+    .eq("name", cleanBase)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+
+  if (!existing?.id) {
+    return { name: cleanBase };
+  }
+  if (params.reuseIfExists) {
+    return { name: cleanBase, existingId: String(existing.id) };
+  }
+
+  for (let idx = 2; idx <= 99; idx++) {
+    const candidate = sanitizeDashboardName(`${cleanBase} (${idx})`);
+    const { data: dupe, error: dupeError } = await params.supabase
+      .from("dashboard_layouts")
+      .select("id")
+      .eq("company_id", params.companyId)
+      .eq("user_id", params.userId)
+      .eq("dashboard_kind", params.dashboardKind)
+      .eq("name", candidate)
+      .maybeSingle();
+    if (dupeError) throw new Error(dupeError.message);
+    if (!dupe?.id) return { name: candidate };
+  }
+
+  return {
+    name: sanitizeDashboardName(`${cleanBase} ${new Date().toISOString().slice(0, 19)}`),
+  };
+}
+
+async function fetchDashboardDefinitionTypeMap(
+  supabase: SupabaseClient,
+  companyId: string,
+): Promise<Map<string, string>> {
+  const { data, error } = await supabase
+    .from("dashboard_widget_definitions")
+    .select("id, type, company_id")
+    .or(`company_id.is.null,company_id.eq.${companyId}`);
+  if (error) throw new Error(error.message);
+  const rows = Array.isArray(data) ? data : [];
+  const map = new Map<string, string>();
+
+  for (const row of rows) {
+    const type = typeof row.type === "string" ? row.type : null;
+    const id = typeof row.id === "string" ? row.id : null;
+    if (!type || !id) continue;
+    const isTenant = row.company_id === companyId;
+    if (isTenant) {
+      map.set(type, id);
+      continue;
+    }
+    if (!map.has(type)) map.set(type, id);
+  }
+  return map;
+}
+
+function buildDashboardSeed(params: {
+  dashboardKind: "global" | "executive";
+  focus: string | null;
+  typeMap: Map<string, string>;
+}): {
+  layoutJson: Record<string, unknown>;
+  instances: Array<{
+    id: string;
+    widgetDefinitionId: string | null;
+    widgetType: string;
+    config: Record<string, unknown>;
+    isVisible: boolean;
+  }>;
+  widgetTypes: string[];
+} {
+  const mk = (widgetType: string, config: Record<string, unknown> = {}) => ({
+    id: crypto.randomUUID(),
+    widgetDefinitionId: params.typeMap.get(widgetType) ?? null,
+    widgetType,
+    config,
+    isVisible: true,
+  });
+
+  if (params.dashboardKind === "executive") {
+    const brief = mk("exec_ai_brief");
+    const risk = mk("risk_pie");
+    const metrics = mk("exec_metrics");
+    const heat = mk("dept_heatmap");
+    const instances = [brief, risk, metrics, heat];
+    return {
+      layoutJson: {
+        breakpoints: { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 },
+        cols: { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 },
+        layouts: {
+          lg: [
+            { i: brief.id, x: 0, y: 0, w: 8, h: 10, minW: 4, minH: 6 },
+            { i: risk.id, x: 8, y: 0, w: 4, h: 10, minW: 3, minH: 6 },
+            { i: metrics.id, x: 0, y: 10, w: 12, h: 6, minW: 4, minH: 4 },
+            { i: heat.id, x: 0, y: 16, w: 12, h: 8, minW: 4, minH: 4 },
+          ],
+        },
+        widgets: Object.fromEntries(
+          instances.map((w) => [w.id, { type: w.widgetType, definitionId: w.widgetDefinitionId }]),
+        ),
+      },
+      instances,
+      widgetTypes: instances.map((w) => w.widgetType),
+    };
+  }
+
+  const focusText = params.focus ?? "";
+  const workflowFocus = workflowFocusFromText(focusText);
+  if (workflowFocus) {
+    const kpi = mk("kpi_strip", { focus: "workflow_runs_health" });
+    const trend = mk("throughput_chart", { focus: "workflow_runs_health" });
+    const alerts = mk("alerts_feed", { focus: "workflow_runs_health" });
+    const activity = mk("activity_stream", { focus: "workflow_runs_health" });
+    const insight = mk("ai_insight", { focus: "workflow_runs_health" });
+    const actions = mk("quick_actions", { focus: "workflow_runs_health" });
+    const instances = [kpi, trend, alerts, activity, insight, actions];
+    return {
+      layoutJson: {
+        breakpoints: { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 },
+        cols: { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 },
+        layouts: {
+          lg: [
+            { i: kpi.id, x: 0, y: 0, w: 12, h: 6, minW: 6, minH: 4 },
+            { i: trend.id, x: 0, y: 6, w: 8, h: 10, minW: 4, minH: 4 },
+            { i: alerts.id, x: 8, y: 6, w: 4, h: 10, minW: 3, minH: 4 },
+            { i: activity.id, x: 0, y: 16, w: 8, h: 9, minW: 4, minH: 4 },
+            { i: insight.id, x: 8, y: 16, w: 4, h: 9, minW: 3, minH: 4 },
+            { i: actions.id, x: 0, y: 25, w: 12, h: 7, minW: 4, minH: 4 },
+          ],
+        },
+        widgets: Object.fromEntries(
+          instances.map((w) => [w.id, { type: w.widgetType, definitionId: w.widgetDefinitionId }]),
+        ),
+      },
+      instances,
+      widgetTypes: instances.map((w) => w.widgetType),
+    };
+  }
+
+  const search = mk("global_search_card");
+  const kpi = mk("kpi_strip");
+  const insight = mk("ai_insight");
+  const gov = mk("ai_governance");
+  const chart = mk("throughput_chart");
+  const quick = mk("quick_actions");
+  const act = mk("activity_stream");
+  const alerts = mk("alerts_feed");
+  const instances = [search, kpi, insight, gov, chart, quick, act, alerts];
+
+  return {
+    layoutJson: {
+      breakpoints: { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 },
+      cols: { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 },
+      layouts: {
+        lg: [
+          { i: search.id, x: 0, y: 0, w: 12, h: 5, minW: 4, minH: 3 },
+          { i: kpi.id, x: 0, y: 5, w: 12, h: 6, minW: 6, minH: 4 },
+          { i: insight.id, x: 0, y: 11, w: 12, h: 5, minW: 4, minH: 3 },
+          { i: gov.id, x: 0, y: 16, w: 12, h: 9, minW: 4, minH: 4 },
+          { i: chart.id, x: 0, y: 25, w: 8, h: 9, minW: 4, minH: 4 },
+          { i: quick.id, x: 8, y: 25, w: 4, h: 9, minW: 2, minH: 4 },
+          { i: act.id, x: 0, y: 34, w: 6, h: 10, minW: 3, minH: 4 },
+          { i: alerts.id, x: 6, y: 34, w: 6, h: 10, minW: 3, minH: 4 },
+        ],
+      },
+      widgets: Object.fromEntries(
+        instances.map((w) => [w.id, { type: w.widgetType, definitionId: w.widgetDefinitionId }]),
+      ),
+    },
+    instances,
+    widgetTypes: instances.map((w) => w.widgetType),
+  };
+}
+
+function findAppAction(actionId: string): AppActionDefinition | undefined {
+  return APP_ACTIONS.find((a) => a.id === actionId);
+}
+
+async function executeAppAction(
+  supabase: SupabaseClient,
+  params: {
+    action: AppActionDefinition;
+    companyId: string;
+    userId: string;
+    args: Record<string, unknown>;
+    confirmed: boolean;
+  },
+): Promise<UnifiedActionExecution> {
+  const action = params.action;
+  const args = asRecord(params.args);
+
+  if (action.requiresConfirmation && !params.confirmed) {
+    return {
+      ok: false,
+      pendingConfirmation: true,
+      preview: {
+        label: action.label,
+        actionId: action.id,
+        args,
+      },
+    };
+  }
+
+  switch (action.id) {
+    case "app.workflows.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const status = typeof args.status === "string" ? args.status : undefined;
+      let query = supabase
+        .from("workflows")
+        .select("id, name, status, updated_at, department_id")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (status) query = query.eq("status", status);
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("workflows", `items:${items.length}`)],
+      };
+    }
+    case "app.workflows.create": {
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name.trim()
+        : "AI workflow";
+      const definition = args.definition && typeof args.definition === "object"
+        ? args.definition
+        : defaultWorkflowDefinition(name);
+      const status = typeof args.status === "string" ? args.status : "draft";
+      const { data, error } = await supabase
+        .from("workflows")
+        .insert({
+          company_id: params.companyId,
+          owner_user_id: params.userId,
+          name,
+          status,
+          definition,
+        })
+        .select("id, name, status")
+        .single();
+      if (error) throw new Error(error.message);
+      return {
+        ok: true,
+        result: { workflow: data },
+        citations: [citationForDomain("workflows", `workflow:${String(data.id)}`)],
+      };
+    }
+    case "app.modules.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const search = typeof args.search === "string" ? args.search.trim() : "";
+      let query = supabase
+        .from("internal_modules")
+        .select("id, name, status, updated_at, active_version_id")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (search) {
+        query = query.ilike("name", `%${search.replace(/[%_]/g, "")}%`);
+      }
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("modules", `items:${items.length}`)],
+      };
+    }
+    case "app.modules.create": {
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name.trim()
+        : "AI module";
+      const description = typeof args.description === "string" ? args.description : "";
+      const status = typeof args.status === "string" ? args.status : "draft";
+      const { data: created, error: createError } = await supabase
+        .from("internal_modules")
+        .insert({
+          company_id: params.companyId,
+          name,
+          description,
+          ui_entry: "/dashboard/modules/preview",
+          status,
+          tenant_scope: ["current_tenant"],
+          tags: [],
+          data_bindings: [],
+          permissions: [],
+        })
+        .select("*")
+        .single();
+      if (createError) throw new Error(createError.message);
+
+      const snapshot = {
+        name: created.name,
+        description: created.description,
+        ui_entry: created.ui_entry,
+        data_bindings: created.data_bindings ?? [],
+        permissions: created.permissions ?? [],
+        tags: created.tags ?? [],
+        tenant_scope: created.tenant_scope ?? ["current_tenant"],
+      };
+      const { data: version, error: versionError } = await supabase
+        .from("module_versions")
+        .insert({
+          module_id: created.id,
+          version_tag: "1.0.0",
+          changelog: "Initial AI-created module version",
+          is_active: true,
+          migration_notes: null,
+          binding_diff: {},
+          snapshot,
+        })
+        .select("id, version_tag")
+        .single();
+      if (!versionError && version?.id) {
+        await supabase
+          .from("internal_modules")
+          .update({ active_version_id: version.id })
+          .eq("id", created.id);
+      }
+
+      return {
+        ok: true,
+        result: {
+          module: {
+            id: created.id,
+            name: created.name,
+            status: created.status,
+            activeVersionId: version?.id ?? null,
+          },
+        },
+        citations: [citationForDomain("modules", `module:${String(created.id)}`)],
+      };
+    }
+    case "app.departments.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const { data, error } = await supabase
+        .from("departments")
+        .select("id, name, workspace_status, department_type, updated_at")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("departments", `items:${items.length}`)],
+      };
+    }
+    case "app.departments.create": {
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name.trim()
+        : "AI department";
+      const departmentType = typeof args.departmentType === "string" ? args.departmentType : null;
+      const { data, error } = await supabase
+        .from("departments")
+        .insert({
+          company_id: params.companyId,
+          name,
+          lead_user_id: params.userId,
+          department_type: departmentType,
+          workspace_status: "active",
+        })
+        .select("id, name, workspace_status")
+        .single();
+      if (error) throw new Error(error.message);
+      await supabase.from("department_members").insert({
+        company_id: params.companyId,
+        department_id: data.id,
+        profile_id: params.userId,
+        role: "Manager",
+      });
+      return {
+        ok: true,
+        result: { department: data },
+        citations: [citationForDomain("departments", `department:${String(data.id)}`)],
+      };
+    }
+    case "app.reports.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const search = typeof args.search === "string" ? args.search.trim() : "";
+      let query = supabase
+        .from("report_center_reports")
+        .select("id, name, status, updated_at, department_id")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (search) {
+        query = query.ilike("name", `%${search.replace(/[%_]/g, "")}%`);
+      }
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("reports", `items:${items.length}`)],
+      };
+    }
+    case "app.reports.create": {
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name.trim()
+        : "AI report";
+      const description = typeof args.description === "string" ? args.description : "";
+      const status = typeof args.status === "string" ? args.status : "draft";
+      const { data, error } = await supabase
+        .from("report_center_reports")
+        .insert({
+          company_id: params.companyId,
+          name,
+          description,
+          owner_user_id: params.userId,
+          status,
+          tags: [],
+          data_source_refs: [],
+          kpi_refs: [],
+          visuals: {},
+          export_targets: [],
+        })
+        .select("id, name, status")
+        .single();
+      if (error) throw new Error(error.message);
+      return {
+        ok: true,
+        result: { report: data },
+        artifacts: [
+          {
+            id: crypto.randomUUID(),
+            type: "report",
+            title: data.name,
+            reportId: data.id,
+            route: `/reports/${data.id}`,
+            createdAt: toIsoNow(),
+          },
+        ],
+        citations: [citationForDomain("reports", `report:${String(data.id)}`)],
+      };
+    }
+    case "app.reports.export_pdf": {
+      const reportId = typeof args.reportId === "string" ? args.reportId : "";
+      if (!reportId) throw new Error("reportId is required");
+      const { data: report, error: reportError } = await supabase
+        .from("report_center_reports")
+        .select("id, name, description, status, updated_at")
+        .eq("company_id", params.companyId)
+        .eq("id", reportId)
+        .maybeSingle();
+      if (reportError) throw new Error(reportError.message);
+      if (!report) throw new Error("Report not found");
+
+      const fileNameRaw = typeof args.fileName === "string" && args.fileName.trim().length > 0
+        ? args.fileName.trim()
+        : `${String(report.name).replace(/[^a-zA-Z0-9_-]/g, "_") || "report"}.pdf`;
+      const safeFileName = sanitizeFileName(fileNameRaw);
+      const fileName = safeFileName.toLowerCase().endsWith(".pdf")
+        ? safeFileName
+        : `${safeFileName}.pdf`;
+      const pdfBytes = buildSimplePdf([
+        `Report: ${String(report.name)}`,
+        `Status: ${String(report.status)}`,
+        `Updated: ${String(report.updated_at)}`,
+        "",
+        String(report.description ?? "Generated by AI chat export."),
+      ]);
+
+      const upload = await uploadReportExportFile({
+        supabase,
+        companyId: params.companyId,
+        fileName,
+        mimeType: "application/pdf",
+        bytes: pdfBytes,
+      });
+
+      const { data: job, error: jobError } = await supabase
+        .from("report_export_jobs")
+        .insert({
+          company_id: params.companyId,
+          report_id: reportId,
+          format: "pdf",
+          destination: { type: "download", source: "ai-chat" },
+          status: "completed",
+          metadata: { generatedBy: "ai-chat", storageBucket: REPORT_EXPORT_BUCKET },
+          file_name: fileName,
+          mime_type: "application/pdf",
+          file_path: upload.filePath,
+          file_size: upload.fileSize,
+          download_url: upload.downloadUrl,
+        })
+        .select("id, report_id, status, file_name, mime_type, file_path, file_size, download_url")
+        .single();
+      if (jobError) throw new Error(jobError.message);
+
+      return {
+        ok: true,
+        result: { job },
+        artifacts: [
+          {
+            id: crypto.randomUUID(),
+            type: "pdf",
+            title: `${String(report.name)} PDF`,
+            reportId,
+            exportJobId: job.id,
+            fileName: job.file_name,
+            mimeType: job.mime_type,
+            storagePath: job.file_path,
+            downloadUrl: job.download_url,
+            route: `/reports/${reportId}`,
+            createdAt: toIsoNow(),
+          },
+        ],
+        citations: [citationForDomain("reports", `export:${String(job.id)}`)],
+      };
+    }
+    case "app.dashboards.list": {
+      const kind = typeof args.dashboardKind === "string" ? args.dashboardKind : undefined;
+      let query = supabase
+        .from("dashboard_layouts")
+        .select("id, name, dashboard_kind, updated_at, version")
+        .eq("company_id", params.companyId)
+        .eq("user_id", params.userId)
+        .order("updated_at", { ascending: false })
+        .limit(50);
+      if (kind === "global" || kind === "executive") {
+        query = query.eq("dashboard_kind", kind);
+      }
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("dashboards", `items:${items.length}`)],
+      };
+    }
+    case "app.dashboards.create_layout": {
+      const dashboardKind = args.dashboardKind === "executive" ? "executive" : "global";
+      const requestedName = typeof args.name === "string" ? args.name : null;
+      const focus = typeof args.focus === "string" && args.focus.trim().length > 0
+        ? args.focus.trim()
+        : null;
+      const reuseIfExists = args.reuseIfExists === true;
+      const baseName = deriveDashboardBaseName(requestedName, focus);
+
+      const resolvedName = await resolveUniqueDashboardName({
+        supabase,
+        companyId: params.companyId,
+        userId: params.userId,
+        dashboardKind,
+        baseName,
+        reuseIfExists,
+      });
+
+      let layout: { id: string; name: string; dashboard_kind: string; layout_json?: Record<string, unknown> } | null =
+        null;
+      let widgetTypes: string[] = [];
+      let reused = false;
+      let widgetInstances: Array<{
+        id: string;
+        widget_definition_id: string | null;
+        widget_type: string;
+        config: Record<string, unknown> | null;
+        is_visible: boolean;
+      }> = [];
+
+      if (resolvedName.existingId) {
+        reused = true;
+        const { data: existing, error: existingError } = await supabase
+          .from("dashboard_layouts")
+          .select("id, name, dashboard_kind, layout_json")
+          .eq("id", resolvedName.existingId)
+          .eq("company_id", params.companyId)
+          .eq("user_id", params.userId)
+          .maybeSingle();
+        if (existingError) throw new Error(existingError.message);
+        if (!existing) throw new Error("Could not load existing dashboard layout");
+        layout = existing;
+        const widgetsObj =
+          existing.layout_json && typeof existing.layout_json === "object"
+            ? (existing.layout_json as { widgets?: Record<string, { type?: string }> }).widgets ?? {}
+            : {};
+        widgetTypes = Object.values(widgetsObj)
+          .map((w) => (w && typeof w.type === "string" ? w.type : null))
+          .filter((t): t is string => Boolean(t));
+      } else {
+        const typeMap = await fetchDashboardDefinitionTypeMap(supabase, params.companyId);
+        const seed = buildDashboardSeed({ dashboardKind, focus, typeMap });
+        widgetTypes = seed.widgetTypes;
+
+        const { data: created, error: createdError } = await supabase
+          .from("dashboard_layouts")
+          .insert({
+            company_id: params.companyId,
+            user_id: params.userId,
+            name: resolvedName.name,
+            dashboard_kind: dashboardKind,
+            layout_json: seed.layoutJson,
+            version: 1,
+          })
+          .select("id, name, dashboard_kind, layout_json")
+          .single();
+        if (createdError) throw new Error(createdError.message);
+
+        if (seed.instances.length > 0) {
+          const rows = seed.instances.map((instance) => ({
+            id: instance.id,
+            layout_id: created.id,
+            widget_definition_id: instance.widgetDefinitionId,
+            widget_type: instance.widgetType,
+            config: instance.config,
+            is_visible: instance.isVisible,
+          }));
+          const { error: widgetErr } = await supabase.from("dashboard_widget_instances").insert(rows);
+          if (widgetErr) throw new Error(widgetErr.message);
+        }
+
+        layout = created;
+      }
+
+      if (!layout) throw new Error("Could not create dashboard layout");
+      const { data: instanceRows, error: instanceError } = await supabase
+        .from("dashboard_widget_instances")
+        .select("id, widget_definition_id, widget_type, config, is_visible")
+        .eq("layout_id", layout.id)
+        .order("created_at", { ascending: true });
+      if (instanceError) throw new Error(instanceError.message);
+      widgetInstances = Array.isArray(instanceRows) ? instanceRows : [];
+      if (widgetTypes.length === 0) {
+        widgetTypes = widgetInstances
+          .map((row) => (typeof row.widget_type === "string" ? row.widget_type : null))
+          .filter((t): t is string => Boolean(t));
+      }
+      const widgetConfigs = Object.fromEntries(
+        widgetInstances.map((row) => [String(row.id), asRecord(row.config)]),
+      );
+      const routeBase = layout.dashboard_kind === "executive" ? "/dashboard/executive" : "/dashboard/global";
+      const route = `${routeBase}?layout=${encodeURIComponent(layout.name)}`;
+      return {
+        ok: true,
+        result: {
+          layout,
+          reused,
+          focus: focus ?? null,
+          widgetTypes,
+          widgetInstances: widgetInstances.map((row) => ({
+            id: String(row.id),
+            widgetDefinitionId: row.widget_definition_id ? String(row.widget_definition_id) : null,
+            widgetType: String(row.widget_type),
+            config: asRecord(row.config),
+            isVisible: row.is_visible !== false,
+          })),
+        },
+        artifacts: [
+          {
+            id: crypto.randomUUID(),
+            type: "dashboard",
+            title: `${String(layout.name)} dashboard`,
+            dashboardKind: String(layout.dashboard_kind),
+            layoutId: String(layout.id),
+            route,
+            payload: {
+              payloadVersion: 1,
+              layout: {
+                id: String(layout.id),
+                name: String(layout.name),
+                dashboardKind: layout.dashboard_kind === "executive" ? "executive" : "global",
+                layoutJson: layout.layout_json && typeof layout.layout_json === "object" ? layout.layout_json : {},
+              },
+              widgets: widgetInstances.map((row) => ({
+                id: String(row.id),
+                widgetDefinitionId: row.widget_definition_id ? String(row.widget_definition_id) : null,
+                widgetType: String(row.widget_type),
+                config: asRecord(row.config),
+                isVisible: row.is_visible !== false,
+              })),
+              widgetConfigs,
+              layoutName: String(layout.name),
+              dashboardKind: String(layout.dashboard_kind),
+              layoutId: String(layout.id),
+              layoutJson: layout.layout_json && typeof layout.layout_json === "object" ? layout.layout_json : {},
+              focus: focus ?? null,
+              widgetTypes,
+              reused,
+            },
+            createdAt: toIsoNow(),
+          },
+        ],
+        citations: [citationForDomain("dashboards", `layout:${String(layout.id)}`)],
+      };
+    }
+    case "app.knowledge_base.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const sourceFilter = typeof args.sourceFilter === "string" ? args.sourceFilter.trim() : "";
+      let query = supabase
+        .from("indexed_documents")
+        .select("id, title, source_provider, index_status, updated_at")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (sourceFilter) {
+        query = query.ilike("source_provider", `%${sourceFilter.replace(/[%_]/g, "")}%`);
+      }
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("knowledge_base", `items:${items.length}`)],
+      };
+    }
+    case "app.knowledge_base.add_text": {
+      const title = typeof args.title === "string" && args.title.trim().length > 0
+        ? args.title.trim()
+        : "AI note";
+      const text = typeof args.text === "string" ? args.text.trim() : "";
+      if (!text) throw new Error("text is required");
+      const provider = typeof args.sourceProvider === "string" && args.sourceProvider.trim().length > 0
+        ? args.sourceProvider.trim()
+        : "ai_chat";
+      const externalId = crypto.randomUUID();
+      const nowIso = toIsoNow();
+      const { data: doc, error: docError } = await supabase
+        .from("indexed_documents")
+        .insert({
+          company_id: params.companyId,
+          source_provider: provider,
+          external_id: externalId,
+          title,
+          snippet: text.slice(0, 300),
+          full_text: text,
+          indexed_at: nowIso,
+          metadata: { source: "ai-chat", title },
+          permissions: { scope: "tenant" },
+          updated_at: nowIso,
+          index_status: "ready",
+          chunk_count: 1,
+          last_indexed_at: nowIso,
+          index_error: null,
+        })
+        .select("id, title, source_provider")
+        .single();
+      if (docError) throw new Error(docError.message);
+      await supabase.from("indexed_document_chunks").insert({
+        document_id: doc.id,
+        company_id: params.companyId,
+        chunk_index: 0,
+        chunk_text: text,
+        token_count: Math.max(1, Math.ceil(text.length / 4)),
+        embedding: null,
+        metadata: { source: provider, title },
+      });
+      return {
+        ok: true,
+        result: { document: doc },
+        citations: [citationForDomain("knowledge_base", `document:${String(doc.id)}`, text.slice(0, 120))],
+      };
+    }
+    case "app.integrations.list": {
+      const { data, error } = await supabase
+        .from("connectors")
+        .select("id, provider_key, status, display_name, updated_at")
+        .eq("company_id", params.companyId)
+        .order("updated_at", { ascending: false });
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("integrations", `items:${items.length}`)],
+      };
+    }
+    case "app.integrations.create": {
+      const providerKey = typeof args.providerKey === "string" ? args.providerKey : "";
+      if (!providerKey) throw new Error("providerKey is required");
+      const displayName = typeof args.displayName === "string" ? args.displayName : providerKey;
+      const { data: existing } = await supabase
+        .from("connectors")
+        .select("id, provider_key, status, display_name")
+        .eq("company_id", params.companyId)
+        .eq("provider_key", providerKey)
+        .maybeSingle();
+      const connector = existing ?? (await supabase
+        .from("connectors")
+        .insert({
+          company_id: params.companyId,
+          provider_key: providerKey,
+          display_name: displayName,
+          status: "pending",
+        })
+        .select("id, provider_key, status, display_name")
+        .single()).data;
+      if (!connector) throw new Error("Could not create connector");
+      return {
+        ok: true,
+        result: { connector },
+        citations: [citationForDomain("integrations", `connector:${String(connector.id)}`)],
+      };
+    }
+    case "app.settings.flags.list": {
+      const { data, error } = await supabase
+        .from("feature_flags")
+        .select("id, flag_key, enabled, rollout, payload, updated_at")
+        .or(`company_id.eq.${params.companyId},company_id.is.null`)
+        .order("flag_key", { ascending: true });
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("settings", `flags:${items.length}`)],
+      };
+    }
+    case "app.settings.flags.upsert": {
+      const flagKey = typeof args.flagKey === "string" ? args.flagKey.trim() : "";
+      if (!flagKey) throw new Error("flagKey is required");
+      const enabled = Boolean(args.enabled);
+      const rollout = typeof args.rollout === "number" ? Math.max(0, Math.min(100, args.rollout)) : 100;
+      const { data, error } = await supabase
+        .from("feature_flags")
+        .upsert({
+          company_id: params.companyId,
+          flag_key: flagKey,
+          enabled,
+          rollout,
+          payload: {},
+          updated_at: toIsoNow(),
+        }, { onConflict: "flag_key,company_id" })
+        .select("id, flag_key, enabled, rollout")
+        .single();
+      if (error) throw new Error(error.message);
+      return {
+        ok: true,
+        result: { flag: data },
+        citations: [citationForDomain("settings", `flag:${flagKey}`)],
+      };
+    }
+    case "app.notifications.list": {
+      const limit = normalizeLimit(args.limit, 20, 80);
+      const status = typeof args.status === "string" ? args.status : undefined;
+      let query = supabase
+        .from("notifications")
+        .select("id, title, body, status, created_at")
+        .eq("company_id", params.companyId)
+        .eq("user_id", params.userId)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (status) query = query.eq("status", status);
+      const { data, error } = await query;
+      if (error) throw new Error(error.message);
+      const items = Array.isArray(data) ? data : [];
+      return {
+        ok: true,
+        result: { items, count: items.length },
+        citations: [citationForDomain("notifications", `items:${items.length}`)],
+      };
+    }
+    case "app.notifications.create_rule": {
+      const name = typeof args.name === "string" && args.name.trim().length > 0
+        ? args.name.trim()
+        : "AI alert rule";
+      const condition = asRecord(args.condition);
+      const channels = Array.isArray(args.channels) ? args.channels : ["in_app"];
+      const { data, error } = await supabase
+        .from("alert_rules")
+        .insert({
+          company_id: params.companyId,
+          name,
+          trigger_type: "custom",
+          conditions: condition,
+          actions: channels,
+          enabled: true,
+        })
+        .select("id, name, enabled")
+        .single();
+      if (error) throw new Error(error.message);
+      return {
+        ok: true,
+        result: { alertRule: data },
+        citations: [citationForDomain("notifications", `alertRule:${String(data.id)}`)],
+      };
+    }
+    case "app.search.query": {
+      const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
+      if (!query) throw new Error("query is required");
+      const limit = normalizeLimit(args.limit, 12, 50);
+      const { data: entities } = await supabase
+        .from("unified_entities")
+        .select("id, entity_type, payload, updated_at")
+        .eq("company_id", params.companyId)
+        .eq("is_deleted", false)
+        .limit(200);
+      const { data: docs } = await supabase
+        .from("indexed_documents")
+        .select("id, title, snippet, source_provider, updated_at")
+        .eq("company_id", params.companyId)
+        .limit(200);
+      const entityHits = (Array.isArray(entities) ? entities : [])
+        .filter((row) => JSON.stringify(row.payload ?? {}).toLowerCase().includes(query))
+        .slice(0, limit)
+        .map((row) => ({
+          id: row.id,
+          type: row.entity_type,
+          source: "unified_entities",
+          snippet: JSON.stringify(row.payload ?? {}).slice(0, 220),
+          updated_at: row.updated_at,
+        }));
+      const docHits = (Array.isArray(docs) ? docs : [])
+        .filter((row) =>
+          `${String(row.title ?? "")} ${String(row.snippet ?? "")}`.toLowerCase().includes(query)
+        )
+        .slice(0, limit)
+        .map((row) => ({
+          id: row.id,
+          type: "document",
+          source: row.source_provider,
+          snippet: row.snippet ?? "",
+          updated_at: row.updated_at,
+        }));
+      const hits = [...entityHits, ...docHits].slice(0, limit);
+      return {
+        ok: true,
+        result: { hits, count: hits.length },
+        citations: [citationForDomain("search", `hits:${hits.length}`)],
+      };
+    }
+    default:
+      throw new Error(`Unsupported app action: ${action.id}`);
+  }
 }
 
 function canReadIndexedPermission(
@@ -284,22 +1825,19 @@ function toVectorLiteral(values: number[]): string {
   return `[${values.map((v) => Number(v.toFixed(8))).join(",")}]`;
 }
 
-async function embedQuery(apiKey: string, text: string): Promise<number[] | null> {
+async function embedQuery(modelProvider: AiProviderAdapter | null, text: string): Promise<number[] | null> {
+  if (!modelProvider) return null;
   const q = text.trim();
   if (!q) return null;
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
+  let json: AiProviderEmbeddingsResponse;
+  try {
+    json = await modelProvider.createEmbeddings({
       model: EMBEDDING_MODEL,
       input: q.slice(0, 6000),
-    }),
-  });
-  if (!res.ok) return null;
-  const json = await res.json() as { data?: Array<{ embedding?: number[] }> };
+    });
+  } catch {
+    return null;
+  }
   const emb = Array.isArray(json.data) && Array.isArray(json.data[0]?.embedding)
     ? json.data[0].embedding ?? []
     : [];
@@ -326,7 +1864,7 @@ async function retrieveRagContext(
   workspaceId: string,
   query: string,
   limit: number,
-  opts?: { userRoles?: string[]; userDepartment?: string | null; apiKey?: string | null },
+  opts?: { userRoles?: string[]; userDepartment?: string | null; modelProvider?: AiProviderAdapter | null },
 ): Promise<{ contextText: string; citations: z.infer<typeof citationSchema>[] }> {
   const citations: z.infer<typeof citationSchema>[] = [];
   const parts: string[] = [];
@@ -334,12 +1872,12 @@ async function retrieveRagContext(
 
   const roles = Array.isArray(opts?.userRoles) ? opts?.userRoles ?? [] : [];
   const userDepartment = opts?.userDepartment ?? null;
-  const apiKey = opts?.apiKey ?? Deno.env.get("OPENAI_API_KEY") ?? null;
+  const modelProvider = opts?.modelProvider ?? null;
   const semanticCap = Math.max(6, Math.min(40, limit * 3));
   const nowIso = new Date().toISOString();
 
-  if (apiKey && q) {
-    const queryEmbedding = await embedQuery(apiKey, q);
+  if (modelProvider && q) {
+    const queryEmbedding = await embedQuery(modelProvider, q);
     if (queryEmbedding) {
       const { data: semanticRows } = await supabase.rpc("match_indexed_document_chunks", {
         p_query_embedding: toVectorLiteral(queryEmbedding),
@@ -629,9 +2167,135 @@ const AGENT_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "run_app_action",
+      description:
+        "Execute an internal Connected AI Business OS action across workflows, modules, departments, reports, dashboards, knowledge base, settings, notifications, and search.",
+      parameters: {
+        type: "object",
+        properties: {
+          action_id: {
+            type: "string",
+            enum: APP_ACTIONS.map((a) => a.id),
+            description: "Registered app action id from the catalog.",
+          },
+          args: {
+            type: "object",
+            description:
+              "Action arguments object. For app.dashboards.create_layout include args.name and args.focus based on the user's request; set args.reuseIfExists only when the user explicitly asks to reuse.",
+          },
+        },
+        required: ["action_id"],
+      },
+    },
+  },
 ] as const;
 
+function buildAgentTools(permitted: AiToolPermission[]): Array<Record<string, unknown>> {
+  const allowedAppActions = permitted.filter((tool) => tool.toolSource === "app");
+  const allowedIds = allowedAppActions.map((tool) => tool.id);
+  const fallbackIds = APP_ACTIONS.map((tool) => tool.id);
+  const enumIds = allowedIds.length > 0 ? allowedIds : fallbackIds;
+  const allowedSummary = enumIds.join(", ");
+
+  return AGENT_TOOLS.map((tool) => {
+    if (tool.function.name !== "run_app_action") {
+      return {
+        type: tool.type,
+        function: {
+          name: tool.function.name,
+          description: tool.function.description,
+          parameters: tool.function.parameters,
+        },
+      };
+    }
+    return {
+      type: "function",
+      function: {
+        name: "run_app_action",
+        description:
+          "Execute a permitted internal Connected AI Business OS action. Always select action_id from the allowed enum for this user.",
+        parameters: {
+          type: "object",
+          properties: {
+            action_id: {
+              type: "string",
+              enum: enumIds,
+              description: `Allowed action ids for this user: ${allowedSummary}`,
+            },
+            args: {
+              type: "object",
+              description:
+                "Arguments for the selected action. For app.dashboards.create_layout include dashboardKind, name, focus, and reuseIfExists.",
+            },
+          },
+          required: ["action_id"],
+        },
+      },
+    };
+  });
+}
+
 type AgentToolArgs = Record<string, unknown>;
+type AgentToolExecution = {
+  text: string;
+  status?: "completed" | "failed" | "pending_confirmation";
+  actionId?: string;
+  result?: Record<string, unknown>;
+  citations?: Array<Record<string, unknown>>;
+  artifacts?: Array<Record<string, unknown>>;
+  pendingConfirmation?: {
+    actionId: string;
+    label: string;
+    preview?: Record<string, unknown>;
+  };
+};
+
+function inferAgentToolStatusFromText(text: string): "completed" | "failed" {
+  const lower = text.trim().toLowerCase();
+  if (!lower) return "completed";
+  if (
+    lower.startsWith("error") ||
+    lower.includes("failed") ||
+    lower.includes("not connected") ||
+    lower.includes("unavailable") ||
+    lower.includes("forbidden") ||
+    lower.includes("denied")
+  ) {
+    return "failed";
+  }
+  return "completed";
+}
+
+function normalizeAgentToolExecution(raw: string | AgentToolExecution): AgentToolExecution {
+  if (typeof raw === "string") {
+    return {
+      text: raw,
+      status: inferAgentToolStatusFromText(raw),
+    };
+  }
+  return {
+    ...raw,
+    status: raw.status ?? (raw.pendingConfirmation ? "pending_confirmation" : inferAgentToolStatusFromText(raw.text)),
+  };
+}
+
+function serializeToolResultForModel(input: Record<string, unknown>): string {
+  let json: string;
+  try {
+    json = JSON.stringify(input);
+  } catch {
+    json = JSON.stringify({
+      status: "failed",
+      error: "Could not serialize tool result payload",
+    });
+  }
+  const MAX_CHARS = 12000;
+  if (json.length <= MAX_CHARS) return json;
+  return `${json.slice(0, MAX_CHARS)}...(truncated)`;
+}
 
 function parseDateFilter(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -651,6 +2315,52 @@ function defaultTodayTomorrowWindow(): { timeMin: string; timeMax: string } {
   return { timeMin: start.toISOString(), timeMax: end.toISOString() };
 }
 
+function pendingConfirmationForToolCall(
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+): { actionId: string; label: string; preview: Record<string, unknown> } | null {
+  if (toolName === "send_email") {
+    return {
+      actionId: "gmail.send_email",
+      label: "Gmail: send email",
+      preview: {
+        args: {
+          to: String(toolArgs.to ?? ""),
+          subject: String(toolArgs.subject ?? ""),
+          body: String(toolArgs.body ?? ""),
+        },
+      },
+    };
+  }
+  if (toolName === "send_slack_message") {
+    return {
+      actionId: "slack.send_message",
+      label: "Slack: send message",
+      preview: {
+        args: {
+          channel: String(toolArgs.channel ?? ""),
+          text: String(toolArgs.message ?? ""),
+        },
+      },
+    };
+  }
+  if (toolName === "create_automation") {
+    const name = String(toolArgs.name ?? "AI workflow");
+    return {
+      actionId: "app.workflows.create",
+      label: "Workflows: create",
+      preview: {
+        args: {
+          name,
+          definition: defaultWorkflowDefinition(name),
+          status: "draft",
+        },
+      },
+    };
+  }
+  return null;
+}
+
 // ── Agent Tool Executor ─────────────────────────────────────────────────────
 
 async function executeAgentTool(
@@ -660,7 +2370,12 @@ async function executeAgentTool(
   companyId: string,
   userId: string,
   userRoles: string[],
-): Promise<string> {
+  executionMode: "confirm" | "auto",
+  streamContext: {
+    userMessage: string;
+    allowedAppActionIds: Set<string>;
+  },
+): Promise<string | AgentToolExecution> {
   switch (toolName) {
     case "query_integration": {
       const provider = String(args.provider ?? "").trim().toLowerCase();
@@ -976,10 +2691,193 @@ async function executeAgentTool(
         })
         .join("\n\n");
     }
+    case "run_app_action": {
+      const actionId = typeof args.action_id === "string" ? args.action_id : "";
+      const action = findAppAction(actionId);
+      if (!action) {
+        return {
+          text: `Unknown app action: ${actionId}`,
+          status: "failed",
+          actionId,
+        };
+      }
+      if (!streamContext.allowedAppActionIds.has(actionId)) {
+        return {
+          text: `Action "${actionId}" is not permitted for the current user.`,
+          status: "failed",
+          actionId,
+        };
+      }
+      try {
+        let actionArgs = asRecord(args.args);
+        if (actionId === "app.dashboards.create_layout") {
+          actionArgs = normalizeDashboardCreateArgs(actionArgs, streamContext.userMessage);
+        }
+        const out = await executeAppAction(supabase, {
+          action,
+          companyId,
+          userId,
+          args: actionArgs,
+          confirmed: executionMode === "auto",
+        });
+        if (out.pendingConfirmation) {
+          return {
+            text: `Pending confirmation for action "${action.label}".`,
+            status: "pending_confirmation",
+            actionId: action.id,
+            result: out.preview ?? {},
+            pendingConfirmation: {
+              actionId: action.id,
+              label: action.label,
+              preview: out.preview,
+            },
+          };
+        }
+        if (action.id === "app.dashboards.create_layout") {
+          const layout = out.result && typeof out.result === "object"
+            ? (out.result.layout as Record<string, unknown> | undefined)
+            : undefined;
+          const layoutName = layout && typeof layout.name === "string" ? layout.name : "dashboard";
+          const layoutKind = layout && typeof layout.dashboard_kind === "string" ? layout.dashboard_kind : "global";
+          const widgetTypes = out.result && typeof out.result === "object" && Array.isArray(out.result.widgetTypes)
+            ? out.result.widgetTypes
+              .map((x) => (typeof x === "string" ? x : null))
+              .filter((x): x is string => Boolean(x))
+            : [];
+          const widgetSet = widgetTypes.length > 0
+            ? ` Widgets: ${widgetTypes.slice(0, 8).join(", ")}${widgetTypes.length > 8 ? ", ..." : ""}.`
+            : "";
+          return {
+            text:
+              `Dashboard "${layoutName}" (${layoutKind}) created successfully with ${widgetTypes.length} widgets.${widgetSet}`,
+            status: "completed",
+            actionId: action.id,
+            result: out.result ?? {},
+            citations: Array.isArray(out.citations) ? out.citations : [],
+            artifacts: Array.isArray(out.artifacts) ? out.artifacts : [],
+          };
+        }
+        return {
+          text: `Action "${action.label}" executed successfully.`,
+          status: "completed",
+          actionId: action.id,
+          result: out.result ?? {},
+          citations: Array.isArray(out.citations) ? out.citations : [],
+          artifacts: Array.isArray(out.artifacts) ? out.artifacts : [],
+        };
+      } catch (e) {
+        return {
+          text: e instanceof Error ? e.message : "App action failed",
+          status: "failed",
+          actionId: action.id,
+        };
+      }
+    }
 
     default:
       return `Unknown tool: ${toolName}`;
   }
+}
+
+async function runModeDiagnostics(params: {
+  supabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  userRoles: string[];
+  userDepartment: string | null;
+}): Promise<{
+  generatedAt: string;
+  overallOk: boolean;
+  checks: Array<{
+    mode: "Ask" | "Analyze" | "Report" | "Action";
+    ok: boolean;
+    latencyMs: number;
+    citationCount: number;
+    suggestedActions: string[];
+    responsePreview: string;
+    message: string;
+  }>;
+  actions: {
+    permitted: number;
+    hasSensitiveConfirmAction: boolean;
+  };
+  manualChecklist: string[];
+}> {
+  const modes: Array<"Ask" | "Analyze" | "Report" | "Action"> = ["Ask", "Analyze", "Report", "Action"];
+  const providerResolution = resolveModelProvider();
+  const modelProvider = providerResolution.adapter;
+  const permitted = await permittedActionsForRoles(params.supabase, params.companyId, params.userRoles);
+  const checks: Array<{
+    mode: "Ask" | "Analyze" | "Report" | "Action";
+    ok: boolean;
+    latencyMs: number;
+    citationCount: number;
+    suggestedActions: string[];
+    responsePreview: string;
+    message: string;
+  }> = [];
+
+  for (const mode of modes) {
+    const started = performance.now();
+    try {
+      const probeQuery = `diagnostic probe for ${mode} mode`;
+      const { contextText, citations } = await retrieveRagContext(
+        params.supabase,
+        params.companyId,
+        "global",
+        probeQuery,
+        6,
+        {
+          userRoles: params.userRoles,
+          userDepartment: params.userDepartment,
+          modelProvider,
+        },
+      );
+      const latencyMs = Math.round(performance.now() - started);
+      const suggested = suggestedActionsForMode(mode, permitted);
+      checks.push({
+        mode,
+        ok: true,
+        latencyMs,
+        citationCount: citations.length,
+        suggestedActions: suggested,
+        responsePreview: contextText.slice(0, 180) || `Diagnostics ready for ${mode} mode.`,
+        message: citations.length > 0
+          ? "Context retrieval is healthy for this mode."
+          : "No indexed citations yet; mode remains operational.",
+      });
+    } catch (e) {
+      const latencyMs = Math.round(performance.now() - started);
+      const message = e instanceof Error ? e.message : "Diagnostics failed";
+      checks.push({
+        mode,
+        ok: false,
+        latencyMs,
+        citationCount: 0,
+        suggestedActions: suggestedActionsForMode(mode, permitted),
+        responsePreview: "",
+        message,
+      });
+    }
+  }
+
+  const manualChecklist = [
+    "Open /chat and validate mode switching (Ask/Analyze/Report/Action).",
+    "Run a read action in confirm mode and verify no approval prompt is needed.",
+    "Run a write action in confirm mode and verify pending confirmation appears.",
+    "Switch conversation to auto mode and verify write action executes directly.",
+  ];
+
+  return {
+    generatedAt: toIsoNow(),
+    overallOk: checks.every((c) => c.ok),
+    checks,
+    actions: {
+      permitted: permitted.length,
+      hasSensitiveConfirmAction: permitted.some((a) => a.accessLevel === "write" && a.requiresConfirmation),
+    },
+    manualChecklist,
+  };
 }
 
 serve(async (req) => {
@@ -1049,17 +2947,20 @@ serve(async (req) => {
       userId: user.id,
       body: summarizeRawBody(streamParsed.data),
     });
-    const apiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!apiKey) {
-      writeLog("error", "ai_api.missing_openai_key", {
+    const providerResolution = resolveModelProvider();
+    if (!providerResolution.adapter) {
+      writeLog("error", "ai_api.model_provider_unavailable", {
         ...baseLog,
         userId: user.id,
+        provider: providerResolution.providerType,
+        error: providerResolution.error,
       });
       return new Response(JSON.stringify({ error: "Server misconfigured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+    const modelProvider = providerResolution.adapter;
 
     const { profile, error: pErr } = await getProfile(supabase, user.id);
     if (pErr || !profile?.company_id) {
@@ -1073,8 +2974,15 @@ serve(async (req) => {
     const userRoles = normalizeRoles(profile.roles);
     const body = streamParsed.data;
     const workspaceId = body.workspaceId ?? "global";
-    const model = body.model ?? "gpt-4o";
+    const model = body.model ?? defaultModelForProvider(providerResolution.providerType);
     const permittedForStream = await permittedActionsForRoles(supabase, companyId, userRoles);
+    const allowedAppActionIds = new Set(
+      permittedForStream
+        .filter((tool) => tool.toolSource === "app")
+        .map((tool) => tool.id),
+    );
+    const agentTools = buildAgentTools(permittedForStream);
+    const permittedAppActionsPrompt = buildPermittedAppActionsPromptBlock(permittedForStream);
     const streamSuggested = suggestedActionsForMode(body.mode, permittedForStream);
 
     const { data: conv, error: convErr } = await supabase
@@ -1095,12 +3003,22 @@ serve(async (req) => {
       workspaceId,
       body.userMessage,
       8,
-      { userRoles, userDepartment: profile.department, apiKey },
+      { userRoles, userDepartment: profile.department, modelProvider },
     );
 
     const started = performance.now();
-    const systemPreamble =
-      `You are the Connected AI Business OS assistant. Mode: ${body.mode}. Tenant-scoped; cite provided context. Be concise. If unsure, say so.`;
+    const systemPreamble = [
+      "You are the Connected AI Business OS assistant.",
+      `Mode: ${body.mode}. Execution mode: ${body.executionMode}.`,
+      "Always follow this orchestration flow: understand the user intent, pick the best tool, execute it, then use tool results to produce the final answer.",
+      "Never claim an entity/dashboard/report/workflow/module was created or updated unless a tool result explicitly confirms completion.",
+      "If a tool returns pending_confirmation, clearly state it is pending approval and do not present it as completed.",
+      "For dashboard creation requests, call run_app_action with action_id=app.dashboards.create_layout and include args.dashboardKind, args.name, args.focus, args.reuseIfExists=false unless the user explicitly asks to reuse.",
+      "Use tool result fields (result/artifacts/citations) to make the final response specific, not generic.",
+      "Permitted app actions for this user:",
+      permittedAppActionsPrompt,
+      "Tenant-scoped; cite provided context. Be concise. If unsure, say so.",
+    ].join("\n");
 
     const ctxBlock = contextText
       ? `\n\n--- Retrieved context (tenant) ---\n${contextText}\n--- End context ---`
@@ -1135,6 +3053,7 @@ serve(async (req) => {
       role: "user",
       content: body.userMessage,
       citations: [],
+      artifacts: [],
     });
     if (insUserErr) {
       return new Response(JSON.stringify({ error: insUserErr.message }), {
@@ -1147,6 +3066,7 @@ serve(async (req) => {
       .from("ai_conversations")
       .update({
         mode: body.mode,
+        execution_mode: body.executionMode,
         updated_at: new Date().toISOString(),
       })
       .eq("id", body.conversationId);
@@ -1168,43 +3088,26 @@ serve(async (req) => {
         controller.enqueue(sseData({ citations }));
 
         let assistantBuffer = "";
+        const streamedArtifacts: Array<Record<string, unknown>> = [];
         let totalPromptTokens = 0;
         let totalCompletionTokens = 0;
         const MAX_TOOL_ITERATIONS = 5;
 
         try {
           for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-            const oaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${apiKey}`,
-              },
-              body: JSON.stringify({
+            let oaiJson: AiProviderChatResponse;
+            try {
+              oaiJson = await modelProvider.chatCompletions({
                 model,
-                messages: loopMessages,
-                tools: AGENT_TOOLS,
+                messages: loopMessages as unknown as Array<Record<string, unknown>>,
+                tools: agentTools,
                 tool_choice: "auto",
-              }),
-            });
-
-            if (!oaiRes.ok) {
-              const errText = await oaiRes.text();
+              });
+            } catch (e) {
+              const errText = e instanceof Error ? e.message : "LLM request failed";
               controller.enqueue(sseData({ error: `LLM error: ${errText.slice(0, 300)}` }));
               break;
             }
-
-            const oaiJson = await oaiRes.json() as {
-              choices?: {
-                message?: {
-                  role: string;
-                  content?: string | null;
-                  tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[];
-                };
-                finish_reason?: string;
-              }[];
-              usage?: { prompt_tokens?: number; completion_tokens?: number };
-            };
 
             totalPromptTokens += oaiJson.usage?.prompt_tokens ?? 0;
             totalCompletionTokens += oaiJson.usage?.completion_tokens ?? 0;
@@ -1240,40 +3143,174 @@ serve(async (req) => {
                   tool_call: { id: toolCall.id, name: toolName, args: toolArgs },
                 }));
 
-                const result = await executeAgentTool(
-                  toolName,
-                  toolArgs,
-                  supabase,
-                  companyId,
-                  user.id,
-                  userRoles,
-                );
+                let resultText = "";
+                let pending:
+                  | {
+                      actionId: string;
+                      label: string;
+                      preview?: Record<string, unknown>;
+                    }
+                  | null = null;
+                let toolExecution: AgentToolExecution = {
+                  text: "",
+                  status: "completed",
+                };
 
-                // Audit log
-                await supabase.from("ai_agent_tool_calls").insert({
-                  company_id: companyId,
-                  user_id: user.id,
-                  conversation_id: body.conversationId,
-                  tool_name: toolName,
-                  tool_call_id: toolCall.id,
-                  args: toolArgs,
-                  result: result.slice(0, 4000),
-                  iteration: iter + 1,
-                });
+                if (body.executionMode === "confirm") {
+                  const mappedPending = pendingConfirmationForToolCall(toolName, toolArgs);
+                  if (mappedPending) {
+                    pending = mappedPending;
+                    resultText = `Pending confirmation required for "${mappedPending.label}".`;
+                    toolExecution = {
+                      text: resultText,
+                      status: "pending_confirmation",
+                      actionId: mappedPending.actionId,
+                      pendingConfirmation: mappedPending,
+                      result: mappedPending.preview ?? {},
+                    };
+                  }
+                }
+
+                if (!pending) {
+                  const rawResult = await executeAgentTool(
+                    toolName,
+                    toolArgs,
+                    supabase,
+                    companyId,
+                    user.id,
+                    userRoles,
+                    body.executionMode,
+                    {
+                      userMessage: body.userMessage,
+                      allowedAppActionIds,
+                    },
+                  );
+                  toolExecution = normalizeAgentToolExecution(rawResult);
+                  resultText = toolExecution.text;
+                  if (toolExecution.pendingConfirmation) {
+                    pending = toolExecution.pendingConfirmation;
+                  }
+                  if (Array.isArray(toolExecution.artifacts) && toolExecution.artifacts.length > 0) {
+                    for (const artifact of toolExecution.artifacts) {
+                      streamedArtifacts.push(artifact);
+                      controller.enqueue(sseData({ artifact }));
+                    }
+                  }
+                }
+
+                if (pending) {
+                  const pendingPayload = {
+                    actionId: pending.actionId,
+                    label: pending.label,
+                    preview: pending.preview ?? {},
+                  };
+                  controller.enqueue(
+                    sseData({
+                      pending_confirmation: pendingPayload,
+                      pendingConfirmation: pendingPayload,
+                    }),
+                  );
+                }
+
+                // Audit logs should never block assistant responses.
+                try {
+                  await supabase.from("ai_agent_tool_calls").insert({
+                    company_id: companyId,
+                    user_id: user.id,
+                    conversation_id: body.conversationId,
+                    tool_name: toolName,
+                    tool_call_id: toolCall.id,
+                    args: toolArgs,
+                    result: resultText.slice(0, 4000),
+                    iteration: iter + 1,
+                  });
+
+                  const resultLower = resultText.trim().toLowerCase();
+                  const actionName =
+                    typeof toolExecution.actionId === "string" && toolExecution.actionId
+                      ? toolExecution.actionId
+                      : toolName === "run_app_action" && typeof toolArgs.action_id === "string"
+                      ? toolArgs.action_id
+                      : toolName;
+                  const actionStatus = pending
+                    ? "pending_confirmation"
+                    : toolExecution.status === "failed" || resultLower.startsWith("error") || resultLower.includes("failed")
+                    ? "failed"
+                    : "completed";
+
+                  await supabase.from("ai_action_logs").insert({
+                    company_id: companyId,
+                    user_id: user.id,
+                    action_name: actionName,
+                    status: actionStatus,
+                    details: {
+                      source: "agent_tool",
+                      toolName,
+                      toolCallId: toolCall.id,
+                      args: toolArgs,
+                      pendingConfirmation: pending ?? null,
+                      preview: resultText.slice(0, 400),
+                      toolStatus: toolExecution.status ?? null,
+                      result: toolExecution.result ?? null,
+                      iteration: iter + 1,
+                    },
+                    conversation_id: body.conversationId,
+                  });
+
+                  await supabase.from("activity_logs").insert({
+                    company_id: companyId,
+                    event_type: "ai.agent.tool_call",
+                    actor_user_id: user.id,
+                    payload: {
+                      toolName,
+                      actionName,
+                      status: actionStatus,
+                      toolCallId: toolCall.id,
+                      iteration: iter + 1,
+                    },
+                  });
+                } catch (auditError) {
+                  writeLog("warn", "ai_api.audit_log_failed", {
+                    ...baseLog,
+                    userId: user.id,
+                    toolName,
+                    toolCallId: toolCall.id,
+                    error: serializeError(auditError),
+                  });
+                }
 
                 // Stream the tool result preview
                 controller.enqueue(sseData({
                   tool_result: {
                     id: toolCall.id,
                     name: toolName,
-                    preview: result.slice(0, 400),
+                    preview: resultText.slice(0, 400),
                   },
                 }));
+
+                const toolPayloadForModel: Record<string, unknown> = {
+                  toolName,
+                  actionId:
+                    typeof toolExecution.actionId === "string" && toolExecution.actionId
+                      ? toolExecution.actionId
+                      : toolName === "run_app_action" && typeof toolArgs.action_id === "string"
+                      ? toolArgs.action_id
+                      : toolName,
+                  status: pending
+                    ? "pending_confirmation"
+                    : toolExecution.status ?? inferAgentToolStatusFromText(resultText),
+                  message: resultText,
+                  args: toolArgs,
+                  pendingConfirmation: pending ?? null,
+                  result: toolExecution.result ?? null,
+                  artifacts: Array.isArray(toolExecution.artifacts) ? toolExecution.artifacts : [],
+                  citations: Array.isArray(toolExecution.citations) ? toolExecution.citations.slice(0, 8) : [],
+                };
 
                 loopMessages.push({
                   role: "tool",
                   tool_call_id: toolCall.id,
-                  content: result,
+                  content: serializeToolResultForModel(toolPayloadForModel),
                 });
               }
 
@@ -1303,6 +3340,7 @@ serve(async (req) => {
           role: "assistant",
           content: assistantBuffer || "(empty)",
           citations,
+          artifacts: streamedArtifacts,
           token_usage: {
             promptTokens: totalPromptTokens,
             completionTokens: totalCompletionTokens,
@@ -1412,10 +3450,11 @@ serve(async (req) => {
             user_id: user.id,
             mode: op.mode ?? "Ask",
             title: op.title ?? null,
+            execution_mode: op.executionMode ?? "confirm",
             messages: [],
             actions: [],
           })
-          .select("id, mode, title, created_at, updated_at")
+          .select("id, mode, execution_mode, title, created_at, updated_at")
           .single();
         if (error) throw error;
         return new Response(JSON.stringify({ data }), {
@@ -1425,7 +3464,7 @@ serve(async (req) => {
       case "conversations.get": {
         const { data: conv, error: e1 } = await supabase
           .from("ai_conversations")
-          .select("id, mode, title, metadata, created_at, updated_at")
+          .select("id, mode, execution_mode, title, metadata, created_at, updated_at")
           .eq("id", op.conversationId)
           .eq("company_id", companyId)
           .eq("user_id", user.id)
@@ -1433,7 +3472,7 @@ serve(async (req) => {
         if (e1 || !conv) throw new Error("Not found");
         const { data: msgs, error: e2 } = await supabase
           .from("ai_messages")
-          .select("id, role, content, citations, token_usage, created_at")
+          .select("id, role, content, citations, artifacts, token_usage, created_at")
           .eq("conversation_id", op.conversationId)
           .order("created_at", { ascending: true });
         if (e2) throw e2;
@@ -1451,7 +3490,7 @@ serve(async (req) => {
         const lim = op.limit ?? 30;
         const { data, error } = await supabase
           .from("ai_conversations")
-          .select("id, mode, title, created_at, updated_at")
+          .select("id, mode, execution_mode, title, created_at, updated_at")
           .eq("company_id", companyId)
           .eq("user_id", user.id)
           .order("updated_at", { ascending: false })
@@ -1465,13 +3504,14 @@ serve(async (req) => {
         const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
         if (op.mode) patch.mode = op.mode;
         if (op.title !== undefined) patch.title = op.title;
+        if (op.executionMode) patch.execution_mode = op.executionMode;
         const { data, error } = await supabase
           .from("ai_conversations")
           .update(patch)
           .eq("id", op.conversationId)
           .eq("company_id", companyId)
           .eq("user_id", user.id)
-          .select("id, mode, title, updated_at")
+          .select("id, mode, execution_mode, title, updated_at")
           .single();
         if (error) throw error;
         return new Response(JSON.stringify({ data }), {
@@ -1488,6 +3528,7 @@ serve(async (req) => {
             role: op.role,
             content: op.content,
             citations: cites,
+            artifacts: Array.isArray(op.artifacts) ? op.artifacts : [],
             token_usage: op.tokenUsage ?? null,
           })
           .select("id, created_at")
@@ -1669,6 +3710,12 @@ serve(async (req) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+      case "tools.catalog": {
+        const tools = await permittedActionsForRoles(supabase, companyId, userRoles);
+        return new Response(JSON.stringify({ data: { tools } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       case "tools.diagnostics.run": {
         const report = await runModeDiagnostics({
           supabase,
@@ -1682,13 +3729,6 @@ serve(async (req) => {
         });
       }
       case "actions.execute": {
-        const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
-        if (!masterKey) {
-          return new Response(JSON.stringify({ error: "Server misconfigured" }), {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          });
-        }
         const allowed = await permittedActionsForRoles(supabase, companyId, userRoles);
         const found = allowed.find((a) => a.id === op.actionId);
         if (!found) {
@@ -1705,27 +3745,95 @@ serve(async (req) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        const exec = await toolsExecute(supabase, {
-          companyId,
-          userId: user.id,
-          roles: userRoles,
-          toolId: op.actionId,
-          args: op.payload ?? {},
-          confirmed: op.confirmed,
-          conversationId: op.conversationId,
-          source: "ai_chat",
-          masterKey,
-        });
+        let execOut: UnifiedActionExecution;
+        if (found.toolSource === "integration") {
+          const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+          if (!masterKey) {
+            return new Response(JSON.stringify({ error: "Server misconfigured" }), {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          const exec = await toolsExecute(supabase, {
+            companyId,
+            userId: user.id,
+            roles: userRoles,
+            toolId: op.actionId,
+            args: op.payload ?? {},
+            confirmed: op.confirmed,
+            conversationId: op.conversationId,
+            source: "ai_chat",
+            masterKey,
+          });
+          if (exec.pendingConfirmation) {
+            execOut = {
+              ok: false,
+              pendingConfirmation: true,
+              preview: exec.preview ?? {},
+              providerKey: found.providerKey,
+            };
+          } else {
+            execOut = {
+              ok: true,
+              result: exec.result ?? {},
+              citations: Array.isArray(exec.citations) ? exec.citations : [],
+              artifacts: [],
+              providerKey: found.providerKey,
+            };
+          }
+        } else {
+          const appAction = findAppAction(op.actionId);
+          if (!appAction) {
+            return new Response(JSON.stringify({ error: "Action not found" }), {
+              status: 404,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          execOut = await executeAppAction(supabase, {
+            action: appAction,
+            companyId,
+            userId: user.id,
+            args: op.payload ?? {},
+            confirmed: op.confirmed,
+          });
 
-        if (exec.pendingConfirmation) {
+          await supabase.from("activity_logs").insert({
+            company_id: companyId,
+            event_type: "app.tool.execute",
+            actor_user_id: user.id,
+            payload: {
+              actionId: op.actionId,
+              adapterTarget: appAction.adapterTarget,
+              accessLevel: appAction.accessLevel,
+              confirmed: op.confirmed,
+            },
+          });
+
+          await supabase.from("ai_action_logs").insert({
+            company_id: companyId,
+            user_id: user.id,
+            action_name: op.actionId,
+            status: execOut.pendingConfirmation ? "pending_confirmation" : "completed",
+            details: {
+              source: "app",
+              adapterTarget: appAction.adapterTarget,
+              args: asRecord(op.payload ?? {}),
+              preview: execOut.preview ?? null,
+              result: execOut.result ?? null,
+            },
+            conversation_id: op.conversationId ?? null,
+          });
+        }
+
+        if (execOut.pendingConfirmation) {
           return new Response(
             JSON.stringify({
               data: {
                 ok: false,
                 pendingConfirmation: true,
-                preview: exec.preview ?? {},
+                preview: execOut.preview ?? {},
                 actionId: op.actionId,
-                providerKey: found.providerKey,
+                providerKey: execOut.providerKey ?? found.providerKey,
                 requiresConfirmation: found.requiresConfirmation,
               },
             }),
@@ -1738,8 +3846,9 @@ serve(async (req) => {
             conversation_id: op.conversationId,
             company_id: companyId,
             role: "assistant",
-            content: `Executed tool ${op.actionId} successfully.`,
-            citations: exec.citations ?? [],
+            content: `Executed action ${op.actionId} successfully.`,
+            citations: Array.isArray(execOut.citations) ? execOut.citations : [],
+            artifacts: Array.isArray(execOut.artifacts) ? execOut.artifacts : [],
             token_usage: { toolExecution: true },
           });
         }
@@ -1748,9 +3857,10 @@ serve(async (req) => {
           data: {
             ok: true,
             actionId: op.actionId,
-            providerKey: found.providerKey,
-            result: exec.result ?? {},
-            citations: exec.citations ?? [],
+            providerKey: execOut.providerKey ?? found.providerKey,
+            result: execOut.result ?? {},
+            citations: Array.isArray(execOut.citations) ? execOut.citations : [],
+            artifacts: Array.isArray(execOut.artifacts) ? execOut.artifacts : [],
           },
         }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1758,13 +3868,18 @@ serve(async (req) => {
       }
       case "contexts.fetch": {
         const lim = op.limit ?? 20;
+        const providerResolution = resolveModelProvider();
         const { contextText, citations } = await retrieveRagContext(
           supabase,
           companyId,
           op.workspaceId,
           op.query ?? "",
           lim,
-          { userRoles, userDepartment: profile.department, apiKey: Deno.env.get("OPENAI_API_KEY") ?? null },
+          {
+            userRoles,
+            userDepartment: profile.department,
+            modelProvider: providerResolution.adapter,
+          },
         );
         return new Response(JSON.stringify({ data: { snippets: contextText, citations } }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -1811,7 +3926,8 @@ serve(async (req) => {
         );
       }
       case "dashboard.insights": {
-        const apiKey = Deno.env.get("OPENAI_API_KEY");
+        const providerResolution = resolveModelProvider();
+        const modelProvider = providerResolution.adapter;
         const preset = op.datePreset ?? "7d";
         const lens = (op.roleView ?? "profile").trim().slice(0, 64);
         const userRoles = normalizeRoles(profile.roles);
@@ -1826,7 +3942,11 @@ serve(async (req) => {
           "global",
           query,
           12,
-          { userRoles, userDepartment: profile.department, apiKey },
+          {
+            userRoles,
+            userDepartment: profile.department,
+            modelProvider,
+          },
         );
 
         const id = crypto.randomUUID();
@@ -1835,9 +3955,9 @@ serve(async (req) => {
         if (!contextText.trim()) {
           content =
             "No tenant-grounded context is indexed yet. Connect integrations, sync unified entities, and add documents — then refresh for RAG-backed insights.";
-        } else if (!apiKey) {
+        } else if (!modelProvider) {
           content =
-            `Indexed context is available (${citations.length} citation(s)). Open AI Workspace for a full conversation; configure OPENAI_API_KEY on ai-api for auto-generated dashboard insights.`;
+            `Indexed context is available (${citations.length} citation(s)). ${providerResolution.error ?? "Model provider is unavailable."}`;
         } else {
           const model = "gpt-4o-mini";
           const sys =
@@ -1847,25 +3967,18 @@ serve(async (req) => {
             `If context is thin, say what is missing instead of guessing.`;
           const userPayload = `Role lens: ${lens}. Time window label: ${preset}.\n\nContext:\n${contextText.slice(0, 10000)}`;
 
-          const res = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
+          const raw = await modelProvider.chatCompletions({
               model,
               response_format: { type: "json_object" },
               messages: [
                 { role: "system", content: sys },
                 { role: "user", content: userPayload },
               ],
-            }),
-          });
-          const raw = await res.json() as {
-            choices?: { message?: { content?: string } }[];
+            });
+          const typed = raw as {
+            choices?: { message?: { content?: string | null } }[];
           };
-          const rawContent = raw?.choices?.[0]?.message?.content ?? "{}";
+          const rawContent = typed?.choices?.[0]?.message?.content ?? "{}";
           try {
             const parsed = JSON.parse(rawContent) as { insight?: string };
             content = typeof parsed.insight === "string" ? parsed.insight : rawContent;
@@ -1909,13 +4022,14 @@ serve(async (req) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        const apiKey = Deno.env.get("OPENAI_API_KEY");
-        if (!apiKey) {
+        const providerResolution = resolveModelProvider();
+        if (!providerResolution.adapter) {
           return new Response(JSON.stringify({ error: "Server misconfigured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
+        const modelProvider = providerResolution.adapter;
         const tf = op.timeframe ?? "7d";
         const { data: rollupRows } = await supabase
           .from("unified_entities")
@@ -1941,7 +4055,11 @@ serve(async (req) => {
           "executive",
           `executive briefing timeframe ${tf}`,
           8,
-          { userRoles, userDepartment: profile.department, apiKey },
+          {
+            userRoles,
+            userDepartment: profile.department,
+            modelProvider,
+          },
         );
         const model = "gpt-4o-mini";
         const sys =
@@ -1956,13 +4074,7 @@ serve(async (req) => {
         }).slice(0, 12000);
 
         const started = performance.now();
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
+        const raw = await modelProvider.chatCompletions({
             model,
             response_format: { type: "json_object" },
             messages: [
@@ -1972,13 +4084,12 @@ serve(async (req) => {
                 content: `Synthesize an executive brief from this tenant snapshot:\n${userPayload}`,
               },
             ],
-          }),
-        });
-        const raw = await res.json() as {
-          choices?: { message?: { content?: string } }[];
+          });
+        const typed = raw as {
+          choices?: { message?: { content?: string | null } }[];
           usage?: { prompt_tokens?: number; completion_tokens?: number };
         };
-        const content = raw?.choices?.[0]?.message?.content ?? "{}";
+        const content = typed?.choices?.[0]?.message?.content ?? "{}";
         let brief = "";
         let actionItems: string[] = [];
         try {
@@ -2000,8 +4111,8 @@ serve(async (req) => {
           company_id: companyId,
           user_id: user.id,
           model,
-          prompt_tokens: raw.usage?.prompt_tokens ?? null,
-          completion_tokens: raw.usage?.completion_tokens ?? null,
+          prompt_tokens: typed.usage?.prompt_tokens ?? null,
+          completion_tokens: typed.usage?.completion_tokens ?? null,
           latency_ms: latency,
           conversation_id: null,
         });
@@ -2020,20 +4131,21 @@ serve(async (req) => {
               actionItems,
               citations,
               timeframe: tf,
-              usage: { ...raw.usage, latencyMs: latency, model },
+              usage: { ...typed.usage, latencyMs: latency, model },
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },
         );
       }
       case "complete.chat": {
-        const apiKey = Deno.env.get("OPENAI_API_KEY");
-        if (!apiKey) {
+        const providerResolution = resolveModelProvider();
+        if (!providerResolution.adapter) {
           return new Response(JSON.stringify({ error: "Server misconfigured" }), {
             status: 500,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
+        const modelProvider = providerResolution.adapter;
         const workspaceId = op.workspaceId ?? "global";
         const lastUser = [...op.messages].reverse().find((m) => m.role === "user");
         const q = lastUser?.content ?? "";
@@ -2043,29 +4155,26 @@ serve(async (req) => {
           workspaceId,
           q,
           6,
-          { userRoles, userDepartment: profile.department, apiKey },
+          {
+            userRoles,
+            userDepartment: profile.department,
+            modelProvider,
+          },
         );
         const mode = op.mode ?? "Ask";
         const sys =
           `You are the Connected AI Business OS assistant. Mode: ${mode}. Use tenant context; be concise.\n\nContext:\n${contextText || "(none)"}`;
         const model = op.model ?? "gpt-4o-mini";
         const started = performance.now();
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
+        const data = await modelProvider.chatCompletions({
             model,
-            messages: [{ role: "system", content: sys }, ...op.messages],
-          }),
-        });
-        const data = await res.json() as {
-          choices?: { message?: { content?: string } }[];
+            messages: [{ role: "system", content: sys }, ...op.messages] as unknown as Array<Record<string, unknown>>,
+          });
+        const typed = data as {
+          choices?: { message?: { content?: string | null } }[];
           usage?: { prompt_tokens?: number; completion_tokens?: number };
         };
-        const text = data?.choices?.[0]?.message?.content ?? "";
+        const text = typed?.choices?.[0]?.message?.content ?? "";
         const latency = Math.round(performance.now() - started);
         const modeEnum = mode as "Ask" | "Analyze" | "Report" | "Action";
         const permitted = await permittedActionsForRoles(supabase, companyId, userRoles);
@@ -2081,7 +4190,7 @@ serve(async (req) => {
             role: "assistant",
             content: text,
             citations,
-            token_usage: { ...data.usage, model },
+            token_usage: { ...typed.usage, model },
           });
         }
 
@@ -2089,8 +4198,8 @@ serve(async (req) => {
           company_id: companyId,
           user_id: user.id,
           model,
-          prompt_tokens: data.usage?.prompt_tokens ?? null,
-          completion_tokens: data.usage?.completion_tokens ?? null,
+          prompt_tokens: typed.usage?.prompt_tokens ?? null,
+          completion_tokens: typed.usage?.completion_tokens ?? null,
           latency_ms: latency,
           conversation_id: op.conversationId ?? null,
         });
@@ -2101,7 +4210,7 @@ serve(async (req) => {
               message: text,
               citations,
               actions: chatActions,
-              usage: { ...data.usage, latencyMs: latency, model },
+              usage: { ...typed.usage, latencyMs: latency, model },
             },
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } },

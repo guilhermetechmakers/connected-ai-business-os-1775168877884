@@ -368,9 +368,9 @@ export function DashboardWidgetBody({
           </div>
           <div className="md:col-span-2 flex justify-end">
             <Button variant="cta" size="sm" className="gap-2" asChild>
-              <Link to="/dashboard/ai">
+              <Link to="/chat">
                 <Bot className="h-4 w-4" />
-                Open AI workspace
+                Open AI chat
               </Link>
             </Button>
           </div>

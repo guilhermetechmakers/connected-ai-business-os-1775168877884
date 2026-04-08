@@ -21,7 +21,7 @@ export function ModeSwitch({
         if (v) onValueChange(v as AiChatMode);
       }}
       className={cn("justify-end bg-surface-inner p-1 rounded-lg", className)}
-      aria-label="AI workspace mode"
+      aria-label="AI chat mode"
     >
       {MODES.map((m) => (
         <ToggleGroupItem

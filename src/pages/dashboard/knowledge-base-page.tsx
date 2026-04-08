@@ -15,8 +15,8 @@ export default function KnowledgeBasePage() {
         description="Manage tenant documents for vector retrieval: upload files, apply visibility controls, monitor indexing status, and reindex or remove documents."
         actions={
           <Button type="button" variant="outline" size="sm" asChild>
-            <Link to="/dashboard/ai" className="gap-1">
-              Open AI workspace
+            <Link to="/chat" className="gap-1">
+              Open AI chat
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Link>
           </Button>

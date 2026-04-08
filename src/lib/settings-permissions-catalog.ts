@@ -8,7 +8,7 @@ export const SETTINGS_PERMISSION_CATALOG: { key: string; label: string; group: s
   { key: "roles.write", label: "Edit roles & assignments", group: "Roles" },
   { key: "integrations.read", label: "View integrations", group: "Integrations" },
   { key: "integrations.write", label: "Configure integrations & sync", group: "Integrations" },
-  { key: "ai.read", label: "Use AI workspace", group: "AI" },
+  { key: "ai.read", label: "Use AI chat", group: "AI" },
   { key: "ai.actions", label: "Execute AI-suggested actions", group: "AI" },
   { key: "reports.read", label: "View reports", group: "Reports" },
   { key: "reports.write", label: "Create & schedule reports", group: "Reports" },

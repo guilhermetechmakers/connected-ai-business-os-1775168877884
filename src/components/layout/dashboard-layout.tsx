@@ -33,6 +33,14 @@ const navGroups: {
   items: { to: string; label: string; icon: typeof LayoutDashboard }[];
 }[] = [
   {
+    label: "AI",
+    items: [
+      { to: "/chat", label: "AI chat", icon: Bot },
+      { to: "/dashboard/knowledge-base", label: "Knowledge base", icon: Database },
+      { to: "/search", label: "Search", icon: Search },
+    ],
+  },
+  {
     label: "Overview",
     items: [
       { to: "/dashboard/global", label: "Global dashboard", icon: LayoutDashboard },
@@ -46,14 +54,6 @@ const navGroups: {
       { to: "/dashboard/modules", label: "Modules hub", icon: Puzzle },
       { to: "/dashboard/departments", label: "Departments", icon: Building2 },
       { to: "/reports", label: "Reports", icon: FileBarChart },
-    ],
-  },
-  {
-    label: "Intelligence",
-    items: [
-      { to: "/dashboard/ai", label: "AI workspace", icon: Bot },
-      { to: "/dashboard/knowledge-base", label: "Knowledge base", icon: Database },
-      { to: "/search", label: "Search", icon: Search },
     ],
   },
   {
@@ -149,6 +149,7 @@ export function DashboardLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const { signOut, tenant, isConfigured } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const tenantName = tenant?.name ?? null;
   const tenantDomain = tenant?.domain ?? null;
 
@@ -163,7 +164,7 @@ export function DashboardLayout() {
         >
           <div className="flex h-16 items-center justify-between border-b border-border/80 px-3">
             <Link
-              to="/dashboard/global"
+              to="/chat"
               className={cn(
                 "flex items-center gap-2 font-display font-bold text-foreground",
                 collapsed && "justify-center",
@@ -241,7 +242,7 @@ export function DashboardLayout() {
                 <Link to="/search">Search</Link>
               </Button>
               <Button variant="cta" size="sm" asChild>
-                <Link to="/dashboard/ai">Open AI</Link>
+                <Link to="/chat">Open AI chat</Link>
               </Button>
               {isConfigured ? (
                 <Button
@@ -262,7 +263,14 @@ export function DashboardLayout() {
             </div>
           </header>
 
-          <main className="flex-1 px-4 py-8 md:px-12 lg:px-24">
+          <main
+            className={cn(
+              "flex flex-1 flex-col",
+              location.pathname === "/chat"
+                ? "p-0"
+                : "px-4 py-8 md:px-12 lg:px-24",
+            )}
+          >
             <Outlet />
           </main>
         </div>

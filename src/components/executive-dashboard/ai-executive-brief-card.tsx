@@ -126,7 +126,7 @@ export function AIExecutiveBriefCard({ canRefresh, className }: AIExecutiveBrief
 
       <div className="mt-auto flex flex-wrap gap-2 pt-4">
         <Button variant="cta" size="sm" className="rounded-full" asChild>
-          <Link to="/dashboard/ai">Ask AI</Link>
+          <Link to="/chat">Ask AI</Link>
         </Button>
         <Button variant="ghost" size="sm" asChild>
           <Link to="/dashboard/global">Global dashboard</Link>

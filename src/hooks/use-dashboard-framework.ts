@@ -23,7 +23,8 @@ export type DashboardSaveInstance = {
 };
 
 export const dashboardFrameworkKeys = {
-  layout: (kind: DashboardKind) => ["dashboard-framework", "layout", kind] as const,
+  layout: (kind: DashboardKind, layoutName: string) =>
+    ["dashboard-framework", "layout", kind, layoutName] as const,
   definitions: () => ["dashboard-framework", "definitions"] as const,
 };
 
@@ -36,13 +37,13 @@ export function useDashboardDefinitions() {
   });
 }
 
-export function useDashboardLayoutModel(kind: DashboardKind) {
+export function useDashboardLayoutModel(kind: DashboardKind, layoutName = "Default") {
   const qc = useQueryClient();
   const offline = useMemo(() => getOfflineDefaultLayout(kind), [kind]);
 
   const layoutQuery = useQuery({
-    queryKey: dashboardFrameworkKeys.layout(kind),
-    queryFn: () => ensureDashboardLayout(kind, "Default"),
+    queryKey: dashboardFrameworkKeys.layout(kind, layoutName),
+    queryFn: () => ensureDashboardLayout(kind, layoutName),
     enabled: isSupabaseConfigured,
     staleTime: 30_000,
   });
@@ -71,7 +72,7 @@ export function useDashboardLayoutModel(kind: DashboardKind) {
   const saveMutation = useMutation({
     mutationFn: saveDashboardLayout,
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: dashboardFrameworkKeys.layout(kind) });
+      void qc.invalidateQueries({ queryKey: dashboardFrameworkKeys.layout(kind, layoutName) });
     },
   });
 
@@ -80,12 +81,12 @@ export function useDashboardLayoutModel(kind: DashboardKind) {
       if (!isSupabaseConfigured) return;
       saveMutation.mutate({
         dashboardKind: kind,
-        name: "Default",
+        name: layoutName,
         layoutJson: payload.layoutJson,
         instances: payload.instances,
       });
     },
-    [kind, saveMutation],
+    [kind, layoutName, saveMutation],
   );
 
   return {

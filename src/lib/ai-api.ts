@@ -3,8 +3,10 @@ import { edgeFunctionAuthHeaders } from "@/lib/edge-gateway-headers";
 import { supabase, supabaseUrl } from "@/lib/supabase";
 import type {
   AiActionExecutionResult,
+  AiChatArtifact,
   AiChatMode,
   AiConversationRow,
+  AiConversationExecutionMode,
   AiDiagnosticsSummary,
   AiDashboardInsightOutput,
   AiDashboardSummary,
@@ -110,11 +112,13 @@ async function postAiJson<T>(body: Record<string, unknown>): Promise<T> {
 export async function createAiConversation(params?: {
   mode?: AiChatMode;
   title?: string;
+  executionMode?: AiConversationExecutionMode;
 }): Promise<AiConversationRow> {
   const data = await postAiJson<AiConversationRow>({
     op: "conversations.create",
     mode: params?.mode,
     title: params?.title,
+    executionMode: params?.executionMode,
   });
   return data;
 }
@@ -144,7 +148,11 @@ export async function getAiConversation(conversationId: string): Promise<{
 
 export async function updateAiConversation(
   conversationId: string,
-  patch: { mode?: AiChatMode; title?: string },
+  patch: {
+    mode?: AiChatMode;
+    title?: string;
+    executionMode?: AiConversationExecutionMode;
+  },
 ): Promise<AiConversationRow> {
   return postAiJson<AiConversationRow>({
     op: "conversations.update",
@@ -231,6 +239,14 @@ export async function fetchAiPermissions(): Promise<AiPermittedAction[]> {
   return Array.isArray(actions) ? actions : [];
 }
 
+export async function fetchAiToolsCatalog(): Promise<AiPermittedAction[]> {
+  const data = await postAiJson<{ tools: AiPermittedAction[] }>({
+    op: "tools.catalog",
+  });
+  const tools = data?.tools;
+  return Array.isArray(tools) ? tools : [];
+}
+
 export async function runAiToolsDiagnostics(): Promise<AiDiagnosticsSummary> {
   return postAiJson<AiDiagnosticsSummary>({
     op: "tools.diagnostics.run",
@@ -258,6 +274,7 @@ export async function executeAiAction(params: {
     preview: data?.preview && typeof data.preview === "object" ? data.preview : undefined,
     result: data?.result && typeof data.result === "object" ? data.result : undefined,
     citations: Array.isArray(data?.citations) ? data.citations : [],
+    artifacts: Array.isArray(data?.artifacts) ? (data.artifacts as AiChatArtifact[]) : [],
   };
 }
 
@@ -344,12 +361,19 @@ export async function streamAiChat(params: {
   conversationId: string;
   userMessage: string;
   mode: AiChatMode;
+  executionMode?: AiConversationExecutionMode;
   model?: string;
   workspaceId?: string;
   onCitations: (c: AiSourceCitation[]) => void;
   onChunk: (text: string) => void;
   onToolCall?: (call: { id: string; name: string; args?: Record<string, unknown> }) => void;
   onToolResult?: (result: { id: string; name: string; preview: string }) => void;
+  onPendingConfirmation?: (payload: {
+    actionId: string;
+    label: string;
+    preview?: Record<string, unknown>;
+  }) => void;
+  onArtifact?: (artifact: AiChatArtifact) => void;
   onSuggestedActions?: (actionIds: string[]) => void;
   onDone: (usage?: Record<string, unknown>) => void;
   onError: (message: string) => void;
@@ -363,6 +387,7 @@ export async function streamAiChat(params: {
       conversationId: params.conversationId,
       userMessage: params.userMessage,
       mode: params.mode,
+      executionMode: params.executionMode,
       model: params.model,
       workspaceId: params.workspaceId ?? "global",
     }),
@@ -399,6 +424,22 @@ export async function streamAiChat(params: {
       } else if ("tool_result" in ev && ev.tool_result && typeof ev.tool_result === "object") {
         const tr = ev.tool_result as { id: string; name: string; preview: string };
         params.onToolResult?.(tr);
+      } else if ("pending_confirmation" in ev && ev.pending_confirmation) {
+        const pc = ev.pending_confirmation as {
+          actionId: string;
+          label: string;
+          preview?: Record<string, unknown>;
+        };
+        params.onPendingConfirmation?.(pc);
+      } else if ("pendingConfirmation" in ev && ev.pendingConfirmation) {
+        const pc = ev.pendingConfirmation as {
+          actionId: string;
+          label: string;
+          preview?: Record<string, unknown>;
+        };
+        params.onPendingConfirmation?.(pc);
+      } else if ("artifact" in ev && ev.artifact && typeof ev.artifact === "object") {
+        params.onArtifact?.(ev.artifact as AiChatArtifact);
       } else if ("suggestedActions" in ev && Array.isArray(ev.suggestedActions)) {
         const ids = ev.suggestedActions
           .map((x) => {

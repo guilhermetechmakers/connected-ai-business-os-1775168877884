@@ -17,7 +17,7 @@ export const DEFAULT_LANDING_FEATURES: LandingFeatureCard[] = [
   {
     id: "ai-workspace",
     icon: "sparkles",
-    title: "AI Workspace",
+    title: "AI Chat",
     description:
       "RAG with citations, audited threads, and permission-gated actions so teams get answers without bypassing policy.",
   },
@@ -73,7 +73,7 @@ export const DEFAULT_LANDING_PRICING: LandingPricingTier[] = [
     features: [
       "Core integrations (3)",
       "Global dashboard",
-      "AI Workspace (Ask mode)",
+      "AI Chat (Ask mode)",
       "Standard support",
     ],
     cta: { label: "Sign up", href: "/auth/signup-invite" },
@@ -137,7 +137,7 @@ export const COMPARE_FEATURE_MATRIX: CompareFeatureRow[] = [
   },
   {
     id: "row-4",
-    capability: "AI Workspace modes",
+    capability: "AI Chat modes",
     starter: "Ask",
     growth: "Ask, Analyze, Report",
     enterprise: "Full + Action (gated)",

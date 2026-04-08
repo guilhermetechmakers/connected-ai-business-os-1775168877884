@@ -16,7 +16,7 @@ export default function LoginPage() {
     (location.state as { from?: string } | null)?.from &&
     String((location.state as { from?: string }).from).startsWith("/")
       ? (location.state as { from: string }).from
-      : "/dashboard/global";
+      : "/chat";
 
   useEffect(() => {
     if (isConfigured && session) {

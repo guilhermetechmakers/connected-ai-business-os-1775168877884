@@ -89,9 +89,9 @@ export function GlobalDashboardHero({ tenantName, dateRange, className }: Global
             className="rounded-full transition-transform duration-150 hover:scale-[1.03] motion-reduce:hover:scale-100"
             asChild
           >
-            <Link to="/dashboard/ai">
+            <Link to="/chat">
               <Sparkles className="h-4 w-4" aria-hidden />
-              Open AI workspace
+              Open AI chat
             </Link>
           </Button>
           <Button variant="outline" size="lg" className="rounded-full" asChild>

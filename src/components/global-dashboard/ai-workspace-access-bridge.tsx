@@ -93,7 +93,7 @@ export function AIWorkspaceAccessBridge({
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-2">
           <CardTitle className="flex items-center gap-2 font-display text-base">
             <Shield className="h-4 w-4 text-primary" aria-hidden />
-            AI workspace bridge
+            AI chat bridge
           </CardTitle>
           <div className="flex flex-wrap gap-2">
             <Button
@@ -108,9 +108,9 @@ export function AIWorkspaceAccessBridge({
               Refresh insights
             </Button>
             <Button variant="cta" size="sm" className="gap-1.5" asChild>
-              <Link to="/dashboard/ai">
+              <Link to="/chat">
                 <Bot className="h-3.5 w-3.5" />
-                Full workspace
+                Open AI chat
               </Link>
             </Button>
           </div>

@@ -4,6 +4,7 @@ import { AdminRoute } from "@/components/auth/admin-route";
 import { ProtectedRoute } from "@/components/auth/protected-route";
 import { AppProviders } from "@/components/providers";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
+import { useAuth } from "@/contexts/auth-context";
 import AdminActivityPage from "@/pages/dashboard/admin/admin-activity-page";
 import AdminAuditPage from "@/pages/dashboard/admin/admin-audit-page";
 import AdminFlagsPage from "@/pages/dashboard/admin/admin-flags-page";
@@ -15,7 +16,6 @@ import AdminTemplatesPage from "@/pages/dashboard/admin/admin-templates-page";
 import { AdminDashboardShell } from "@/components/admin-console";
 import AdminMaintenancePage from "@/pages/dashboard/admin/admin-maintenance-page";
 import AdminTenantsPage from "@/pages/dashboard/admin/admin-tenants-page";
-import AIWorkspacePage from "@/pages/dashboard/ai-workspace-page";
 import ActivityLogPage from "@/pages/dashboard/activity-log-page";
 import CreateModulePage from "@/pages/dashboard/create-module-page";
 import DepartmentWorkspacePage from "@/pages/dashboard/department-workspace-page";
@@ -49,6 +49,7 @@ import CookiesPage from "@/pages/cookies-page";
 import CompanySetupPage from "@/pages/company-setup-page";
 import EmailVerificationPage from "@/pages/email-verification-page";
 import IntegrationSetupPage from "@/pages/integration-setup-page";
+import ChatHomePage from "@/pages/chat-home-page";
 import LandingPage from "@/pages/landing-page";
 import { LegalPage } from "@/pages/legal-page";
 import LoadingPage from "@/pages/loading-page";
@@ -67,11 +68,25 @@ function LegacyDepartmentRedirect() {
   return <Navigate to={deptId ? `/departments/${deptId}` : "/departments"} replace />;
 }
 
+function RootEntryRoute() {
+  const { session, isLoading, isConfigured, demoSession } = useAuth();
+
+  if (isConfigured && isLoading) {
+    return <LoadingPage />;
+  }
+
+  const isAuthenticated = isConfigured ? Boolean(session) : Boolean(demoSession);
+  if (isAuthenticated) {
+    return <Navigate to="/chat" replace />;
+  }
+  return <LandingPage />;
+}
+
 export default function App() {
   return (
     <AppProviders>
       <Routes>
-        <Route path="/" element={<LandingPage />} />
+        <Route path="/" element={<RootEntryRoute />} />
         <Route path="/404" element={<NotFoundPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignupPage />} />
@@ -100,6 +115,9 @@ export default function App() {
         <Route path="/error-500" element={<ServerErrorPage />} />
         <Route path="/server-error" element={<ServerErrorPage />} />
         <Route element={<ProtectedRoute />}>
+          <Route path="/chat" element={<DashboardLayout />}>
+            <Route index element={<ChatHomePage />} />
+          </Route>
           <Route path="/departments" element={<DashboardLayout />}>
             <Route index element={<DepartmentsListPage />} />
             <Route path=":departmentId" element={<DepartmentWorkspacePage />} />
@@ -115,7 +133,7 @@ export default function App() {
             <Route path="modules/:moduleId/manage" element={<EditModulePage />} />
             <Route path="departments" element={<DepartmentsListPage />} />
             <Route path="departments/:departmentId" element={<DepartmentWorkspacePage />} />
-            <Route path="ai" element={<AIWorkspacePage />} />
+            <Route path="ai" element={<Navigate to="/chat" replace />} />
             <Route path="knowledge-base" element={<KnowledgeBasePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="activity" element={<ActivityLogPage />} />
