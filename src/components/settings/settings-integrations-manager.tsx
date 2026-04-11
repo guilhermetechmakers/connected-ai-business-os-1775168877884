@@ -1,6 +1,7 @@
 ﻿import { Link } from "react-router-dom";
 
 import { IntegrationConnectionSetup } from "@/components/integrations/onboarding/integration-connection-setup";
+import { TelegramBotSection } from "@/components/settings/telegram-bot-section";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -23,6 +24,8 @@ export function SettingsIntegrationsManager() {
       </Card>
 
       <IntegrationConnectionSetup showBreadcrumbs={false} />
+
+      <TelegramBotSection />
     </div>
   );
 }
