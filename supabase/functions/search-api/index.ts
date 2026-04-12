@@ -9,6 +9,7 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import JSZip from "https://esm.sh/jszip@3.10.1";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { getOpenAiEmbeddingModel, resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 const filterSchema = z
   .object({
@@ -28,7 +29,7 @@ const filterSchema = z
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_MODEL = getOpenAiEmbeddingModel();
 const EMBEDDING_DIM = 1536;
 const KB_BUCKET = "knowledge-base";
 
@@ -477,7 +478,7 @@ async function extractTextFromDocument(
   const isText =
     mt.startsWith("text/") || ext === "txt" || ext === "md" || ext === "csv";
   if (isText) {
-    return new TextDecoder().decode(bytes).replace(/\u0000/g, "").trim().slice(0, 300_000);
+    return new TextDecoder().decode(bytes).replaceAll("\0", "").trim().slice(0, 300_000);
   }
 
   if (mt.includes("officedocument.wordprocessingml.document") || ext === "docx") {
@@ -488,7 +489,7 @@ async function extractTextFromDocument(
     return extractPdfTextSimple(bytes);
   }
 
-  return new TextDecoder().decode(bytes).replace(/\u0000/g, "").trim().slice(0, 300_000);
+  return new TextDecoder().decode(bytes).replaceAll("\0", "").trim().slice(0, 300_000);
 }
 
 function approxTokenCount(text: string): number {
@@ -665,6 +666,7 @@ async function runIndexingForDocument(params: {
     if (error) throw new Error(error.message);
     docId = data.id;
   }
+  if (!docId) throw new Error("Failed to resolve indexed document id");
 
   const chunks = chunkText(text);
   if (chunks.length === 0) {
@@ -1065,10 +1067,10 @@ async function summarizeLinesWithOpenAI(lines: string[]): Promise<{ summary: str
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: resolveOpenAiModel(null, "fast"),
       messages: [
         { role: "system", content: sys },
-        { role: "user", content: lines.join("\n---\n") },
+        { role: "user", content: lines.join("\n---\n").slice(0, 12000) },
       ],
     }),
   });
@@ -1316,10 +1318,10 @@ serve(async (req) => {
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: "gpt-4o-mini",
+            model: resolveOpenAiModel(null, "fast"),
             messages: [
               { role: "system", content: sys },
-              { role: "user", content: lines.join("\n---\n") },
+              { role: "user", content: lines.join("\n---\n").slice(0, 12000) },
             ],
           }),
         });

@@ -2,12 +2,41 @@
  * AI Assistant & Agent API — conversations, RAG context, prompt assembly, streaming chat,
  * permitted actions, telemetry, audit logs. Secrets: OPENAI_API_KEY.
  * Client: supabase.functions.invoke('ai-api', { body: { op, ... } }) or fetch + SSE for stream.chat.
+ *
+ * Intent planning: `stream.chat` calls `intent-agent` (same project JWT) unless `AI_INTENT_AGENT_MODE=off`.
+ * Modes: `execute` (default) — deterministic integration reads + single LLM answer when successful;
+ * `shadow` — log plans only; `off` — skip intent-agent.
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
-import { toolsExecute, toolsList } from "../_shared/integrations-runtime.ts";
+import {
+  getGoogleCalendarPrimaryTimezone,
+  getRuntimeToolDefinition,
+  toolsExecute,
+  toolsList,
+} from "../_shared/integrations-runtime.ts";
+import { intentPlanRequestSchema, type IntentPlanResult } from "../_shared/intent-plan.ts";
+import { resolveDateOrderHint } from "../_shared/intent-time.ts";
+import { resolveCalendarListWindowFromMessageAndPlan as buildCalendarListWindowForIntent } from "../_shared/calendar-query-window.ts";
+import {
+  buildCalendarCreateDateClarificationMessage,
+  isCalendarCreateDateAmbiguousFromUserMessage,
+} from "../_shared/calendar-create-ambiguity.ts";
+import {
+  buildCalendarCreatePendingPreview,
+  normalizeCalendarCreateInput,
+  shouldExecuteCalendarCreate,
+} from "../_shared/calendar-write.ts";
+import {
+  getOpenAiDefaultModel,
+  getOpenAiEmbeddingModel,
+  getOpenAiFastModel,
+  isResponsesApiEnabled,
+  isToolSearchEnabled,
+  resolveOpenAiModel,
+} from "../_shared/openai-models.ts";
 
 type LogLevel = "info" | "warn" | "error";
 
@@ -61,6 +90,9 @@ function summarizeRawBody(raw: unknown): Record<string, unknown> {
   if (typeof body.executionMode === "string") out.executionMode = body.executionMode;
   if (typeof body.actionId === "string") out.actionId = body.actionId;
   if (typeof body.model === "string") out.model = body.model;
+  if (typeof body.clientTimeZone === "string") out.clientTimeZone = body.clientTimeZone;
+  if (typeof body.clientLocale === "string") out.clientLocale = body.clientLocale;
+  if (typeof body.clientNowIso === "string") out.clientNowIso = body.clientNowIso;
   return out;
 }
 
@@ -97,6 +129,10 @@ const jsonOpSchema = z.discriminatedUnion("op", [
     mode: z.enum(["Ask", "Analyze", "Report", "Action"]).optional(),
     title: z.string().max(200).optional(),
     executionMode: z.enum(["confirm", "auto"]).optional(),
+  }),
+  z.object({
+    op: z.literal("conversations.delete"),
+    conversationId: z.string().uuid(),
   }),
   z.object({
     op: z.literal("messages.add"),
@@ -192,11 +228,14 @@ const streamOpSchema = z.object({
   executionMode: z.enum(["confirm", "auto"]).optional().default("confirm"),
   model: z.string().optional(),
   workspaceId: z.string().max(120).optional().default("global"),
+  clientNowIso: z.string().optional(),
+  clientTimeZone: z.string().max(120).optional(),
+  clientLocale: z.string().max(32).optional(),
 });
 
 type ProfileRow = { company_id: string | null; roles: string[] | null; department: string | null };
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
+const EMBEDDING_MODEL = getOpenAiEmbeddingModel();
 const EMBEDDING_DIM = 1536;
 const REPORT_EXPORT_BUCKET = "report-exports";
 const REPORT_EXPORT_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -231,6 +270,9 @@ type AiProviderChatRequest = {
   tools?: unknown;
   tool_choice?: "auto" | "none" | Record<string, unknown>;
   response_format?: { type: "json_object" };
+  reasoning?: { effort: "none" | "low" | "medium" | "high" | "xhigh" };
+  text?: { verbosity: "low" | "medium" | "high" };
+  temperature?: number;
 };
 
 type AiProviderAdapter = {
@@ -245,7 +287,147 @@ function configuredProviderType(): AiProviderType {
 }
 
 function defaultModelForProvider(providerType: AiProviderType): string {
-  return providerType === "openai" ? "gpt-4o" : "claude-3-5-sonnet-latest";
+  return providerType === "openai" ? getOpenAiDefaultModel() : "claude-3-5-sonnet-latest";
+}
+
+function getOpenAiReasoningEffort(): "none" | "low" | "medium" | "high" | "xhigh" {
+  const raw = (Deno.env.get("OPENAI_REASONING_EFFORT") ?? "none").trim().toLowerCase();
+  if (raw === "low" || raw === "medium" || raw === "high" || raw === "xhigh") {
+    return raw;
+  }
+  return "none";
+}
+
+function getOpenAiVerbosity(): "low" | "medium" | "high" {
+  const raw = (Deno.env.get("OPENAI_TEXT_VERBOSITY") ?? "low").trim().toLowerCase();
+  if (raw === "medium" || raw === "high") return raw;
+  return "low";
+}
+
+function mapToolDefinitionsForResponses(tools: unknown): Array<Record<string, unknown>> | undefined {
+  if (!Array.isArray(tools)) return undefined;
+  const mapped = tools
+    .map((tool) => {
+      if (!tool || typeof tool !== "object") return null;
+      const record = tool as Record<string, unknown>;
+      if (record.type !== "function") return record;
+      const fn = record.function as Record<string, unknown> | undefined;
+      if (!fn) return record;
+      const name = typeof fn.name === "string" ? fn.name : "";
+      const shouldDefer = name !== "query_integration" && name !== "run_app_action";
+      return {
+        type: "function",
+        name,
+        description: fn.description,
+        parameters: fn.parameters,
+        defer_loading: shouldDefer,
+      };
+    })
+    .filter((tool): tool is Record<string, unknown> => Boolean(tool));
+  if (mapped.length === 0) return undefined;
+  if (isToolSearchEnabled()) {
+    mapped.push({ type: "tool_search" });
+  }
+  return mapped;
+}
+
+function normalizeToolChoiceForResponses(
+  toolChoice: "auto" | "none" | Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!toolChoice || toolChoice === "auto" || toolChoice === "none") return undefined;
+  if (typeof toolChoice !== "object") return undefined;
+  const asRecord = toolChoice as Record<string, unknown>;
+  if (asRecord.type === "function" && asRecord.function && typeof asRecord.function === "object") {
+    const fn = asRecord.function as Record<string, unknown>;
+    const fnName = typeof fn.name === "string" ? fn.name : null;
+    if (fnName) {
+      return {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "function", name: fnName }],
+      };
+    }
+  }
+  return undefined;
+}
+
+function mapMessagesForResponses(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const input: Array<Record<string, unknown>> = [];
+  for (const msg of messages) {
+    const role = typeof msg.role === "string" ? msg.role : "";
+    if ((role === "system" || role === "user" || role === "assistant") && typeof msg.content === "string") {
+      input.push({ role, content: msg.content });
+    }
+    if (role === "assistant" && Array.isArray(msg.tool_calls)) {
+      for (const rawCall of msg.tool_calls) {
+        if (!rawCall || typeof rawCall !== "object") continue;
+        const toolCall = rawCall as Record<string, unknown>;
+        const fn = (toolCall.function ?? {}) as Record<string, unknown>;
+        const name = typeof fn.name === "string" ? fn.name : "";
+        if (!name) continue;
+        const callId = typeof toolCall.id === "string" ? toolCall.id : crypto.randomUUID();
+        const argumentsText = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+        input.push({
+          type: "function_call",
+          call_id: callId,
+          name,
+          arguments: argumentsText,
+        });
+      }
+    }
+    if (role === "tool") {
+      const callId = typeof msg.tool_call_id === "string" ? msg.tool_call_id : "";
+      if (!callId) continue;
+      input.push({
+        type: "function_call_output",
+        call_id: callId,
+        output: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? {}),
+      });
+    }
+  }
+  return input;
+}
+
+function parseResponsesOutputText(responseJson: Record<string, unknown>): string {
+  const direct = responseJson.output_text;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const out = Array.isArray(responseJson.output) ? responseJson.output : [];
+  const messageText: string[] = [];
+  for (const item of out) {
+    if (!item || typeof item !== "object") continue;
+    const i = item as Record<string, unknown>;
+    if (i.type !== "message") continue;
+    const contentParts = Array.isArray(i.content) ? i.content : [];
+    for (const part of contentParts) {
+      if (!part || typeof part !== "object") continue;
+      const p = part as Record<string, unknown>;
+      if (typeof p.text === "string" && p.text.trim()) {
+        messageText.push(p.text);
+      }
+    }
+  }
+  return messageText.join("\n").trim();
+}
+
+function parseResponsesToolCalls(responseJson: Record<string, unknown>): AiProviderToolCall[] {
+  const out = Array.isArray(responseJson.output) ? responseJson.output : [];
+  const toolCalls: AiProviderToolCall[] = [];
+  for (const item of out) {
+    if (!item || typeof item !== "object") continue;
+    const i = item as Record<string, unknown>;
+    if (i.type !== "function_call") continue;
+    const name = typeof i.name === "string" ? i.name : "";
+    const callId = typeof i.call_id === "string" ? i.call_id : crypto.randomUUID();
+    const argsRaw = i.arguments;
+    const args = typeof argsRaw === "string" ? argsRaw : JSON.stringify(argsRaw ?? {});
+    if (!name) continue;
+    toolCalls.push({
+      id: callId,
+      type: "function",
+      function: { name, arguments: args },
+    });
+  }
+  return toolCalls;
 }
 
 function resolveModelProvider(): {
@@ -274,7 +456,64 @@ function resolveModelProvider(): {
   const openAiAdapter: AiProviderAdapter = {
     type: "openai",
     chatCompletions: async (payload) => {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      if (isResponsesApiEnabled()) {
+        const reasoning = payload.reasoning ?? { effort: getOpenAiReasoningEffort() };
+        const text = payload.text ?? { verbosity: getOpenAiVerbosity() };
+        const responsePayload: Record<string, unknown> = {
+          model: payload.model,
+          input: mapMessagesForResponses(payload.messages),
+          reasoning,
+          text,
+        };
+        if (typeof payload.temperature === "number" && reasoning.effort === "none") {
+          responsePayload.temperature = payload.temperature;
+        }
+        const tools = mapToolDefinitionsForResponses(payload.tools);
+        if (tools && tools.length > 0) {
+          responsePayload.tools = tools;
+          const mappedChoice = normalizeToolChoiceForResponses(payload.tool_choice);
+          if (mappedChoice) {
+            responsePayload.tool_choice = mappedChoice;
+          }
+        }
+        if (payload.response_format?.type === "json_object") {
+          responsePayload.text = {
+            ...text,
+            format: { type: "json_object" },
+          };
+        }
+        const res = await fetch("https://api.openai.com/v1/responses", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(responsePayload),
+        });
+        if (!res.ok) {
+          const detail = await res.text();
+          throw new Error(`Responses API error (${res.status}): ${detail.slice(0, 500)}`);
+        }
+        const responseJson = await res.json() as Record<string, unknown>;
+        const toolCalls = parseResponsesToolCalls(responseJson);
+        const content = parseResponsesOutputText(responseJson);
+        const usage = responseJson.usage as Record<string, unknown> | undefined;
+        return {
+          choices: [{
+            message: {
+              role: "assistant",
+              content,
+              ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+            },
+            finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
+          }],
+          usage: {
+            prompt_tokens: typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined,
+            completion_tokens: typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined,
+          },
+        };
+      }
+      const fallbackRes = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -282,11 +521,11 @@ function resolveModelProvider(): {
         },
         body: JSON.stringify(payload),
       });
-      if (!res.ok) {
-        const detail = await res.text();
-        throw new Error(`LLM error (${res.status}): ${detail.slice(0, 300)}`);
+      if (!fallbackRes.ok) {
+        const detail = await fallbackRes.text();
+        throw new Error(`LLM error (${fallbackRes.status}): ${detail.slice(0, 300)}`);
       }
-      return await res.json() as AiProviderChatResponse;
+      return await fallbackRes.json() as AiProviderChatResponse;
     },
     createEmbeddings: async (payload) => {
       const res = await fetch("https://api.openai.com/v1/embeddings", {
@@ -448,6 +687,21 @@ const APP_ACTIONS: AppActionDefinition[] = [
       name: "string?",
       focus: "string?",
       reuseIfExists: "boolean?",
+    },
+    adapterTarget: "dashboard-api",
+  },
+  {
+    id: "app.custom_dashboards.generate",
+    label: "Custom dashboards: generate code",
+    domain: "dashboards",
+    description:
+      "Generate an unsaved custom React dashboard artifact from user intent using connected integration data reads.",
+    accessLevel: "read",
+    requiresConfirmation: false,
+    argsSchema: {
+      intent: "string",
+      titleHint: "string?",
+      descriptionHint: "string?",
     },
     adapterTarget: "dashboard-api",
   },
@@ -669,6 +923,46 @@ function normalizeDashboardCreateArgs(
     next.reuseIfExists = asksReuse;
   }
   return next;
+}
+
+function normalizeCustomDashboardGenerateArgs(
+  rawArgs: Record<string, unknown>,
+  userMessage: string,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...rawArgs };
+  const intent = typeof next.intent === "string" && next.intent.trim().length > 0
+    ? next.intent.trim()
+    : userMessage.trim();
+  next.intent = intent;
+
+  if (!(typeof next.titleHint === "string" && next.titleHint.trim().length > 0)) {
+    next.titleHint = deriveDashboardBaseName(null, intent);
+  }
+  if (!(typeof next.descriptionHint === "string")) {
+    next.descriptionHint = "";
+  }
+  return next;
+}
+
+async function isFeatureEnabledForCompany(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagKey: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("feature_flags")
+    .select("company_id, enabled, rollout")
+    .eq("flag_key", flagKey)
+    .or(`company_id.eq.${companyId},company_id.is.null`);
+  if (error) throw new Error(error.message);
+  const rows = Array.isArray(data) ? data : [];
+  const tenantRow = rows.find((row) => row && row.company_id === companyId);
+  const globalRow = rows.find((row) => row && row.company_id === null);
+  const selected = tenantRow ?? globalRow;
+  if (!selected) return false;
+  const enabled = selected.enabled === true;
+  const rollout = typeof selected.rollout === "number" ? selected.rollout : 100;
+  return enabled && rollout > 0;
 }
 
 function isElevatedRole(userRoles: string[]): boolean {
@@ -1042,6 +1336,754 @@ function buildDashboardSeed(params: {
   };
 }
 
+type CustomDashboardQueryStep = {
+  toolId: string;
+  args: Record<string, unknown>;
+  provider?: string;
+  label?: string;
+};
+
+type CustomDashboardToolCatalogItem = {
+  id: string;
+  providerKey: string;
+  label: string;
+  description: string;
+  argsShape: Record<string, unknown>;
+};
+
+type CustomDashboardGenerationOutput = {
+  title: string;
+  description: string;
+  componentCodeTsx: string;
+  queryPlan: CustomDashboardQueryStep[];
+  snapshotData: Record<string, unknown>;
+  sources: string[];
+  citations: Array<Record<string, unknown>>;
+};
+
+const customDashboardQueryStepSchema = z.object({
+  toolId: z.string().min(1).max(200),
+  args: z.record(z.unknown()).optional(),
+  provider: z.string().min(1).max(80).optional(),
+  label: z.string().min(1).max(200).optional(),
+});
+
+const customDashboardFinishSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(4000).optional(),
+  componentCodeTsx: z.string().min(1).max(300000),
+  queryPlan: z.array(customDashboardQueryStepSchema).optional(),
+  snapshotData: z.record(z.unknown()).optional(),
+  sources: z.array(z.string().min(1).max(80)).optional(),
+});
+
+function sanitizeCustomDashboardSnapshot(value: unknown, depth = 0): unknown {
+  if (value === null) return null;
+  if (typeof value === "string") {
+    return value.length > 8000 ? `${value.slice(0, 8000)}...(truncated)` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 4) return "[max-depth]";
+  if (Array.isArray(value)) {
+    return value.slice(0, 120).map((x) => sanitizeCustomDashboardSnapshot(x, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>).slice(0, 120)) {
+      out[key] = sanitizeCustomDashboardSnapshot(val, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function normalizeCustomDashboardQueryPlan(raw: unknown): CustomDashboardQueryStep[] {
+  const parsed = z.array(customDashboardQueryStepSchema).safeParse(raw);
+  if (!parsed.success) return [];
+  return parsed.data.map((step) => ({
+    toolId: step.toolId,
+    args: asRecord(step.args),
+    provider: step.provider,
+    label: step.label,
+  }));
+}
+
+function buildFallbackCustomDashboardCode(title: string): string {
+  const safeTitle = title.replace(/`/g, "'").trim() || "Custom dashboard";
+  const titleLiteral = JSON.stringify(safeTitle);
+  return [
+    "export default function CustomDashboard(props) {",
+    "  const snapshot = props?.snapshotData && typeof props.snapshotData === 'object' ? props.snapshotData : {};",
+    "  const datasets = Array.isArray(snapshot.datasets) ? snapshot.datasets : [];",
+    "  const summary = snapshot.summary && typeof snapshot.summary === 'object' ? snapshot.summary : {};",
+    "  const rows = [];",
+    "  const seen = new Set();",
+    "  for (const dataset of datasets) {",
+    "    const result = dataset && typeof dataset === 'object' && dataset.result && typeof dataset.result === 'object' ? dataset.result : {};",
+    "    const files = Array.isArray(result.files) ? result.files : Array.isArray(result.items) ? result.items : [];",
+    "    for (const raw of files) {",
+    "      if (!raw || typeof raw !== 'object') continue;",
+    "      const file = raw;",
+    "      const key = typeof file.id === 'string' && file.id.length > 0 ? file.id : typeof file.webViewLink === 'string' ? file.webViewLink : null;",
+    "      if (!key || seen.has(key)) continue;",
+    "      seen.add(key);",
+    "      rows.push(file);",
+    "    }",
+    "  }",
+    "  const folderMime = 'application/vnd.google-apps.folder';",
+    "  const folderCount = rows.filter((row) => row && row.mimeType === folderMime).length;",
+    "  const fileCount = Math.max(rows.length - folderCount, 0);",
+    "  const ownerCounts = new Map();",
+    "  const typeCounts = new Map();",
+    "  for (const row of rows) {",
+    "    const owner = Array.isArray(row.owners) && row.owners.length > 0 && row.owners[0] && typeof row.owners[0] === 'object'",
+    "      ? (typeof row.owners[0].displayName === 'string' && row.owners[0].displayName.trim().length > 0",
+    "        ? row.owners[0].displayName.trim()",
+    "        : typeof row.owners[0].emailAddress === 'string' ? row.owners[0].emailAddress : 'Unknown')",
+    "      : 'Unknown';",
+    "    ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);",
+    "    const mime = typeof row.mimeType === 'string' && row.mimeType.length > 0 ? row.mimeType : 'unknown';",
+    "    const shortType = mime.includes('/') ? mime.split('/').slice(-1)[0] : mime;",
+    "    typeCounts.set(shortType, (typeCounts.get(shortType) ?? 0) + 1);",
+    "  }",
+    "  const topTypes = Array.from(typeCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 6);",
+    "  const maxTypeCount = Math.max(1, ...topTypes.map((entry) => Number(entry[1] ?? 0)));",
+    "  const kpiItems = [",
+    "    { label: 'Total items', value: rows.length },",
+    "    { label: 'Folders', value: folderCount },",
+    "    { label: 'Files', value: fileCount },",
+    "    { label: 'Sources', value: Array.isArray(props?.sources) ? props.sources.length : 0 },",
+    "  ];",
+    "  const styles = {",
+    "    shell: { display: 'grid', gap: 14, fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif' },",
+    "    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 },",
+    "    kicker: { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cd-muted)' },",
+    "    title: { margin: '3px 0 0', fontSize: 32, lineHeight: 1.1, fontWeight: 700 },",
+    "    subtitle: { margin: '6px 0 0', fontSize: 13, color: 'var(--cd-muted)' },",
+    "    badge: { fontSize: 12, color: 'var(--cd-muted)', border: '1px solid var(--cd-panel-border)', borderRadius: 999, padding: '6px 10px', background: 'var(--cd-panel-bg)' },",
+    "    kpiGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 },",
+    "    kpi: { border: '1px solid var(--cd-panel-border)', borderRadius: 14, padding: 12, background: 'var(--cd-panel-bg)' },",
+    "    kpiLabel: { fontSize: 12, color: 'var(--cd-muted)', marginBottom: 6 },",
+    "    kpiValue: { fontSize: 30, fontWeight: 700, lineHeight: 1, color: 'var(--cd-strong)' },",
+    "    grid: { display: 'grid', gridTemplateColumns: 'minmax(0,1.2fr) minmax(0,1fr)', gap: 12 },",
+    "    panel: { border: '1px solid var(--cd-panel-border)', borderRadius: 14, padding: 12, background: 'var(--cd-panel-bg)' },",
+    "    panelTitle: { margin: 0, fontSize: 14, fontWeight: 600 },",
+    "    panelHint: { margin: '4px 0 10px', fontSize: 12, color: 'var(--cd-muted)' },",
+    "    barRow: { display: 'grid', gridTemplateColumns: 'minmax(100px,1fr) minmax(120px,2fr) 40px', alignItems: 'center', gap: 8, marginBottom: 8 },",
+    "    barTrack: { height: 9, borderRadius: 999, background: 'var(--cd-track)' },",
+    "    barFill: { height: '100%', borderRadius: 999, background: 'var(--cd-accent)' },",
+    "    barLabel: { fontSize: 12, color: 'var(--cd-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },",
+    "    barValue: { fontSize: 12, fontWeight: 600, textAlign: 'right' },",
+    "    list: { display: 'grid', gap: 7 },",
+    "    listRow: { display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, border: '1px solid var(--cd-panel-border)', borderRadius: 10, padding: '8px 10px', background: 'var(--cd-panel-alt)' },",
+    "    listTitle: { fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },",
+    "    listSub: { fontSize: 11, color: 'var(--cd-muted)', marginTop: 2 },",
+    "    empty: { fontSize: 12, color: 'var(--cd-muted)', border: '1px dashed var(--cd-panel-border)', borderRadius: 10, padding: 10 },",
+    "  };",
+    "  return (",
+    "    <div style={styles.shell}>",
+    "      <div style={styles.header}>",
+    "        <div>",
+    "          <div style={styles.kicker}>Connected AI custom dashboard</div>",
+    `          <h2 style={styles.title}>${titleLiteral}</h2>`,
+    "          <p style={styles.subtitle}>Live snapshot overview from connected integrations.</p>",
+    "        </div>",
+    "        <div style={styles.badge}>{typeof props?.refreshedAt === 'string' ? `Refreshed ${new Date(props.refreshedAt).toLocaleString()}` : 'Snapshot mode'}</div>",
+    "      </div>",
+    "      <div style={styles.kpiGrid}>",
+    "        {kpiItems.map((item) => (",
+    "          <div key={item.label} style={styles.kpi}>",
+    "            <div style={styles.kpiLabel}>{item.label}</div>",
+    "            <div style={styles.kpiValue}>{item.value}</div>",
+    "          </div>",
+    "        ))}",
+    "      </div>",
+    "      <div style={styles.grid}>",
+    "        <div style={styles.panel}>",
+    "          <h3 style={styles.panelTitle}>Top file types</h3>",
+    "          <p style={styles.panelHint}>Distribution from the current snapshot.</p>",
+    "          {topTypes.length === 0 ? (",
+    "            <div style={styles.empty}>No files available in this snapshot yet.</div>",
+    "          ) : (",
+    "            <div>",
+    "              {topTypes.map(([label, count]) => {",
+    "                const width = Math.max(8, Math.round((Number(count) / maxTypeCount) * 100));",
+    "                return (",
+    "                  <div key={label} style={styles.barRow}>",
+    "                    <div style={styles.barLabel}>{label}</div>",
+    "                    <div style={styles.barTrack}><div style={{ ...styles.barFill, width: `${width}%` }} /></div>",
+    "                    <div style={styles.barValue}>{count}</div>",
+    "                  </div>",
+    "                );",
+    "              })}",
+    "            </div>",
+    "          )}",
+    "        </div>",
+    "        <div style={styles.panel}>",
+    "          <h3 style={styles.panelTitle}>Recent files</h3>",
+    "          <p style={styles.panelHint}>Latest rows from Google Drive results.</p>",
+    "          {rows.length === 0 ? (",
+    "            <div style={styles.empty}>No file rows returned by the query plan.</div>",
+    "          ) : (",
+    "            <div style={styles.list}>",
+    "              {rows.slice(0, 8).map((row, idx) => (",
+    "                <div key={typeof row.id === 'string' ? row.id : String(idx)} style={styles.listRow}>",
+    "                  <div>",
+    "                    <div style={styles.listTitle}>{typeof row.name === 'string' ? row.name : `File ${idx + 1}`}</div>",
+    "                    <div style={styles.listSub}>{typeof row.mimeType === 'string' ? row.mimeType : 'unknown type'}</div>",
+    "                  </div>",
+    "                  <div style={styles.listSub}>{typeof row.modifiedTime === 'string' ? new Date(row.modifiedTime).toLocaleDateString() : ''}</div>",
+    "                </div>",
+    "              ))}",
+    "            </div>",
+    "          )}",
+    "        </div>",
+    "      </div>",
+    "    </div>",
+    "  );",
+    "}",
+  ].join("\n");
+}
+
+function stripModuleSyntax(rawCode: string): string {
+  const lines = rawCode.split("\n");
+  const kept: string[] = [];
+  let skippingImport = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (skippingImport) {
+      if (trimmed.endsWith(";")) skippingImport = false;
+      continue;
+    }
+    if (trimmed.startsWith("import ")) {
+      if (!trimmed.endsWith(";")) skippingImport = true;
+      continue;
+    }
+    if (trimmed.startsWith("export {") && trimmed.endsWith("};")) {
+      continue;
+    }
+    kept.push(line);
+  }
+
+  return kept.join("\n");
+}
+
+function normalizeGeneratedComponentCode(rawCode: string, fallbackTitle: string): string {
+  const unfenced = rawCode
+    .replace(/^```[a-zA-Z]*\s*/i, "")
+    .replace(/\s*```$/, "");
+  const code = stripModuleSyntax(unfenced).trim();
+  if (!code) return buildFallbackCustomDashboardCode(fallbackTitle);
+  if (/export\s+default/.test(code)) {
+    return code;
+  }
+  if (/function\s+CustomDashboard\s*\(/.test(code)) {
+    return `${code}\n\nexport default CustomDashboard;`;
+  }
+  if (/const\s+CustomDashboard\s*=/.test(code)) {
+    return `${code}\n\nexport default CustomDashboard;`;
+  }
+  return buildFallbackCustomDashboardCode(fallbackTitle);
+}
+
+function buildToolCatalogSummaryForPrompt(catalog: CustomDashboardToolCatalogItem[]): string {
+  if (catalog.length === 0) return "- none";
+  return catalog
+    .map((tool) => {
+      const args = Object.entries(tool.argsShape)
+        .slice(0, 10)
+        .map(([key, value]) => `${key}:${String(value)}`)
+        .join(", ");
+      return `- ${tool.id} provider=${tool.providerKey} label="${tool.label}" args={${args || "none"}}`;
+    })
+    .join("\n");
+}
+
+function normalizeIntegrationSources(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const value = item.trim().toLowerCase();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+async function generateCustomDashboardCodeArtifact(params: {
+  supabase: SupabaseClient;
+  runtimeSupabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  userRoles: string[];
+  intent: string;
+  titleHint: string;
+  modelProvider: AiProviderAdapter;
+  toolCatalog: CustomDashboardToolCatalogItem[];
+}): Promise<CustomDashboardGenerationOutput> {
+  const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+  if (!masterKey) {
+    throw new Error("CREDENTIALS_MASTER_KEY is not configured");
+  }
+  const requiredMasterKey: string = masterKey;
+
+  const readToolIds = params.toolCatalog.map((tool) => tool.id);
+  const allowedSet = new Set(readToolIds);
+  const toolCatalogPrompt = buildToolCatalogSummaryForPrompt(params.toolCatalog);
+  const snapshots: Array<Record<string, unknown>> = [];
+  const queryPlanSteps: CustomDashboardQueryStep[] = [];
+  const citationsOut: Array<Record<string, unknown>> = [];
+  const integrationSources = new Set<string>();
+
+  async function materializeSnapshotFromQueryPlan(queryPlan: CustomDashboardQueryStep[]): Promise<{
+    snapshotData: Record<string, unknown>;
+    sources: string[];
+    citations: Array<Record<string, unknown>>;
+  }> {
+    if (queryPlan.length === 0) {
+      return {
+        snapshotData: asRecord(
+          sanitizeCustomDashboardSnapshot({
+            generatedAt: toIsoNow(),
+            refreshedAt: toIsoNow(),
+            datasets: [],
+            summary: { stepCount: 0, successCount: 0, errorCount: 0 },
+          }),
+        ),
+        sources: normalizeIntegrationSources(Array.from(integrationSources)),
+        citations: [],
+      };
+    }
+
+    const datasets: Array<Record<string, unknown>> = [];
+    const emittedCitations: Array<Record<string, unknown>> = [];
+    const sourceKeys = new Set<string>(Array.from(integrationSources));
+
+    for (let index = 0; index < queryPlan.length; index++) {
+      const step = queryPlan[index];
+      const toolId = typeof step.toolId === "string" ? step.toolId : "";
+      const args = asRecord(step.args);
+      const runtimeDef = getRuntimeToolDefinition(toolId);
+
+      if (!toolId || !allowedSet.has(toolId) || !runtimeDef || runtimeDef.accessLevel !== "read") {
+        datasets.push({
+          step: index + 1,
+          toolId,
+          providerKey: runtimeDef?.providerKey ?? null,
+          args,
+          status: "failed",
+          error: `Tool ${toolId || "(missing)"} is unavailable or not read-only for this user.`,
+          executedAt: toIsoNow(),
+        });
+        continue;
+      }
+
+      try {
+        const exec = await toolsExecute(params.runtimeSupabase, {
+          companyId: params.companyId,
+          userId: params.userId,
+          roles: params.userRoles,
+          toolId,
+          args,
+          confirmed: true,
+          source: "ai_chat",
+          masterKey: requiredMasterKey,
+        });
+        const result = asRecord(sanitizeCustomDashboardSnapshot(exec.result ?? {}));
+        if (runtimeDef.providerKey) sourceKeys.add(runtimeDef.providerKey);
+        if (exec.providerKey) sourceKeys.add(exec.providerKey);
+        if (Array.isArray(exec.citations)) {
+          emittedCitations.push(...(exec.citations as Array<Record<string, unknown>>));
+        }
+        datasets.push({
+          step: index + 1,
+          toolId,
+          providerKey: exec.providerKey ?? runtimeDef.providerKey,
+          args,
+          status: "succeeded",
+          result,
+          executedAt: toIsoNow(),
+        });
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "Tool execution failed";
+        datasets.push({
+          step: index + 1,
+          toolId,
+          providerKey: runtimeDef.providerKey,
+          args,
+          status: "failed",
+          error: messageText,
+          executedAt: toIsoNow(),
+        });
+      }
+    }
+
+    const summary = {
+      stepCount: queryPlan.length,
+      successCount: datasets.filter((row) => row.status === "succeeded").length,
+      errorCount: datasets.filter((row) => row.status !== "succeeded").length,
+    };
+
+    return {
+      snapshotData: asRecord(
+        sanitizeCustomDashboardSnapshot({
+          generatedAt: toIsoNow(),
+          refreshedAt: toIsoNow(),
+          datasets,
+          summary,
+        }),
+      ),
+      sources: normalizeIntegrationSources(Array.from(sourceKeys)),
+      citations: emittedCitations,
+    };
+  }
+
+  type OAIMessage = {
+    role: "system" | "user" | "assistant" | "tool";
+    content: string | null;
+    tool_call_id?: string;
+    tool_calls?: AiProviderToolCall[];
+  };
+
+  const systemPrompt = [
+    "You build production-ready custom dashboards for Connected AI Business OS.",
+    "Use read_integration_data to fetch required live tenant data before finishing.",
+    "When enough data is collected, call finish_custom_dashboard with a complete payload.",
+    "The generated component code must be TSX and must export default a React component named CustomDashboard.",
+    "Do not import external packages. Use only React globals and plain JSX.",
+    "The component receives props: snapshotData, queryPlan, sources, refreshedAt.",
+    "Use intentional card-based layout and readable labels aligned with app dashboard style.",
+    "The UI must look like a real dashboard: at least 3 KPI cards, at least 1 chart section, and at least 1 table/list section.",
+    "Never render raw JSON dumps with JSON.stringify as the main content.",
+    "Do not output markdown code fences. Return executable TSX only.",
+    "If data is missing, render explicit empty states.",
+    `Available integration read tools:\n${toolCatalogPrompt}`,
+  ].join("\n");
+
+  const loopMessages: OAIMessage[] = [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content:
+        `User intent:\n${params.intent}\n\n` +
+        `Preferred title hint: ${params.titleHint}\n` +
+        "Build a cross-integration dashboard and include data-backed queryPlan + snapshotData.",
+    },
+  ];
+
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "read_integration_data",
+        description: "Execute one read-only integration tool call from the provided catalog.",
+        parameters: {
+          type: "object",
+          properties: {
+            tool_id: {
+              type: "string",
+              enum: readToolIds.length > 0 ? readToolIds : ["none"],
+              description: "Integration read tool id from the available catalog.",
+            },
+            args: {
+              type: "object",
+              description: "Tool arguments object.",
+            },
+          },
+          required: ["tool_id"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "finish_custom_dashboard",
+        description:
+          "Return the final dashboard bundle: title, description, component code, query plan, snapshot, and sources.",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            description: { type: "string" },
+            componentCodeTsx: { type: "string" },
+            queryPlan: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  toolId: { type: "string" },
+                  args: { type: "object" },
+                  provider: { type: "string" },
+                  label: { type: "string" },
+                },
+                required: ["toolId"],
+              },
+            },
+            snapshotData: { type: "object" },
+            sources: { type: "array", items: { type: "string" } },
+          },
+          required: ["title", "description", "componentCodeTsx"],
+        },
+      },
+    },
+  ] as const;
+
+  const MAX_ITERS = 7;
+  const model = getOpenAiFastModel();
+
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    const oai = await params.modelProvider.chatCompletions({
+      model,
+      messages: loopMessages as unknown as Array<Record<string, unknown>>,
+      tools,
+      tool_choice: "auto",
+    });
+
+    const choice = oai.choices?.[0];
+    const message = choice?.message;
+    if (!message) break;
+
+    const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    if (calls.length === 0) {
+      const content = typeof message.content === "string" ? message.content : "";
+      if (content.trim().startsWith("{")) {
+        try {
+          const parsed = JSON.parse(content);
+          const structured = customDashboardFinishSchema.safeParse(parsed);
+          if (structured.success) {
+            const queryPlan = normalizeCustomDashboardQueryPlan(structured.data.queryPlan ?? queryPlanSteps);
+            const code = normalizeGeneratedComponentCode(structured.data.componentCodeTsx, structured.data.title);
+            let sources = normalizeIntegrationSources(structured.data.sources ?? Array.from(integrationSources));
+            let snapshotData = asRecord(
+              sanitizeCustomDashboardSnapshot(structured.data.snapshotData ?? {
+                generatedAt: toIsoNow(),
+                datasets: snapshots,
+              }),
+            );
+            if (queryPlan.length > 0) {
+              const materialized = await materializeSnapshotFromQueryPlan(queryPlan);
+              snapshotData = materialized.snapshotData;
+              sources = normalizeIntegrationSources([...sources, ...materialized.sources]);
+              if (materialized.citations.length > 0) {
+                citationsOut.push(...materialized.citations);
+              }
+            }
+            return {
+              title: structured.data.title,
+              description: structured.data.description ?? "",
+              componentCodeTsx: code,
+              queryPlan,
+              snapshotData,
+              sources,
+              citations: citationsOut,
+            };
+          }
+        } catch {
+          // Continue loop and force function tool call.
+        }
+      }
+      loopMessages.push({
+        role: "assistant",
+        content: content || "Need function calls to complete dashboard generation.",
+      });
+      loopMessages.push({
+        role: "user",
+        content:
+          "Call finish_custom_dashboard now with complete JSON payload. If data is insufficient, still include queryPlan and fallback snapshotData.",
+      });
+      continue;
+    }
+
+    loopMessages.push({
+      role: "assistant",
+      content: message.content ?? null,
+      tool_calls: calls,
+    });
+
+    let finished: CustomDashboardGenerationOutput | null = null;
+
+    for (const toolCall of calls) {
+      const callName = toolCall.function.name;
+      let callArgs: Record<string, unknown> = {};
+      try {
+        callArgs = JSON.parse(toolCall.function.arguments);
+      } catch {
+        callArgs = {};
+      }
+
+      if (callName === "read_integration_data") {
+        const toolId = typeof callArgs.tool_id === "string" ? callArgs.tool_id : "";
+        const args = asRecord(callArgs.args);
+        if (!toolId || !allowedSet.has(toolId)) {
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({
+              ok: false,
+              error: `Tool ${toolId || "(missing)"} is not available for this user.`,
+            }),
+          });
+          continue;
+        }
+        const runtimeDef = getRuntimeToolDefinition(toolId);
+        if (!runtimeDef || runtimeDef.accessLevel !== "read") {
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ ok: false, error: `Tool ${toolId} is not read-only.` }),
+          });
+          continue;
+        }
+
+        try {
+          const exec = await toolsExecute(params.runtimeSupabase, {
+            companyId: params.companyId,
+            userId: params.userId,
+            roles: params.userRoles,
+            toolId,
+            args,
+            confirmed: true,
+            source: "ai_chat",
+            masterKey: requiredMasterKey,
+          });
+          const result = asRecord(sanitizeCustomDashboardSnapshot(exec.result ?? {}));
+          if (exec.providerKey) integrationSources.add(exec.providerKey);
+          if (Array.isArray(exec.citations)) {
+            citationsOut.push(...(exec.citations as Array<Record<string, unknown>>));
+          }
+          queryPlanSteps.push({
+            toolId,
+            args,
+            provider: runtimeDef.providerKey,
+            label: runtimeDef.label,
+          });
+          snapshots.push({
+            step: queryPlanSteps.length,
+            toolId,
+            providerKey: exec.providerKey ?? runtimeDef.providerKey,
+            args,
+            result,
+            executedAt: toIsoNow(),
+          });
+
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: serializeToolResultForModel({
+              ok: true,
+              toolId,
+              providerKey: exec.providerKey ?? runtimeDef.providerKey,
+              result,
+            }),
+          });
+        } catch (error) {
+          const messageText = error instanceof Error ? error.message : "Tool execution failed";
+          snapshots.push({
+            step: queryPlanSteps.length + 1,
+            toolId,
+            providerKey: runtimeDef.providerKey,
+            args,
+            error: messageText,
+            executedAt: toIsoNow(),
+          });
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: serializeToolResultForModel({
+              ok: false,
+              toolId,
+              error: messageText,
+            }),
+          });
+        }
+        continue;
+      }
+
+      if (callName === "finish_custom_dashboard") {
+        const structured = customDashboardFinishSchema.safeParse(callArgs);
+        if (!structured.success) {
+          loopMessages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify({ ok: false, error: "Invalid finish_custom_dashboard payload." }),
+          });
+          continue;
+        }
+
+        const queryPlan = normalizeCustomDashboardQueryPlan(structured.data.queryPlan ?? queryPlanSteps);
+        let sources = normalizeIntegrationSources(structured.data.sources ?? Array.from(integrationSources));
+        let snapshotData = asRecord(sanitizeCustomDashboardSnapshot(structured.data.snapshotData ?? {
+          generatedAt: toIsoNow(),
+          datasets: snapshots,
+          summary: {
+            stepCount: snapshots.length,
+            successCount: snapshots.filter((x) => !("error" in x)).length,
+            errorCount: snapshots.filter((x) => "error" in x).length,
+          },
+        }));
+        if (queryPlan.length > 0) {
+          const materialized = await materializeSnapshotFromQueryPlan(queryPlan);
+          snapshotData = materialized.snapshotData;
+          sources = normalizeIntegrationSources([...sources, ...materialized.sources]);
+          if (materialized.citations.length > 0) {
+            citationsOut.push(...materialized.citations);
+          }
+        }
+        const code = normalizeGeneratedComponentCode(structured.data.componentCodeTsx, structured.data.title);
+        finished = {
+          title: structured.data.title,
+          description: structured.data.description ?? "",
+          componentCodeTsx: code,
+          queryPlan,
+          snapshotData,
+          sources,
+          citations: citationsOut,
+        };
+        loopMessages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({ ok: true }),
+        });
+      }
+    }
+
+    if (finished) return finished;
+  }
+
+  const fallbackTitle = params.titleHint && params.titleHint.trim().length > 0 ? params.titleHint.trim() : "Custom dashboard";
+  let fallbackSnapshot: Record<string, unknown> = {
+    generatedAt: toIsoNow(),
+    datasets: snapshots,
+    summary: {
+      stepCount: snapshots.length,
+      successCount: snapshots.filter((x) => !("error" in x)).length,
+      errorCount: snapshots.filter((x) => "error" in x).length,
+    },
+  };
+  let fallbackSources = normalizeIntegrationSources(Array.from(integrationSources));
+  if (queryPlanSteps.length > 0) {
+    const materialized = await materializeSnapshotFromQueryPlan(queryPlanSteps);
+    fallbackSnapshot = materialized.snapshotData;
+    fallbackSources = normalizeIntegrationSources([...fallbackSources, ...materialized.sources]);
+    if (materialized.citations.length > 0) {
+      citationsOut.push(...materialized.citations);
+    }
+  }
+  return {
+    title: fallbackTitle,
+    description: `AI-generated dashboard based on intent: ${params.intent.slice(0, 220)}`,
+    componentCodeTsx: buildFallbackCustomDashboardCode(fallbackTitle),
+    queryPlan: queryPlanSteps,
+    snapshotData: fallbackSnapshot,
+    sources: fallbackSources,
+    citations: citationsOut,
+  };
+}
+
 function findAppAction(actionId: string): AppActionDefinition | undefined {
   return APP_ACTIONS.find((a) => a.id === actionId);
 }
@@ -1052,6 +2094,8 @@ async function executeAppAction(
     action: AppActionDefinition;
     companyId: string;
     userId: string;
+    userRoles: string[];
+    userMessage?: string;
     args: Record<string, unknown>;
     confirmed: boolean;
   },
@@ -1559,6 +2603,146 @@ async function executeAppAction(
         citations: [citationForDomain("dashboards", `layout:${String(layout.id)}`)],
       };
     }
+    case "app.custom_dashboards.generate": {
+      const featureEnabled = await isFeatureEnabledForCompany(
+        supabase,
+        params.companyId,
+        "custom_dashboards_v1",
+      );
+      if (!featureEnabled) {
+        throw new Error("Custom dashboards are disabled for this tenant (custom_dashboards_v1).");
+      }
+
+      const providerResolution = resolveModelProvider();
+      const modelProvider = providerResolution.adapter;
+      if (!modelProvider) {
+        throw new Error(providerResolution.error ?? "Model provider is unavailable.");
+      }
+
+      const intent = typeof args.intent === "string" && args.intent.trim().length > 0
+        ? args.intent.trim()
+        : (params.userMessage ?? "").trim();
+      if (!intent) {
+        throw new Error("Custom dashboard generation requires an intent.");
+      }
+
+      const titleHint = typeof args.titleHint === "string" && args.titleHint.trim().length > 0
+        ? args.titleHint.trim()
+        : deriveDashboardBaseName(null, intent);
+
+      const runtimeToolList = await toolsList(supabase, {
+        companyId: params.companyId,
+        roles: params.userRoles,
+      });
+
+      const toolCatalog: CustomDashboardToolCatalogItem[] = runtimeToolList
+        .filter((tool) => tool.accessLevel === "read")
+        .map((tool) => {
+          const def = getRuntimeToolDefinition(tool.id);
+          return {
+            id: tool.id,
+            providerKey: tool.providerKey,
+            label: tool.label,
+            description: tool.description,
+            argsShape: def?.argsShape ?? {},
+          };
+        });
+
+      const runtimeSupabase = (() => {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+        const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+        if (supabaseUrl && serviceRoleKey) {
+          return createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+        }
+        return supabase;
+      })();
+
+      const startedAt = Date.now();
+      const generated = await generateCustomDashboardCodeArtifact({
+        supabase,
+        runtimeSupabase,
+        companyId: params.companyId,
+        userId: params.userId,
+        userRoles: params.userRoles,
+        intent,
+        titleHint,
+        modelProvider,
+        toolCatalog,
+      });
+
+      const nowIso = toIsoNow();
+      const artifactPayload = {
+        payloadVersion: 1,
+        description: generated.description,
+        codeTsx: generated.componentCodeTsx,
+        queryPlan: generated.queryPlan,
+        snapshotData: generated.snapshotData,
+        sources: generated.sources,
+        integrationSources: generated.sources,
+        visibilityMode: "roles",
+        sharedRoles: normalizeRoles(params.userRoles),
+        unsaved: true,
+        generatedAt: nowIso,
+      };
+
+      const runSnapshot = asRecord(
+        sanitizeCustomDashboardSnapshot({
+          generatedAt: nowIso,
+          title: generated.title,
+          snapshotData: generated.snapshotData,
+        }),
+      );
+
+      await supabase.from("custom_dashboard_runs").insert({
+        company_id: params.companyId,
+        dashboard_id: null,
+        actor_user_id: params.userId,
+        trigger_type: "generation",
+        status: "succeeded",
+        query_plan: generated.queryPlan,
+        result_snapshot: runSnapshot,
+        integration_sources: generated.sources,
+        execution_ms: Date.now() - startedAt,
+        completed_at: nowIso,
+      });
+
+      await supabase.from("activity_logs").insert({
+        company_id: params.companyId,
+        event_type: "ai.custom_dashboard.generated",
+        actor_user_id: params.userId,
+        payload: {
+          title: generated.title,
+          sourceCount: generated.sources.length,
+          stepCount: generated.queryPlan.length,
+        },
+      });
+
+      return {
+        ok: true,
+        result: {
+          title: generated.title,
+          description: generated.description,
+          sourceCount: generated.sources.length,
+          stepCount: generated.queryPlan.length,
+        },
+        artifacts: [
+          {
+            id: crypto.randomUUID(),
+            type: "custom_dashboard",
+            title: generated.title,
+            description: generated.description,
+            route: "/dashboard/custom-dashboards",
+            unsaved: true,
+            payload: artifactPayload,
+            createdAt: nowIso,
+          },
+        ],
+        citations: [
+          citationForDomain("dashboards", "custom_dashboard_generation"),
+          ...generated.citations,
+        ],
+      };
+    }
     case "app.knowledge_base.list": {
       const limit = normalizeLimit(args.limit, 20, 80);
       const sourceFilter = typeof args.sourceFilter === "string" ? args.sourceFilter.trim() : "";
@@ -1687,19 +2871,50 @@ async function executeAppAction(
       if (!flagKey) throw new Error("flagKey is required");
       const enabled = Boolean(args.enabled);
       const rollout = typeof args.rollout === "number" ? Math.max(0, Math.min(100, args.rollout)) : 100;
-      const { data, error } = await supabase
+      const now = toIsoNow();
+      const { data: existing, error: findError } = await supabase
         .from("feature_flags")
-        .upsert({
-          company_id: params.companyId,
-          flag_key: flagKey,
-          enabled,
-          rollout,
-          payload: {},
-          updated_at: toIsoNow(),
-        }, { onConflict: "flag_key,company_id" })
-        .select("id, flag_key, enabled, rollout")
-        .single();
-      if (error) throw new Error(error.message);
+        .select("id")
+        .eq("company_id", params.companyId)
+        .eq("flag_key", flagKey)
+        .maybeSingle();
+      if (findError) throw new Error(findError.message);
+
+      let data:
+        | { id: string; flag_key: string; enabled: boolean; rollout: number | null }
+        | null = null;
+
+      if (existing?.id) {
+        const { data: updated, error: updateError } = await supabase
+          .from("feature_flags")
+          .update({
+            enabled,
+            rollout,
+            updated_at: now,
+          })
+          .eq("id", existing.id)
+          .eq("company_id", params.companyId)
+          .select("id, flag_key, enabled, rollout")
+          .single();
+        if (updateError) throw new Error(updateError.message);
+        data = updated;
+      } else {
+        const { data: inserted, error: insertError } = await supabase
+          .from("feature_flags")
+          .insert({
+            company_id: params.companyId,
+            flag_key: flagKey,
+            enabled,
+            rollout,
+            payload: {},
+            updated_at: now,
+          })
+          .select("id, flag_key, enabled, rollout")
+          .single();
+        if (insertError) throw new Error(insertError.message);
+        data = inserted;
+      }
+
       return {
         ok: true,
         result: { flag: data },
@@ -2046,13 +3261,45 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
             description: "The integration to query.",
           },
           query_type: {
             type: "string",
             description:
               "Type of data to fetch, e.g. 'messages', 'emails', 'calendar_events', 'meetings'.",
+          },
+          operation: {
+            type: "string",
+            enum: ["list", "create", "update", "delete"],
+            description: "Operation for provider query. Defaults to list when omitted.",
+          },
+          event: {
+            type: "object",
+            description: "Event payload for calendar write operations.",
+            properties: {
+              summary: { type: "string", description: "Event title." },
+              start: { type: "string", description: "Start datetime (RFC3339)." },
+              end: { type: "string", description: "End datetime (RFC3339)." },
+              description: { type: "string", description: "Optional event description." },
+              calendarId: { type: "string", description: "Calendar id. Defaults to primary." },
+              attendees: {
+                type: "array",
+                description:
+                  "Invitee emails as strings or { email } objects. Do not put invitees in description.",
+                items: {
+                  oneOf: [
+                    { type: "string" },
+                    { type: "object", properties: { email: { type: "string" } }, required: ["email"] },
+                  ],
+                },
+              },
+              sendCalendarInvites: {
+                type: "boolean",
+                description:
+                  "When true (default if attendees are set), send Google Calendar invitation emails. Set false to add attendees without emailing.",
+              },
+            },
           },
           filters: {
             type: "object",
@@ -2184,7 +3431,7 @@ const AGENT_TOOLS = [
           args: {
             type: "object",
             description:
-              "Action arguments object. For app.dashboards.create_layout include args.name and args.focus based on the user's request; set args.reuseIfExists only when the user explicitly asks to reuse.",
+              "Action arguments object. For app.dashboards.create_layout include dashboardKind/name/focus and set reuseIfExists only when explicitly requested. For app.custom_dashboards.generate include intent and optional titleHint/descriptionHint.",
           },
         },
         required: ["action_id"],
@@ -2228,7 +3475,7 @@ function buildAgentTools(permitted: AiToolPermission[]): Array<Record<string, un
             args: {
               type: "object",
               description:
-                "Arguments for the selected action. For app.dashboards.create_layout include dashboardKind, name, focus, and reuseIfExists.",
+                "Arguments for the selected action. For app.dashboards.create_layout include dashboardKind/name/focus/reuseIfExists. For app.custom_dashboards.generate include intent and optional titleHint/descriptionHint.",
             },
           },
           required: ["action_id"],
@@ -2315,6 +3562,16 @@ function defaultTodayTomorrowWindow(): { timeMin: string; timeMax: string } {
   return { timeMin: start.toISOString(), timeMax: end.toISOString() };
 }
 
+function parseBooleanArg(value: unknown, fallback = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return fallback;
+}
+
 function pendingConfirmationForToolCall(
   toolName: string,
   toolArgs: Record<string, unknown>,
@@ -2374,13 +3631,24 @@ async function executeAgentTool(
   streamContext: {
     userMessage: string;
     allowedAppActionIds: Set<string>;
+    /** When set with companyTimezone, calendar list uses the same window as intent prefetch. */
+    referenceNowIso?: string;
+    clientTimeZone?: string;
+    clientLocale?: string;
+    providerCalendarTimezone?: string | null;
+    companyTimezone?: string;
   },
 ): Promise<string | AgentToolExecution> {
   switch (toolName) {
     case "query_integration": {
       const provider = String(args.provider ?? "").trim().toLowerCase();
+      const operationRaw = String(args.operation ?? "").trim().toLowerCase();
+      const operation = operationRaw === "create" || operationRaw === "update" || operationRaw === "delete"
+        ? operationRaw
+        : "list";
       const filters = (args.filters as AgentToolArgs) ?? {};
       const limit = typeof filters.limit === "number" ? Math.min(Math.max(1, filters.limit), 50) : 20;
+      const queryType = String(args.query_type ?? "").trim().toLowerCase();
       const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
       const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -2391,7 +3659,132 @@ async function executeAgentTool(
         return "Live integration queries are unavailable because CREDENTIALS_MASTER_KEY is not configured.";
       }
 
+      const genericRead = async (
+        toolId: string,
+        toolArgs: Record<string, unknown>,
+      ): Promise<string | AgentToolExecution> => {
+        try {
+          const exec = await toolsExecute(runtimeSupabase, {
+            companyId,
+            userId,
+            roles: userRoles,
+            toolId,
+            args: toolArgs,
+            confirmed: true,
+            source: "ai_chat",
+            masterKey: String(masterKey),
+          });
+          const preview = JSON.stringify(exec.result ?? {}, null, 2).slice(0, 8000);
+          return `Integration ${toolId} result:\n${preview}`;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Integration query failed";
+          return `Unable to fetch live data: ${msg}`;
+        }
+      };
+
       if (provider === "gmail") {
+        if (operation === "create" || queryType.includes("send")) {
+          const emailPayload = asRecord(args.email ?? args.event ?? args.queryArgs ?? args);
+          const to = String(emailPayload.to ?? "");
+          const subject = String(emailPayload.subject ?? "");
+          const body = String(emailPayload.body ?? "");
+          if (!to || !subject || !body) {
+            return "Gmail send requires to, subject, and body.";
+          }
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Gmail: send email".`,
+              status: "pending_confirmation",
+              actionId: "gmail.send_email",
+              pendingConfirmation: {
+                actionId: "gmail.send_email",
+                label: "Gmail: send email",
+                preview: { args: { to, subject, body } },
+              },
+              result: { to, subject },
+            };
+          }
+          try {
+            const exec = await toolsExecute(runtimeSupabase, {
+              companyId,
+              userId,
+              roles: userRoles,
+              toolId: "gmail.send_email",
+              args: { to, subject, body },
+              confirmed: true,
+              source: "ai_chat",
+              masterKey,
+            });
+            const out = (exec.result ?? {}) as Record<string, unknown>;
+            return {
+              text: `Email sent to ${to} with subject "${subject}".`,
+              status: "completed",
+              actionId: "gmail.send_email",
+              result: out,
+              citations: Array.isArray(exec.citations) ? exec.citations as Array<Record<string, unknown>> : [],
+            };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Gmail send failed";
+            return `Unable to send Gmail message: ${msg}`;
+          }
+        }
+
+        if (queryType.includes("draft")) {
+          const draftPayload = asRecord(args.email ?? args.event ?? args.queryArgs ?? args);
+          const to = String(draftPayload.to ?? "");
+          const subject = String(draftPayload.subject ?? "");
+          const body = String(draftPayload.body ?? "");
+          if (!to || !subject || !body) return "Gmail draft create requires to, subject, and body.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Gmail: create draft".`,
+              status: "pending_confirmation",
+              actionId: "gmail.create_draft",
+              pendingConfirmation: {
+                actionId: "gmail.create_draft",
+                label: "Gmail: create draft",
+                preview: { args: { to, subject, body } },
+              },
+              result: { to, subject },
+            };
+          }
+          return await genericRead("gmail.create_draft", { to, subject, body });
+        }
+
+        if ((operation === "update" || operation === "delete") && queryType.includes("label")) {
+          const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+          const messageId = String(queryArgs.messageId ?? "");
+          const addLabelIds = Array.isArray(queryArgs.addLabelIds) ? queryArgs.addLabelIds : [];
+          const removeLabelIds = Array.isArray(queryArgs.removeLabelIds) ? queryArgs.removeLabelIds : [];
+          if (!messageId) return "Gmail label update requires messageId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Gmail: modify message labels".`,
+              status: "pending_confirmation",
+              actionId: "gmail.modify_message_labels",
+              pendingConfirmation: {
+                actionId: "gmail.modify_message_labels",
+                label: "Gmail: modify message labels",
+                preview: { args: { messageId, addLabelIds, removeLabelIds } },
+              },
+              result: { messageId },
+            };
+          }
+          return await genericRead("gmail.modify_message_labels", { messageId, addLabelIds, removeLabelIds });
+        }
+
+        if (queryType.includes("label")) {
+          return await genericRead("gmail.list_labels", {});
+        }
+        if (queryType.includes("thread")) {
+          const threadId = String(asRecord(args.queryArgs ?? args.event ?? {}).threadId ?? "");
+          if (threadId) return await genericRead("gmail.get_thread", { threadId, format: "full" });
+        }
+        if (queryType.includes("message") && !queryType.includes("messages")) {
+          const messageId = String(asRecord(args.queryArgs ?? args.event ?? {}).messageId ?? "");
+          if (messageId) return await genericRead("gmail.get_message", { messageId, format: "full" });
+        }
+
         const query = typeof filters.search === "string" && filters.search.trim()
           ? filters.search.trim()
           : "in:inbox";
@@ -2457,14 +3850,195 @@ async function executeAgentTool(
       }
 
       if (provider === "google_calendar") {
+        if (operation === "create") {
+          const eventPayload = (args.event ?? args.queryArgs ?? {}) as Record<string, unknown>;
+          if (isCalendarCreateDateAmbiguousFromUserMessage(streamContext.userMessage)) {
+            return buildCalendarCreateDateClarificationMessage(streamContext.clientTimeZone);
+          }
+          const normalized = normalizeCalendarCreateInput(eventPayload);
+          if (!normalized.ok) {
+            writeLog("warn", "ai_api.calendar_create_validation_failed", {
+              toolName,
+              companyId,
+              userId,
+              error: normalized.error,
+            });
+            return `Calendar create validation error: ${normalized.error}`;
+          }
+          writeLog("info", "ai_api.calendar_create_attempt", {
+            toolName,
+            companyId,
+            userId,
+            executionMode,
+            calendarId: normalized.value.calendarId,
+            start: normalized.value.start,
+            end: normalized.value.end,
+          });
+
+          if (!shouldExecuteCalendarCreate(executionMode)) {
+            writeLog("info", "ai_api.calendar_create_pending_confirmation", {
+              toolName,
+              companyId,
+              userId,
+            });
+            return {
+              text: `Pending confirmation required for "Calendar: create event".`,
+              status: "pending_confirmation",
+              actionId: "google_calendar.create_event",
+              pendingConfirmation: {
+                actionId: "google_calendar.create_event",
+                label: "Calendar: create event",
+                preview: buildCalendarCreatePendingPreview(normalized.value),
+              },
+              result: buildCalendarCreatePendingPreview(normalized.value),
+            };
+          }
+
+          try {
+            const exec = await toolsExecute(runtimeSupabase, {
+              companyId,
+              userId,
+              roles: userRoles,
+              toolId: "google_calendar.create_event",
+              args: {
+                calendarId: normalized.value.calendarId,
+                summary: normalized.value.summary,
+                start: normalized.value.start,
+                end: normalized.value.end,
+                description: normalized.value.description,
+                attendees: normalized.value.attendees,
+                sendCalendarInvites: normalized.value.sendCalendarInvites,
+              },
+              confirmed: true,
+              source: "ai_chat",
+              masterKey: masterKey,
+            });
+            const out = (exec.result ?? {}) as Record<string, unknown>;
+            const summary = typeof out.summary === "string" ? out.summary : normalized.value.summary;
+            const eventId = typeof out.id === "string" ? out.id : "unknown";
+            writeLog("info", "ai_api.calendar_create_success", {
+              toolName,
+              companyId,
+              userId,
+              eventId,
+              calendarId: normalized.value.calendarId,
+            });
+            const inviteNote = normalized.value.attendees.length > 0
+              ? normalized.value.sendCalendarInvites
+                ? ` Invitations sent to: ${normalized.value.attendees.map((a) => a.email).join(", ")}.`
+                : ` Attendees added (no invitation email): ${normalized.value.attendees.map((a) => a.email).join(", ")}.`
+              : "";
+            return {
+              text:
+                `Calendar event created: "${summary}" from ${normalized.value.start} to ${normalized.value.end} ` +
+                `(calendar=${normalized.value.calendarId}, id=${eventId}).${inviteNote}`,
+              status: "completed",
+              actionId: "google_calendar.create_event",
+              result: out,
+              citations: Array.isArray(exec.citations) ? exec.citations as Array<Record<string, unknown>> : [],
+            };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Calendar create failed";
+            writeLog("error", "ai_api.calendar_create_failed", {
+              toolName,
+              companyId,
+              userId,
+              error: serializeError(e),
+            });
+            return `Unable to create Google Calendar event: ${msg}`;
+          }
+        }
+
+        const calendarArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation === "update") {
+          const eventId = String(calendarArgs.eventId ?? "");
+          const calendarId = String(calendarArgs.calendarId ?? "primary");
+          const summary = typeof calendarArgs.summary === "string" ? calendarArgs.summary : undefined;
+          const start = typeof calendarArgs.start === "string" ? calendarArgs.start : undefined;
+          const end = typeof calendarArgs.end === "string" ? calendarArgs.end : undefined;
+          const description = typeof calendarArgs.description === "string" ? calendarArgs.description : undefined;
+          if (!eventId) return "Calendar update requires eventId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Calendar: update event".`,
+              status: "pending_confirmation",
+              actionId: "google_calendar.update_event",
+              pendingConfirmation: {
+                actionId: "google_calendar.update_event",
+                label: "Calendar: update event",
+                preview: { args: { calendarId, eventId, summary, start, end, description } },
+              },
+              result: { eventId },
+            };
+          }
+          return await genericRead("google_calendar.update_event", {
+            calendarId,
+            eventId,
+            summary,
+            start,
+            end,
+            description,
+          });
+        }
+        if (operation === "delete") {
+          const eventId = String(calendarArgs.eventId ?? "");
+          const calendarId = String(calendarArgs.calendarId ?? "primary");
+          if (!eventId) return "Calendar delete requires eventId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Calendar: delete event".`,
+              status: "pending_confirmation",
+              actionId: "google_calendar.delete_event",
+              pendingConfirmation: {
+                actionId: "google_calendar.delete_event",
+                label: "Calendar: delete event",
+                preview: { args: { calendarId, eventId } },
+              },
+              result: { eventId },
+            };
+          }
+          return await genericRead("google_calendar.delete_event", { calendarId, eventId });
+        }
+        if (queryType.includes("calendars")) {
+          return await genericRead("google_calendar.list_calendars", {
+            maxResults: Math.min(100, limit),
+          });
+        }
+        if (queryType.includes("event") && !queryType.includes("events")) {
+          const eventId = String(calendarArgs.eventId ?? "");
+          const calendarId = String(calendarArgs.calendarId ?? "primary");
+          if (eventId) return await genericRead("google_calendar.get_event", { calendarId, eventId });
+        }
+
         const dateFrom = parseDateFilter(filters.date_from);
         const dateTo = parseDateFilter(filters.date_to);
         if (dateFrom && dateTo && new Date(dateTo).getTime() < new Date(dateFrom).getTime()) {
           return "Invalid date range: filters.date_to must be greater than or equal to filters.date_from.";
         }
-        const fallbackWindow = defaultTodayTomorrowWindow();
-        const timeMin = dateFrom ?? fallbackWindow.timeMin;
-        const timeMax = dateTo ?? fallbackWindow.timeMax;
+        let timeMin = dateFrom;
+        let timeMax = dateTo;
+        if (!timeMin || !timeMax) {
+          if (streamContext.referenceNowIso && streamContext.companyTimezone) {
+            const w = buildCalendarListWindowForIntent({
+              userMessage: streamContext.userMessage,
+              plan: null,
+              referenceNowIso: streamContext.referenceNowIso,
+              clientTimeZone: streamContext.clientTimeZone,
+              clientLocale: streamContext.clientLocale,
+              providerCalendarTimezone: streamContext.providerCalendarTimezone ?? null,
+              companyTimezone: streamContext.companyTimezone,
+            });
+            if (w) {
+              timeMin = timeMin ?? w.timeMin;
+              timeMax = timeMax ?? w.timeMax;
+            }
+          }
+        }
+        if (!timeMin || !timeMax) {
+          const fallbackWindow = defaultTodayTomorrowWindow();
+          timeMin = timeMin ?? fallbackWindow.timeMin;
+          timeMax = timeMax ?? fallbackWindow.timeMax;
+        }
         writeLog("info", "ai_api.calendar_live_fetch_attempt", {
           toolName,
           companyId,
@@ -2539,34 +4113,481 @@ async function executeAgentTool(
         }
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported providers: gmail, google_calendar.`;
+      if (provider === "google_drive") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation === "create" && queryType.includes("folder")) {
+          const name = String(queryArgs.name ?? "");
+          const parentId = typeof queryArgs.parentId === "string" ? queryArgs.parentId : undefined;
+          if (!name) return "Drive folder create requires name.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Drive: create folder".`,
+              status: "pending_confirmation",
+              actionId: "google_drive.create_folder",
+              pendingConfirmation: {
+                actionId: "google_drive.create_folder",
+                label: "Drive: create folder",
+                preview: { args: { name, parentId } },
+              },
+              result: { name },
+            };
+          }
+          return await genericRead("google_drive.create_folder", { name, parentId });
+        }
+        if (operation === "update" && (queryType.includes("metadata") || queryType.includes("rename"))) {
+          const fileId = String(queryArgs.fileId ?? "");
+          const name = typeof queryArgs.name === "string" ? queryArgs.name : undefined;
+          const description = typeof queryArgs.description === "string" ? queryArgs.description : undefined;
+          if (!fileId) return "Drive metadata update requires fileId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Drive: update file metadata".`,
+              status: "pending_confirmation",
+              actionId: "google_drive.update_file_metadata",
+              pendingConfirmation: {
+                actionId: "google_drive.update_file_metadata",
+                label: "Drive: update file metadata",
+                preview: { args: { fileId, name, description } },
+              },
+              result: { fileId },
+            };
+          }
+          return await genericRead("google_drive.update_file_metadata", { fileId, name, description });
+        }
+        if (operation === "create" && queryType.includes("permission")) {
+          const fileId = String(queryArgs.fileId ?? "");
+          const role = String(queryArgs.role ?? "reader");
+          const type = String(queryArgs.type ?? "user");
+          const emailAddress = typeof queryArgs.emailAddress === "string" ? queryArgs.emailAddress : undefined;
+          if (!fileId) return "Drive permission create requires fileId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Drive: create permission".`,
+              status: "pending_confirmation",
+              actionId: "google_drive.create_permission",
+              pendingConfirmation: {
+                actionId: "google_drive.create_permission",
+                label: "Drive: create permission",
+                preview: { args: { fileId, role, type, emailAddress } },
+              },
+              result: { fileId },
+            };
+          }
+          return await genericRead("google_drive.create_permission", { fileId, role, type, emailAddress });
+        }
+        if (queryType.includes("content")) {
+          const fileId = String(queryArgs.fileId ?? "");
+          const mimeType = typeof queryArgs.mimeType === "string" ? queryArgs.mimeType : undefined;
+          if (fileId) return await genericRead("google_drive.fetch_file_content", { fileId, mimeType });
+        }
+        if (queryType.includes("revision")) {
+          const fileId = String(queryArgs.fileId ?? "");
+          if (fileId) return await genericRead("google_drive.list_revisions", { fileId, pageSize: Math.min(100, limit) });
+        }
+        if (queryType.includes("metadata")) {
+          const fileId = String(queryArgs.fileId ?? "");
+          if (fileId) return await genericRead("google_drive.fetch_file_metadata", { fileId });
+        }
+        const q = typeof filters.search === "string" && filters.search.trim()
+          ? filters.search.trim()
+          : String(args.query_type ?? "").trim() || "*";
+        return await genericRead("google_drive.search_files", {
+          query: q,
+          pageSize: Math.min(50, limit),
+        });
+      }
+
+      if (provider === "slack") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation === "create" || queryType.includes("send")) {
+          const channel = typeof filters.search === "string" && filters.search.trim()
+            ? filters.search.trim()
+            : String((args as AgentToolArgs).channel ?? "").trim();
+          const text = String((args as AgentToolArgs).message ?? (args as AgentToolArgs).text ?? "").trim();
+          if (!channel || !text) {
+            return "Slack send requires channel and message text.";
+          }
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Slack: send message".`,
+              status: "pending_confirmation",
+              actionId: "slack.send_message",
+              pendingConfirmation: {
+                actionId: "slack.send_message",
+                label: "Slack: send message",
+                preview: { args: { channel, text } },
+              },
+              result: { channel, text },
+            };
+          }
+          try {
+            const exec = await toolsExecute(runtimeSupabase, {
+              companyId,
+              userId,
+              roles: userRoles,
+              toolId: "slack.send_message",
+              args: { channel, text },
+              confirmed: true,
+              source: "ai_chat",
+              masterKey,
+            });
+            const out = (exec.result ?? {}) as Record<string, unknown>;
+            return {
+              text: `Slack message sent to ${channel}.`,
+              status: "completed",
+              actionId: "slack.send_message",
+              result: out,
+              citations: Array.isArray(exec.citations) ? exec.citations as Array<Record<string, unknown>> : [],
+            };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Slack send failed";
+            return `Unable to send Slack message: ${msg}`;
+          }
+        }
+
+        if (operation === "update") {
+          const channel = String(queryArgs.channel ?? "");
+          const ts = String(queryArgs.ts ?? "");
+          const text = String(queryArgs.text ?? queryArgs.message ?? "");
+          if (!channel || !ts || !text) return "Slack update requires channel, ts, and text.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Slack: update message".`,
+              status: "pending_confirmation",
+              actionId: "slack.update_message",
+              pendingConfirmation: {
+                actionId: "slack.update_message",
+                label: "Slack: update message",
+                preview: { args: { channel, ts, text } },
+              },
+              result: { channel, ts },
+            };
+          }
+          return await genericRead("slack.update_message", { channel, ts, text });
+        }
+        if (operation === "delete") {
+          const channel = String(queryArgs.channel ?? "");
+          const ts = String(queryArgs.ts ?? "");
+          if (!channel || !ts) return "Slack delete requires channel and ts.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Slack: delete message".`,
+              status: "pending_confirmation",
+              actionId: "slack.delete_message",
+              pendingConfirmation: {
+                actionId: "slack.delete_message",
+                label: "Slack: delete message",
+                preview: { args: { channel, ts } },
+              },
+              result: { channel, ts },
+            };
+          }
+          return await genericRead("slack.delete_message", { channel, ts });
+        }
+        if (queryType.includes("reaction")) {
+          const channel = String(queryArgs.channel ?? "");
+          const ts = String(queryArgs.ts ?? "");
+          const name = String(queryArgs.name ?? "");
+          if (!channel || !ts || !name) return "Slack reaction requires channel, ts, and name.";
+          return await genericRead("slack.add_reaction", { channel, ts, name });
+        }
+        if (queryType.includes("channel") && !filters.search) {
+          return await genericRead("slack.list_channels", { limit: Math.min(100, limit) });
+        }
+        if (queryType.includes("user")) {
+          return await genericRead("slack.list_users", { limit: Math.min(100, limit) });
+        }
+        if (queryType.includes("thread")) {
+          const channel = String(queryArgs.channel ?? "");
+          const threadTs = String(queryArgs.threadTs ?? "");
+          if (!channel || !threadTs) return "Slack thread query requires channel and threadTs.";
+          return await genericRead("slack.fetch_thread_replies", {
+            channel,
+            threadTs,
+            limit: Math.min(50, limit),
+          });
+        }
+
+        const channel = typeof filters.search === "string" && filters.search.trim()
+          ? filters.search.trim()
+          : String((args as AgentToolArgs).channel ?? "").trim();
+        if (!channel) {
+          return "Slack query requires a channel id or name in filters.search (or channel in args).";
+        }
+        return await genericRead("slack.fetch_channel_messages", {
+          channel,
+          limit: Math.min(50, limit),
+        });
+      }
+
+      if (provider === "hubspot") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (queryType.includes("record") && operation === "list") {
+          const objectType = String(queryArgs.objectType ?? "contacts");
+          const recordId = String(queryArgs.recordId ?? "");
+          if (recordId) {
+            return await genericRead("hubspot.get_record", { objectType, recordId });
+          }
+        }
+        if (operation !== "list") {
+          if (queryType.includes("note")) {
+            const noteBody = String(queryArgs.body ?? "");
+            const associationType = String(queryArgs.associationType ?? "");
+            const associationId = String(queryArgs.associationId ?? "");
+            if (!noteBody) return "HubSpot note create requires body.";
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "HubSpot: create note".`,
+                status: "pending_confirmation",
+                actionId: "hubspot.create_note",
+                pendingConfirmation: {
+                  actionId: "hubspot.create_note",
+                  label: "HubSpot: create note",
+                  preview: { args: { body: noteBody, associationType, associationId } },
+                },
+                result: { body: noteBody },
+              };
+            }
+            return await genericRead("hubspot.create_note", {
+              body: noteBody,
+              associationType: associationType || undefined,
+              associationId: associationId || undefined,
+            });
+          }
+          if (queryType.includes("deal")) {
+            if (queryType.includes("create")) {
+              const dealname = String(queryArgs.dealname ?? "");
+              const dealstage = String(queryArgs.dealstage ?? "");
+              const pipeline = typeof queryArgs.pipeline === "string" ? queryArgs.pipeline : undefined;
+              const amount = typeof queryArgs.amount === "string" ? queryArgs.amount : undefined;
+              if (!dealname || !dealstage) return "HubSpot deal create requires dealname and dealstage.";
+              if (executionMode !== "auto") {
+                return {
+                  text: `Pending confirmation required for "HubSpot: create deal".`,
+                  status: "pending_confirmation",
+                  actionId: "hubspot.create_deal",
+                  pendingConfirmation: {
+                    actionId: "hubspot.create_deal",
+                    label: "HubSpot: create deal",
+                    preview: { args: { dealname, dealstage, pipeline, amount } },
+                  },
+                  result: { dealname },
+                };
+              }
+              return await genericRead("hubspot.create_deal", { dealname, dealstage, pipeline, amount });
+            }
+            const dealId = String(queryArgs.dealId ?? "");
+            const dealstage = String(queryArgs.dealstage ?? "");
+            if (!dealId || !dealstage) {
+              return "HubSpot deal stage update requires dealId and dealstage.";
+            }
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "HubSpot: update deal stage".`,
+                status: "pending_confirmation",
+                actionId: "hubspot.update_deal_stage",
+                pendingConfirmation: {
+                  actionId: "hubspot.update_deal_stage",
+                  label: "HubSpot: update deal stage",
+                  preview: { args: { dealId, dealstage } },
+                },
+                result: { dealId, dealstage },
+              };
+            }
+            return await genericRead("hubspot.update_deal_stage", { dealId, dealstage });
+          }
+
+          const email = String(queryArgs.email ?? "");
+          const firstname = typeof queryArgs.firstname === "string" ? queryArgs.firstname : undefined;
+          const lastname = typeof queryArgs.lastname === "string" ? queryArgs.lastname : undefined;
+          const phone = typeof queryArgs.phone === "string" ? queryArgs.phone : undefined;
+          if (!email) return "HubSpot contact upsert requires email.";
+          if (queryType.includes("create")) {
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "HubSpot: create contact".`,
+                status: "pending_confirmation",
+                actionId: "hubspot.create_contact",
+                pendingConfirmation: {
+                  actionId: "hubspot.create_contact",
+                  label: "HubSpot: create contact",
+                  preview: { args: { email, firstname, lastname, phone } },
+                },
+                result: { email },
+              };
+            }
+            return await genericRead("hubspot.create_contact", { email, firstname, lastname, phone });
+          }
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "HubSpot: upsert contact".`,
+              status: "pending_confirmation",
+              actionId: "hubspot.upsert_contact",
+              pendingConfirmation: {
+                actionId: "hubspot.upsert_contact",
+                label: "HubSpot: upsert contact",
+                preview: { args: { email, firstname, lastname, phone } },
+              },
+              result: { email },
+            };
+          }
+          return await genericRead("hubspot.upsert_contact", { email, firstname, lastname, phone });
+        }
+
+        const qt = String(args.query_type ?? "").toLowerCase();
+        let objectType: "contacts" | "companies" | "deals" = "contacts";
+        if (qt.includes("deal")) objectType = "deals";
+        else if (qt.includes("compan")) objectType = "companies";
+        const q = typeof filters.search === "string" ? filters.search.trim() : "";
+        return await genericRead("hubspot.search_records", {
+          objectType,
+          query: q || undefined,
+          limit: Math.min(50, limit),
+        });
+      }
+
+      if (provider === "quickbooks") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation !== "list") {
+          if (queryType.includes("reminder")) {
+            const invoiceId = String(queryArgs.invoiceId ?? "");
+            if (!invoiceId) return "QuickBooks reminder requires invoiceId.";
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "QuickBooks: send invoice reminder".`,
+                status: "pending_confirmation",
+                actionId: "quickbooks.send_invoice_reminder",
+                pendingConfirmation: {
+                  actionId: "quickbooks.send_invoice_reminder",
+                  label: "QuickBooks: send invoice reminder",
+                  preview: { args: { invoiceId } },
+                },
+                result: { invoiceId },
+              };
+            }
+            return await genericRead("quickbooks.send_invoice_reminder", { invoiceId });
+          }
+
+          const invoiceId = String(queryArgs.invoiceId ?? "");
+          const privateNote = typeof queryArgs.privateNote === "string" ? queryArgs.privateNote : undefined;
+          const txnStatus = typeof queryArgs.txnStatus === "string" ? queryArgs.txnStatus : undefined;
+          if (queryType.includes("create_customer")) {
+            const displayName = String(queryArgs.displayName ?? "");
+            const email = typeof queryArgs.email === "string" ? queryArgs.email : undefined;
+            if (!displayName) return "QuickBooks customer create requires displayName.";
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "QuickBooks: create customer".`,
+                status: "pending_confirmation",
+                actionId: "quickbooks.create_customer",
+                pendingConfirmation: {
+                  actionId: "quickbooks.create_customer",
+                  label: "QuickBooks: create customer",
+                  preview: { args: { displayName, email } },
+                },
+                result: { displayName },
+              };
+            }
+            return await genericRead("quickbooks.create_customer", { displayName, email });
+          }
+          if (queryType.includes("create_invoice")) {
+            const customerId = String(queryArgs.customerId ?? "");
+            const totalAmt = Number(queryArgs.totalAmt ?? 0);
+            const note = typeof queryArgs.privateNote === "string" ? queryArgs.privateNote : undefined;
+            if (!customerId || !Number.isFinite(totalAmt) || totalAmt <= 0) {
+              return "QuickBooks invoice create requires customerId and positive totalAmt.";
+            }
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "QuickBooks: create invoice".`,
+                status: "pending_confirmation",
+                actionId: "quickbooks.create_invoice",
+                pendingConfirmation: {
+                  actionId: "quickbooks.create_invoice",
+                  label: "QuickBooks: create invoice",
+                  preview: { args: { customerId, totalAmt, privateNote: note } },
+                },
+                result: { customerId, totalAmt },
+              };
+            }
+            return await genericRead("quickbooks.create_invoice", { customerId, totalAmt, privateNote: note });
+          }
+          if (!invoiceId) return "QuickBooks invoice update requires invoiceId.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "QuickBooks: update invoice status fields".`,
+              status: "pending_confirmation",
+              actionId: "quickbooks.update_invoice_safe_fields",
+              pendingConfirmation: {
+                actionId: "quickbooks.update_invoice_safe_fields",
+                label: "QuickBooks: update invoice status fields",
+                preview: { args: { invoiceId, privateNote, txnStatus } },
+              },
+              result: { invoiceId },
+            };
+          }
+          return await genericRead("quickbooks.update_invoice_safe_fields", {
+            invoiceId,
+            privateNote,
+            txnStatus,
+          });
+        }
+
+        if (queryType.includes("invoice") && !queryType.includes("invoices")) {
+          const invoiceId = String(queryArgs.invoiceId ?? "");
+          if (invoiceId) return await genericRead("quickbooks.get_invoice", { invoiceId });
+        }
+        if (queryType.includes("customer")) {
+          return await genericRead("quickbooks.list_customers", {
+            page: 1,
+            pageSize: Math.min(50, limit),
+          });
+        }
+        return await genericRead("quickbooks.list_invoices", {
+          page: 1,
+          pageSize: Math.min(50, limit),
+        });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
     }
 
     case "send_slack_message": {
       const channel = String(args.channel ?? "").trim();
       const message = String(args.message ?? "").trim();
       if (!channel || !message) return "Error: channel and message are required.";
-
-      const { data: connector } = await supabase
-        .from("connectors")
-        .select("id, status")
-        .eq("company_id", companyId)
-        .eq("provider_key", "slack")
-        .eq("status", "active")
-        .maybeSingle();
-
-      if (!connector) {
-        return "Slack is not connected. Please connect Slack in Integrations settings first.";
+      const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+      if (!masterKey) return "Slack action unavailable: CREDENTIALS_MASTER_KEY is not configured.";
+      const confirmed = executionMode === "auto" || parseBooleanArg(args.confirmed, false);
+      try {
+        const exec = await toolsExecute(supabase, {
+          companyId,
+          userId,
+          roles: userRoles,
+          toolId: "slack.send_message",
+          args: { channel, text: message },
+          confirmed,
+          source: "ai_chat",
+          masterKey,
+        });
+        if (exec.pendingConfirmation) {
+          return {
+            text: `Pending confirmation required for "Slack: send message".`,
+            status: "pending_confirmation",
+            actionId: "slack.send_message",
+            pendingConfirmation: {
+              actionId: "slack.send_message",
+              label: "Slack: send message",
+              preview: exec.preview ?? { args: { channel, text: message } },
+            },
+            result: exec.preview ?? { channel, text: message },
+          };
+        }
+        return `Slack message sent to ${channel}.`;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Slack send failed";
+        return `Unable to send Slack message: ${msg}`;
       }
-
-      await supabase.from("activity_logs").insert({
-        company_id: companyId,
-        event_type: "agent.slack.message_sent",
-        actor_user_id: userId,
-        payload: { channel, message: message.slice(0, 500), connector_id: connector.id },
-      });
-
-      return `✓ Slack message queued for ${channel}: "${message.slice(0, 120)}${message.length > 120 ? "…" : ""}"`;
     }
 
     case "create_automation": {
@@ -2637,34 +4658,47 @@ async function executeAgentTool(
       const to = String(args.to ?? "").trim();
       const subject = String(args.subject ?? "").trim();
       const body = String(args.body ?? "").trim();
-      if (!to || !subject) return "Error: to and subject are required.";
-
-      const { data: connector } = await supabase
-        .from("connectors")
-        .select("id, status")
-        .eq("company_id", companyId)
-        .eq("provider_key", "gmail")
-        .eq("status", "active")
-        .maybeSingle();
-
-      if (!connector) {
-        return "Gmail is not connected. Please connect Gmail in Integrations settings first.";
+      if (!to || !subject || !body) return "Error: to, subject, and body are required.";
+      const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+      if (!masterKey) return "Gmail action unavailable: CREDENTIALS_MASTER_KEY is not configured.";
+      const confirmed = executionMode === "auto" || parseBooleanArg(args.confirmed, false);
+      try {
+        const exec = await toolsExecute(supabase, {
+          companyId,
+          userId,
+          roles: userRoles,
+          toolId: "gmail.send_email",
+          args: { to, subject, body },
+          confirmed,
+          source: "ai_chat",
+          masterKey,
+        });
+        if (exec.pendingConfirmation) {
+          return {
+            text: `Pending confirmation required for "Gmail: send email".`,
+            status: "pending_confirmation",
+            actionId: "gmail.send_email",
+            pendingConfirmation: {
+              actionId: "gmail.send_email",
+              label: "Gmail: send email",
+              preview: exec.preview ?? { args: { to, subject, body } },
+            },
+            result: exec.preview ?? { to, subject },
+          };
+        }
+        return `Email sent to ${to} with subject "${subject}".`;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Gmail send failed";
+        return `Unable to send email: ${msg}`;
       }
-
-      await supabase.from("activity_logs").insert({
-        company_id: companyId,
-        event_type: "agent.email.sent",
-        actor_user_id: userId,
-        payload: { to, subject, connector_id: connector.id },
-      });
-
-      return `✓ Email sent to ${to} with subject "${subject}".`;
     }
 
     case "search_knowledge_base": {
       const query = String(args.query ?? "").trim();
       const sourceFilter = typeof args.source_filter === "string" ? args.source_filter : null;
       if (!query) return "Error: query is required.";
+      const safeQuery = query.replace(/[%_]/g, "").trim();
+      const queryLike = safeQuery.length > 1 ? `%${safeQuery}%` : null;
 
       let dbQuery = supabase
         .from("indexed_documents")
@@ -2674,6 +4708,9 @@ async function executeAgentTool(
 
       if (sourceFilter) {
         dbQuery = dbQuery.ilike("source_provider", `%${sourceFilter}%`);
+      }
+      if (queryLike) {
+        dbQuery = dbQuery.or(`title.ilike.${queryLike},snippet.ilike.${queryLike},full_text.ilike.${queryLike}`);
       }
 
       const { data, error } = await dbQuery;
@@ -2712,11 +4749,15 @@ async function executeAgentTool(
         let actionArgs = asRecord(args.args);
         if (actionId === "app.dashboards.create_layout") {
           actionArgs = normalizeDashboardCreateArgs(actionArgs, streamContext.userMessage);
+        } else if (actionId === "app.custom_dashboards.generate") {
+          actionArgs = normalizeCustomDashboardGenerateArgs(actionArgs, streamContext.userMessage);
         }
         const out = await executeAppAction(supabase, {
           action,
           companyId,
           userId,
+          userRoles,
+          userMessage: streamContext.userMessage,
           args: actionArgs,
           confirmed: executionMode === "auto",
         });
@@ -2750,6 +4791,19 @@ async function executeAgentTool(
           return {
             text:
               `Dashboard "${layoutName}" (${layoutKind}) created successfully with ${widgetTypes.length} widgets.${widgetSet}`,
+            status: "completed",
+            actionId: action.id,
+            result: out.result ?? {},
+            citations: Array.isArray(out.citations) ? out.citations : [],
+            artifacts: Array.isArray(out.artifacts) ? out.artifacts : [],
+          };
+        }
+        if (action.id === "app.custom_dashboards.generate") {
+          const title = out.result && typeof out.result.title === "string" ? out.result.title : "custom dashboard";
+          const sourceCount = out.result && typeof out.result.sourceCount === "number" ? out.result.sourceCount : 0;
+          return {
+            text:
+              `Custom dashboard "${title}" generated as an unsaved preview using ${sourceCount} integration source${sourceCount === 1 ? "" : "s"}.`,
             status: "completed",
             actionId: action.id,
             result: out.result ?? {},
@@ -2880,6 +4934,322 @@ async function runModeDiagnostics(params: {
   };
 }
 
+type IntentAgentMode = "off" | "shadow" | "execute";
+
+function getIntentAgentMode(): IntentAgentMode {
+  const raw = (Deno.env.get("AI_INTENT_AGENT_MODE") ?? "execute").trim().toLowerCase();
+  if (raw === "off" || raw === "false" || raw === "0") return "off";
+  if (raw === "shadow") return "shadow";
+  return "execute";
+}
+
+function buildToolCatalogSummary(permitted: AiToolPermission[]): string {
+  const lines = permitted
+    .filter((p) => p.toolSource === "integration")
+    .map((p) =>
+      `- ${p.id}: ${p.label} [${p.accessLevel}] provider=${p.providerKey ?? "?"}`
+    );
+  return lines.length > 0 ? lines.join("\n") : "(no integration tools connected)";
+}
+
+function looksLikeCalendarScheduleQuery(message: string): boolean {
+  const cal = /\b(calendar|schedule|scheduled|scheduling|meeting|meetings|event|events|appointment|appointments|busy|availability|free|what'?s on)\b/i
+    .test(message);
+  const time =
+    /\b(today|tomorrow|tonight|morning|afternoon|evening|next|this|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|january|february|march|april|may|june|july|august|september|october|november|december|\d{1,2}\/\d{1,2}\/\d{4})\b/i
+      .test(message);
+  return cal && time;
+}
+
+function integrationToolAllowed(toolId: string, permitted: AiToolPermission[]): boolean {
+  return permitted.some((p) => p.toolSource === "integration" && p.id === toolId);
+}
+
+type TemporalAnchor = {
+  referenceNowIso: string;
+  timeAnchorSource: "client" | "server";
+  clientTimeZone?: string;
+  clientLocale?: string;
+};
+
+function resolveTemporalAnchor(input: {
+  clientNowIso?: string;
+  clientTimeZone?: string;
+  clientLocale?: string;
+}): TemporalAnchor {
+  const parsedClientNow = typeof input.clientNowIso === "string"
+    ? Date.parse(input.clientNowIso)
+    : Number.NaN;
+  const hasValidClientNow = Number.isFinite(parsedClientNow);
+  return {
+    referenceNowIso: hasValidClientNow ? new Date(parsedClientNow).toISOString() : new Date().toISOString(),
+    timeAnchorSource: hasValidClientNow ? "client" : "server",
+    clientTimeZone: typeof input.clientTimeZone === "string" ? input.clientTimeZone : undefined,
+    clientLocale: typeof input.clientLocale === "string" ? input.clientLocale : undefined,
+  };
+}
+
+async function invokeIntentAgent(
+  authHeader: string,
+  payload: z.infer<typeof intentPlanRequestSchema>,
+): Promise<IntentPlanResult | null> {
+  const baseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const anon = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  if (!baseUrl || !anon) return null;
+  const url = `${baseUrl.replace(/\/$/, "")}/functions/v1/intent-agent`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: authHeader,
+        // Duplicate for gateways that strip Authorization on server-to-server calls to Edge Functions
+        "X-Forwarded-Authorization": authHeader,
+        apikey: anon,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      writeLog("warn", "intent_agent.http_error", { status: res.status });
+      return null;
+    }
+    const j = (await res.json()) as { ok?: boolean; data?: IntentPlanResult };
+    if (!j.ok || !j.data) return null;
+    return j.data;
+  } catch (e) {
+    writeLog("warn", "intent_agent.invoke_failed", { error: serializeError(e) });
+    return null;
+  }
+}
+
+async function runDeterministicIntentIntegration(params: {
+  plan: IntentPlanResult;
+  supabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  userRoles: string[];
+  userMessage: string;
+  executionMode: "confirm" | "auto";
+  allowedAppActionIds: Set<string>;
+  companyTimezone: string;
+  providerCalendarTimezone: string | null;
+  referenceNowIso: string;
+  clientTimeZone?: string;
+  clientLocale?: string;
+  timeAnchorSource: "client" | "server";
+  permitted: AiToolPermission[];
+  requestId: string;
+}): Promise<{
+  summary: string;
+  toolId: string;
+  status: "completed" | "pending_confirmation" | "clarification";
+} | null> {
+  const plan = params.plan;
+  if (plan.intent !== "integration_read" && plan.intent !== "integration_write") return null;
+  if (plan.confidence < 0.65) return null;
+  if (!plan.toolId) return null;
+  if (!integrationToolAllowed(plan.toolId, params.permitted)) {
+    writeLog("warn", "ai_api.intent_plan_rejected", {
+      requestId: params.requestId,
+      reason: "tool_not_permitted",
+      toolId: plan.toolId,
+    });
+    return null;
+  }
+  const tool = getRuntimeToolDefinition(plan.toolId);
+  if (!tool) return null;
+
+  if (tool.id === "google_calendar.create_event" && plan.intent === "integration_write") {
+    if (isCalendarCreateDateAmbiguousFromUserMessage(params.userMessage)) {
+      return {
+        summary: buildCalendarCreateDateClarificationMessage(params.clientTimeZone),
+        toolId: tool.id,
+        status: "clarification",
+      };
+    }
+    const qa = (plan.queryArgs ?? {}) as Record<string, unknown>;
+    const eventPayload: Record<string, unknown> = {
+      summary: qa.summary,
+      start: qa.start,
+      end: qa.end,
+      description: qa.description,
+      calendarId: qa.calendarId ?? qa.calendar_id ?? "primary",
+      attendees: qa.attendees,
+      sendCalendarInvites: qa.sendCalendarInvites,
+    };
+    const raw = await executeAgentTool(
+      "query_integration",
+      {
+        provider: "google_calendar",
+        query_type: "calendar_events",
+        operation: "create",
+        event: eventPayload,
+      },
+      params.supabase,
+      params.companyId,
+      params.userId,
+      params.userRoles,
+      params.executionMode,
+      {
+        userMessage: params.userMessage,
+        allowedAppActionIds: params.allowedAppActionIds,
+        referenceNowIso: params.referenceNowIso,
+        clientTimeZone: params.clientTimeZone,
+        clientLocale: params.clientLocale,
+        providerCalendarTimezone: params.providerCalendarTimezone,
+        companyTimezone: params.companyTimezone,
+      },
+    );
+    const norm = normalizeAgentToolExecution(raw);
+    if (norm.status === "failed") return null;
+    return {
+      summary: norm.text,
+      toolId: tool.id,
+      status: norm.status === "pending_confirmation" ? "pending_confirmation" : "completed",
+    };
+  }
+
+  if (tool.accessLevel !== "read") return null;
+
+  if (tool.id === "google_calendar.list_events") {
+    const dateOrderHint = resolveDateOrderHint(params.clientLocale ?? null);
+    const window = buildCalendarListWindowForIntent({
+      userMessage: params.userMessage,
+      plan,
+      referenceNowIso: params.referenceNowIso,
+      clientTimeZone: params.clientTimeZone,
+      clientLocale: params.clientLocale,
+      providerCalendarTimezone: params.providerCalendarTimezone,
+      companyTimezone: params.companyTimezone,
+    });
+    if (!window) return null;
+    writeLog("info", "ai_api.intent_time_window", {
+      requestId: params.requestId,
+      toolId: tool.id,
+      timeMin: window.timeMin,
+      timeMax: window.timeMax,
+      tz: window.resolvedTimezone,
+      source: window.resolutionSource,
+      timeAnchorSource: params.timeAnchorSource,
+      clientTimeZone: params.clientTimeZone ?? null,
+      clientLocale: params.clientLocale ?? null,
+      ambiguousDateResolution: dateOrderHint,
+      referenceNowIso: params.referenceNowIso,
+      label: window.label,
+    });
+    const qa = (plan.queryArgs ?? {}) as Record<string, unknown>;
+    const limit = Math.min(50, Math.max(1, Number(qa.maxResults ?? 25)));
+    const raw = await executeAgentTool(
+      "query_integration",
+      {
+        provider: "google_calendar",
+        query_type: "calendar_events",
+        filters: {
+          date_from: window.timeMin,
+          date_to: window.timeMax,
+          limit,
+        },
+      },
+      params.supabase,
+      params.companyId,
+      params.userId,
+      params.userRoles,
+      params.executionMode,
+      {
+        userMessage: params.userMessage,
+        allowedAppActionIds: params.allowedAppActionIds,
+        referenceNowIso: params.referenceNowIso,
+        clientTimeZone: params.clientTimeZone,
+        clientLocale: params.clientLocale,
+        providerCalendarTimezone: params.providerCalendarTimezone,
+        companyTimezone: params.companyTimezone,
+      },
+    );
+    const norm = normalizeAgentToolExecution(raw);
+    if (norm.status === "failed") return null;
+    return {
+      summary: norm.text,
+      toolId: tool.id,
+      status: norm.status === "pending_confirmation" ? "pending_confirmation" : "completed",
+    };
+  }
+
+  if (tool.id === "gmail.search_messages") {
+    const qa = (plan.queryArgs ?? {}) as Record<string, unknown>;
+    const search = typeof qa.query === "string" && qa.query.trim()
+      ? qa.query.trim()
+      : "in:inbox";
+    const raw = await executeAgentTool(
+      "query_integration",
+      {
+        provider: "gmail",
+        query_type: "messages",
+        filters: {
+          search,
+          limit: Math.min(10, Math.max(1, Number(qa.maxResults ?? 10))),
+        },
+      },
+      params.supabase,
+      params.companyId,
+      params.userId,
+      params.userRoles,
+      params.executionMode,
+      {
+        userMessage: params.userMessage,
+        allowedAppActionIds: params.allowedAppActionIds,
+        referenceNowIso: params.referenceNowIso,
+        clientTimeZone: params.clientTimeZone,
+        clientLocale: params.clientLocale,
+        providerCalendarTimezone: params.providerCalendarTimezone,
+        companyTimezone: params.companyTimezone,
+      },
+    );
+    const norm = normalizeAgentToolExecution(raw);
+    if (norm.status === "failed") return null;
+    return {
+      summary: norm.text,
+      toolId: tool.id,
+      status: norm.status === "pending_confirmation" ? "pending_confirmation" : "completed",
+    };
+  }
+
+  const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+  if (!masterKey) return null;
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const runtimeSupabase = (supabaseUrl && serviceRoleKey)
+    ? createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } })
+    : params.supabase;
+
+  const mergedArgs = { ...(plan.queryArgs ?? {}) } as Record<string, unknown>;
+  try {
+    const exec = await toolsExecute(runtimeSupabase, {
+      companyId: params.companyId,
+      userId: params.userId,
+      roles: params.userRoles,
+      toolId: tool.id,
+      args: mergedArgs,
+      confirmed: true,
+      source: "ai_chat",
+      masterKey,
+      conversationId: undefined,
+    });
+    const preview = JSON.stringify(exec.result ?? {}, null, 2).slice(0, 10000);
+    return {
+      summary: `Tool ${tool.id} result:\n${preview}`,
+      toolId: tool.id,
+      status: "completed",
+    };
+  } catch (e) {
+    writeLog("warn", "ai_api.intent_generic_tool_failed", {
+      requestId: params.requestId,
+      toolId: tool.id,
+      error: serializeError(e),
+    });
+    return null;
+  }
+}
+
 serve(async (req) => {
   const startedAt = Date.now();
   const url = new URL(req.url);
@@ -2973,6 +5343,19 @@ serve(async (req) => {
     const companyId = profile.company_id;
     const userRoles = normalizeRoles(profile.roles);
     const body = streamParsed.data;
+    const temporalAnchor = resolveTemporalAnchor({
+      clientNowIso: body.clientNowIso,
+      clientTimeZone: body.clientTimeZone,
+      clientLocale: body.clientLocale,
+    });
+    writeLog("info", "ai_api.time_anchor_resolved", {
+      requestId,
+      userId: user.id,
+      timeAnchorSource: temporalAnchor.timeAnchorSource,
+      referenceNowIso: temporalAnchor.referenceNowIso,
+      clientTimeZone: temporalAnchor.clientTimeZone ?? null,
+      clientLocale: temporalAnchor.clientLocale ?? null,
+    });
     const workspaceId = body.workspaceId ?? "global";
     const model = body.model ?? defaultModelForProvider(providerResolution.providerType);
     const permittedForStream = await permittedActionsForRoles(supabase, companyId, userRoles);
@@ -3007,14 +5390,25 @@ serve(async (req) => {
     );
 
     const started = performance.now();
+    const integrationToolsCatalogBlock =
+      `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, or accounting data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "--- End integration tools ---";
+
     const systemPreamble = [
       "You are the Connected AI Business OS assistant.",
       `Mode: ${body.mode}. Execution mode: ${body.executionMode}.`,
+      `Temporal anchor: referenceNowIso=${temporalAnchor.referenceNowIso}, clientTimeZone=${temporalAnchor.clientTimeZone ?? "unknown"}, clientLocale=${temporalAnchor.clientLocale ?? "unknown"}.`,
+      "For relative dates (today/tomorrow/next week), use the temporal anchor and do not infer historical years.",
+      "Google Calendar create (query_integration, provider google_calendar, operation create): put invitee emails in event.attendees (strings or {email}). Do not put invitees only in the description. Default event.sendCalendarInvites to true when adding attendees so Google sends invitation emails; set false only if the user explicitly asks to add attendees without emailing.",
+      "If the user gives only a clock time (e.g. 6pm) without a calendar day, ask which day to use before creating the event.",
       "Always follow this orchestration flow: understand the user intent, pick the best tool, execute it, then use tool results to produce the final answer.",
       "Never claim an entity/dashboard/report/workflow/module was created or updated unless a tool result explicitly confirms completion.",
       "If a tool returns pending_confirmation, clearly state it is pending approval and do not present it as completed.",
-      "For dashboard creation requests, call run_app_action with action_id=app.dashboards.create_layout and include args.dashboardKind, args.name, args.focus, args.reuseIfExists=false unless the user explicitly asks to reuse.",
+      "For standard global/executive layout requests, call run_app_action with action_id=app.dashboards.create_layout and include args.dashboardKind, args.name, args.focus, args.reuseIfExists=false unless the user explicitly asks to reuse.",
+      "For requests asking for a custom coded dashboard using integration data (for example HubSpot + QuickBooks KPI blends), call run_app_action with action_id=app.custom_dashboards.generate and include args.intent plus optional titleHint.",
       "Use tool result fields (result/artifacts/citations) to make the final response specific, not generic.",
+      integrationToolsCatalogBlock,
       "Permitted app actions for this user:",
       permittedAppActionsPrompt,
       "Tenant-scoped; cite provided context. Be concise. If unsure, say so.",
@@ -3071,6 +5465,205 @@ serve(async (req) => {
       })
       .eq("id", body.conversationId);
 
+    // ── Intent agent: deterministic integration read + timezone-aware windows ──
+    const intentMode = getIntentAgentMode();
+    let intentPlan: IntentPlanResult | null = null;
+    let intentPrefetched: {
+      summary: string;
+      toolId: string;
+      status: "completed" | "pending_confirmation" | "clarification";
+    } | null =
+      null;
+
+    const { data: companyRow } = await supabase
+      .from("companies")
+      .select("timezone")
+      .eq("id", companyId)
+      .maybeSingle();
+    const companyTimezone =
+      typeof companyRow?.timezone === "string" && companyRow.timezone.trim()
+        ? companyRow.timezone.trim()
+        : "UTC";
+
+    let providerCalendarTz: string | null = null;
+    const intentMasterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+    const intentSupabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const intentServiceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const runtimeSupabaseForIntent =
+      intentSupabaseUrl && intentServiceRole
+        ? createClient(intentSupabaseUrl, intentServiceRole, { auth: { persistSession: false } })
+        : null;
+
+    if (intentMode !== "off" && intentMasterKey && runtimeSupabaseForIntent) {
+      try {
+        const tzRes = await getGoogleCalendarPrimaryTimezone(runtimeSupabaseForIntent, {
+          companyId,
+          masterKey: intentMasterKey,
+        });
+        providerCalendarTz = tzRes.timeZone;
+        writeLog("info", "ai_api.provider_calendar_tz", {
+          requestId,
+          resolutionNote: tzRes.resolutionNote,
+          timeZone: providerCalendarTz,
+        });
+      } catch (e) {
+        writeLog("warn", "ai_api.provider_calendar_tz_failed", { requestId, error: serializeError(e) });
+      }
+    }
+
+    const permittedIntegrationIds = [
+      ...new Set(
+        permittedForStream
+          .filter((p) => p.toolSource === "integration")
+          .map((p) => p.id),
+      ),
+    ];
+    const looksLikeCalendarCreateRequest = /\b(create|add|schedule|book)\b/i.test(body.userMessage) &&
+      /\b(calendar|event|meeting)\b/i.test(body.userMessage);
+    const hasCalendarCreatePermission = permittedIntegrationIds.includes("google_calendar.create_event");
+    if (looksLikeCalendarCreateRequest && !hasCalendarCreatePermission) {
+      writeLog("warn", "ai_api.calendar_create_not_permitted", {
+        requestId,
+        userId: user.id,
+        roles: userRoles,
+        executionMode: body.executionMode,
+      });
+    }
+
+    if (intentMode !== "off" && permittedIntegrationIds.length > 0) {
+      const payloadParsed = intentPlanRequestSchema.safeParse({
+        userMessage: body.userMessage,
+        mode: body.mode,
+        workspaceId,
+        correlationId: requestId,
+        permittedToolIds: permittedIntegrationIds,
+        toolCatalogSummary: buildToolCatalogSummary(permittedForStream),
+        companyTimezone,
+        providerTimezones: { google_calendar: providerCalendarTz },
+        referenceNowIso: temporalAnchor.referenceNowIso,
+        clientNowIso: temporalAnchor.referenceNowIso,
+        clientTimeZone: temporalAnchor.clientTimeZone,
+        clientLocale: temporalAnchor.clientLocale,
+      });
+      if (payloadParsed.success) {
+        intentPlan = await invokeIntentAgent(authHeader, payloadParsed.data);
+        if (intentPlan) {
+          writeLog("info", "ai_api.intent_plan_received", {
+            requestId,
+            intent: intentPlan.intent,
+            confidence: intentPlan.confidence,
+            toolId: intentPlan.toolId ?? null,
+          });
+        }
+        if (intentMode === "shadow" && intentPlan) {
+          writeLog("info", "ai_api.intent_plan_shadow", { requestId, plan: intentPlan });
+        }
+        if (intentMode === "execute" && intentPlan) {
+          intentPrefetched = await runDeterministicIntentIntegration({
+            plan: intentPlan,
+            supabase,
+            companyId,
+            userId: user.id,
+            userRoles,
+            userMessage: body.userMessage,
+            executionMode: body.executionMode,
+            allowedAppActionIds,
+            companyTimezone,
+            providerCalendarTimezone: providerCalendarTz,
+            referenceNowIso: temporalAnchor.referenceNowIso,
+            clientTimeZone: temporalAnchor.clientTimeZone,
+            clientLocale: temporalAnchor.clientLocale,
+            timeAnchorSource: temporalAnchor.timeAnchorSource,
+            permitted: permittedForStream,
+            requestId,
+          });
+          if (intentPrefetched) {
+            writeLog("info", "ai_api.intent_plan_executed", {
+              requestId,
+              toolId: intentPrefetched.toolId,
+              status: intentPrefetched.status,
+            });
+          } else if (
+            (intentPlan.intent === "integration_read" || intentPlan.intent === "integration_write") &&
+            intentPlan.confidence >= 0.65
+          ) {
+            writeLog("info", "ai_api.intent_plan_fallback", {
+              requestId,
+              reason: "deterministic_execution_failed",
+              toolId: intentPlan.toolId ?? null,
+              intent: intentPlan.intent,
+            });
+          }
+        }
+      }
+    }
+
+    if (
+      intentMode === "execute" &&
+      !intentPrefetched &&
+      intentMasterKey &&
+      runtimeSupabaseForIntent &&
+      permittedIntegrationIds.includes("google_calendar.list_events") &&
+      looksLikeCalendarScheduleQuery(body.userMessage)
+    ) {
+      intentPrefetched = await runDeterministicIntentIntegration({
+        plan: {
+          intent: "integration_read",
+          confidence: 0.85,
+          toolId: "google_calendar.list_events",
+          reasoningSummary: "Heuristic calendar schedule query",
+          fallbackBehavior: "use_llm_tools",
+        },
+        supabase,
+        companyId,
+        userId: user.id,
+        userRoles,
+        userMessage: body.userMessage,
+        executionMode: body.executionMode,
+        allowedAppActionIds,
+        companyTimezone,
+        providerCalendarTimezone: providerCalendarTz,
+        referenceNowIso: temporalAnchor.referenceNowIso,
+        clientTimeZone: temporalAnchor.clientTimeZone,
+        clientLocale: temporalAnchor.clientLocale,
+        timeAnchorSource: temporalAnchor.timeAnchorSource,
+        permitted: permittedForStream,
+        requestId,
+      });
+      if (intentPrefetched) {
+        writeLog("info", "ai_api.calendar_heuristic_prefetch", {
+          requestId,
+          toolId: intentPrefetched.toolId,
+        });
+      }
+    }
+
+    const calendarToolFirstTurn =
+      !intentPrefetched &&
+      looksLikeCalendarScheduleQuery(body.userMessage) &&
+      permittedIntegrationIds.includes("google_calendar.list_events");
+
+    const integrationAuthoritativeBlock = intentPrefetched
+      ? `\n\n--- Authoritative live integration result (use only this for connector facts and dates; do not invent years) ---\n${
+        intentPrefetched.summary
+      }\n--- End integration result ---`
+      : "";
+
+    const temporalContextBlock =
+      `\n\n--- Temporal context (authoritative) ---\nreferenceNowIso=${temporalAnchor.referenceNowIso}\n` +
+      `clientTimeZone=${temporalAnchor.clientTimeZone ?? "unknown"}\n` +
+      `clientLocale=${temporalAnchor.clientLocale ?? "unknown"}\n` +
+      `timeAnchorSource=${temporalAnchor.timeAnchorSource}\n` +
+      "--- End temporal context ---";
+
+    const messagesForModelAdjusted = intentPrefetched
+      ? messagesForModel.map((m, i) =>
+        i === 0 ? { ...m, content: m.content + temporalContextBlock + integrationAuthoritativeBlock } : m
+      )
+      : messagesForModel.map((m, i) =>
+        i === 0 ? { ...m, content: m.content + temporalContextBlock } : m
+      );
+
     // ── Agentic loop: tool calling + final response ──────────────────────────
     // OpenAI type for messages including tool roles
     type OAIMessage =
@@ -3078,7 +5671,7 @@ serve(async (req) => {
       | { role: "assistant"; content: string | null; tool_calls?: { id: string; type: string; function: { name: string; arguments: string } }[] }
       | { role: "tool"; tool_call_id: string; content: string };
 
-    const loopMessages: OAIMessage[] = messagesForModel.map((m) => ({
+    const loopMessages: OAIMessage[] = messagesForModelAdjusted.map((m) => ({
       role: m.role as "system" | "user" | "assistant",
       content: m.content,
     }));
@@ -3094,6 +5687,33 @@ serve(async (req) => {
         const MAX_TOOL_ITERATIONS = 5;
 
         try {
+          if (
+            intentPrefetched?.status === "pending_confirmation" ||
+            intentPrefetched?.status === "clarification"
+          ) {
+            assistantBuffer = intentPrefetched.summary;
+            const CHUNK = 60;
+            for (let i = 0; i < assistantBuffer.length; i += CHUNK) {
+              controller.enqueue(sseData({ c: assistantBuffer.slice(i, i + CHUNK) }));
+            }
+          } else if (intentPrefetched) {
+            try {
+              const oaiJson = await modelProvider.chatCompletions({
+                model,
+                messages: loopMessages as unknown as Array<Record<string, unknown>>,
+              });
+              totalPromptTokens += oaiJson.usage?.prompt_tokens ?? 0;
+              totalCompletionTokens += oaiJson.usage?.completion_tokens ?? 0;
+              assistantBuffer = oaiJson.choices?.[0]?.message?.content ?? "";
+              const CHUNK = 60;
+              for (let i = 0; i < assistantBuffer.length; i += CHUNK) {
+                controller.enqueue(sseData({ c: assistantBuffer.slice(i, i + CHUNK) }));
+              }
+            } catch (e) {
+              const errText = e instanceof Error ? e.message : "LLM request failed";
+              controller.enqueue(sseData({ error: `LLM error: ${errText.slice(0, 300)}` }));
+            }
+          } else {
           for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
             let oaiJson: AiProviderChatResponse;
             try {
@@ -3101,7 +5721,9 @@ serve(async (req) => {
                 model,
                 messages: loopMessages as unknown as Array<Record<string, unknown>>,
                 tools: agentTools,
-                tool_choice: "auto",
+                tool_choice: iter === 0 && calendarToolFirstTurn
+                  ? { type: "function", function: { name: "query_integration" } }
+                  : "auto",
               });
             } catch (e) {
               const errText = e instanceof Error ? e.message : "LLM request failed";
@@ -3183,6 +5805,11 @@ serve(async (req) => {
                     {
                       userMessage: body.userMessage,
                       allowedAppActionIds,
+                      referenceNowIso: temporalAnchor.referenceNowIso,
+                      clientTimeZone: temporalAnchor.clientTimeZone,
+                      clientLocale: temporalAnchor.clientLocale,
+                      providerCalendarTimezone: providerCalendarTz,
+                      companyTimezone,
                     },
                   );
                   toolExecution = normalizeAgentToolExecution(rawResult);
@@ -3326,6 +5953,7 @@ serve(async (req) => {
               controller.enqueue(sseData({ c: assistantBuffer.slice(i, i + CHUNK) }));
             }
             break;
+          }
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : "stream error";
@@ -3514,6 +6142,28 @@ serve(async (req) => {
           .select("id, mode, execution_mode, title, updated_at")
           .single();
         if (error) throw error;
+        return new Response(JSON.stringify({ data }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "conversations.delete": {
+        const { error: messagesError } = await supabase
+          .from("ai_messages")
+          .delete()
+          .eq("conversation_id", op.conversationId)
+          .eq("company_id", companyId);
+        if (messagesError) throw messagesError;
+
+        const { data, error } = await supabase
+          .from("ai_conversations")
+          .delete()
+          .eq("id", op.conversationId)
+          .eq("company_id", companyId)
+          .eq("user_id", user.id)
+          .select("id")
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) throw new Error("Not found");
         return new Response(JSON.stringify({ data }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -3789,11 +6439,26 @@ serve(async (req) => {
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
           }
+          let actionArgs = asRecord(op.payload ?? {});
+          if (op.actionId === "app.dashboards.create_layout") {
+            actionArgs = normalizeDashboardCreateArgs(
+              actionArgs,
+              typeof actionArgs.focus === "string" ? actionArgs.focus : "",
+            );
+          } else if (op.actionId === "app.custom_dashboards.generate") {
+            actionArgs = normalizeCustomDashboardGenerateArgs(
+              actionArgs,
+              typeof actionArgs.intent === "string" ? actionArgs.intent : "",
+            );
+          }
+
           execOut = await executeAppAction(supabase, {
             action: appAction,
             companyId,
             userId: user.id,
-            args: op.payload ?? {},
+            userRoles,
+            userMessage: typeof actionArgs.intent === "string" ? actionArgs.intent : undefined,
+            args: actionArgs,
             confirmed: op.confirmed,
           });
 
@@ -3959,7 +6624,7 @@ serve(async (req) => {
           content =
             `Indexed context is available (${citations.length} citation(s)). ${providerResolution.error ?? "Model provider is unavailable."}`;
         } else {
-          const model = "gpt-4o-mini";
+          const model = getOpenAiFastModel();
           const sys =
             `You summarize internal operations for the Connected AI Business OS. ` +
             `Output ONLY valid JSON with key "insight" (string, max 3 short sentences). ` +
@@ -4061,7 +6726,7 @@ serve(async (req) => {
             modelProvider,
           },
         );
-        const model = "gpt-4o-mini";
+        const model = getOpenAiFastModel();
         const sys =
           `You are an executive briefing assistant for the Connected AI Business OS. ` +
           `Tenant timeframe label: ${tf}. Output ONLY valid JSON with keys: ` +
@@ -4164,7 +6829,7 @@ serve(async (req) => {
         const mode = op.mode ?? "Ask";
         const sys =
           `You are the Connected AI Business OS assistant. Mode: ${mode}. Use tenant context; be concise.\n\nContext:\n${contextText || "(none)"}`;
-        const model = op.model ?? "gpt-4o-mini";
+        const model = resolveOpenAiModel(op.model, "fast");
         const started = performance.now();
         const data = await modelProvider.chatCompletions({
             model,

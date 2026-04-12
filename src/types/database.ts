@@ -2551,6 +2551,103 @@ export interface Database {
           created_at?: string;
         };
       };
+      custom_dashboards: {
+        Row: {
+          id: string;
+          company_id: string;
+          creator_user_id: string;
+          title: string;
+          description: string | null;
+          code_tsx: string;
+          query_plan: Json;
+          snapshot_data: Json;
+          visibility_mode: string;
+          shared_roles: string[];
+          integration_sources: string[];
+          latest_run_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          creator_user_id: string;
+          title: string;
+          description?: string | null;
+          code_tsx: string;
+          query_plan?: Json;
+          snapshot_data?: Json;
+          visibility_mode?: string;
+          shared_roles?: string[];
+          integration_sources?: string[];
+          latest_run_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          creator_user_id?: string;
+          title?: string;
+          description?: string | null;
+          code_tsx?: string;
+          query_plan?: Json;
+          snapshot_data?: Json;
+          visibility_mode?: string;
+          shared_roles?: string[];
+          integration_sources?: string[];
+          latest_run_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      custom_dashboard_runs: {
+        Row: {
+          id: string;
+          company_id: string;
+          dashboard_id: string | null;
+          actor_user_id: string;
+          trigger_type: string;
+          status: string;
+          query_plan: Json;
+          result_snapshot: Json;
+          integration_sources: string[];
+          error_message: string | null;
+          execution_ms: number | null;
+          created_at: string;
+          completed_at: string;
+        };
+        Insert: {
+          id?: string;
+          company_id: string;
+          dashboard_id?: string | null;
+          actor_user_id: string;
+          trigger_type: string;
+          status: string;
+          query_plan?: Json;
+          result_snapshot?: Json;
+          integration_sources?: string[];
+          error_message?: string | null;
+          execution_ms?: number | null;
+          created_at?: string;
+          completed_at?: string;
+        };
+        Update: {
+          id?: string;
+          company_id?: string;
+          dashboard_id?: string | null;
+          actor_user_id?: string;
+          trigger_type?: string;
+          status?: string;
+          query_plan?: Json;
+          result_snapshot?: Json;
+          integration_sources?: string[];
+          error_message?: string | null;
+          execution_ms?: number | null;
+          created_at?: string;
+          completed_at?: string;
+        };
+      };
       department_exec_intensity: {
         Row: {
           id: string;
@@ -2802,6 +2899,15 @@ export interface Database {
     };
     Functions: {
       current_company_id: { Args: Record<string, never>; Returns: string | null };
+      current_user_roles_normalized: { Args: Record<string, never>; Returns: string[] };
+      can_access_custom_dashboard: {
+        Args: {
+          p_creator_user_id: string;
+          p_visibility_mode: string;
+          p_shared_roles: string[];
+        };
+        Returns: boolean;
+      };
       search_unified_entities: {
         Args: {
           p_search: string;

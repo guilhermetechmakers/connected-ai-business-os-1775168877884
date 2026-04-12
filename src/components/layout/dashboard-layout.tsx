@@ -18,17 +18,19 @@ import {
   Bell,
   Puzzle,
   Database,
+  LayoutTemplate,
 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/auth-context";
+import { useCustomDashboardsFeatureQuery } from "@/hooks/use-custom-dashboards";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
-const navGroups: {
+const baseNavGroups: {
   label: string;
   items: { to: string; label: string; icon: typeof LayoutDashboard }[];
 }[] = [
@@ -68,8 +70,27 @@ const navGroups: {
   },
 ];
 
-function SidebarNav({ collapsed }: { collapsed: boolean }) {
+function SidebarNav({
+  collapsed,
+  customDashboardsEnabled,
+}: {
+  collapsed: boolean;
+  customDashboardsEnabled: boolean;
+}) {
   const location = useLocation();
+  const navGroups = customDashboardsEnabled
+    ? baseNavGroups.map((group) =>
+      group.label === "Overview"
+        ? {
+            ...group,
+            items: [
+              ...group.items,
+              { to: "/dashboard/custom-dashboards", label: "Custom dashboards", icon: LayoutTemplate },
+            ],
+          }
+        : group
+    )
+    : baseNavGroups;
 
   return (
     <ScrollArea className="h-[calc(100vh-5rem)] px-2">
@@ -148,10 +169,12 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
 export function DashboardLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const { signOut, tenant, isConfigured } = useAuth();
+  const customDashboardsFeature = useCustomDashboardsFeatureQuery();
   const navigate = useNavigate();
   const location = useLocation();
   const tenantName = tenant?.name ?? null;
   const tenantDomain = tenant?.domain ?? null;
+  const customDashboardsEnabled = customDashboardsFeature.enabled;
 
   return (
     <div className="min-h-screen">
@@ -192,7 +215,7 @@ export function DashboardLayout() {
               )}
             </Button>
           </div>
-          <SidebarNav collapsed={collapsed} />
+          <SidebarNav collapsed={collapsed} customDashboardsEnabled={customDashboardsEnabled} />
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -211,7 +234,7 @@ export function DashboardLayout() {
                   <div className="flex h-16 items-center border-b border-border/80 px-4">
                     <span className="font-display font-bold">Business OS</span>
                   </div>
-                  <SidebarNav collapsed={false} />
+                  <SidebarNav collapsed={false} customDashboardsEnabled={customDashboardsEnabled} />
                 </SheetContent>
               </Sheet>
               <span className="font-display text-sm font-semibold">

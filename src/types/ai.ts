@@ -22,6 +22,28 @@ export type AiDashboardArtifactLayoutSnapshot = {
   reused?: boolean;
 };
 
+export type AiCustomDashboardQueryStep = {
+  toolId: string;
+  args?: Record<string, unknown>;
+  provider?: string;
+  label?: string;
+};
+
+export type AiCustomDashboardArtifactPayload = {
+  payloadVersion: number;
+  description?: string;
+  codeTsx: string;
+  queryPlan: AiCustomDashboardQueryStep[];
+  snapshotData: Record<string, unknown>;
+  sources: string[];
+  integrationSources?: string[];
+  visibilityMode?: "private" | "roles" | "company";
+  sharedRoles?: string[];
+  unsaved?: boolean;
+  generatedAt?: string;
+  refreshedAt?: string;
+};
+
 export type AiChatArtifact =
   | {
       id: string;
@@ -40,6 +62,17 @@ export type AiChatArtifact =
       reportId?: string;
       route?: string;
       payload?: Record<string, unknown>;
+      createdAt?: string;
+    }
+  | {
+      id: string;
+      type: "custom_dashboard";
+      title: string;
+      description?: string;
+      customDashboardId?: string;
+      route?: string;
+      unsaved?: boolean;
+      payload?: Record<string, unknown> | AiCustomDashboardArtifactPayload;
       createdAt?: string;
     }
   | {

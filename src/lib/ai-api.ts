@@ -161,6 +161,15 @@ export async function updateAiConversation(
   });
 }
 
+export async function deleteAiConversation(
+  conversationId: string,
+): Promise<{ id: string }> {
+  return postAiJson<{ id: string }>({
+    op: "conversations.delete",
+    conversationId,
+  });
+}
+
 export async function listPromptTemplates(params?: {
   includeInactive?: boolean;
   workspaceMode?: AiChatMode;
@@ -364,6 +373,9 @@ export async function streamAiChat(params: {
   executionMode?: AiConversationExecutionMode;
   model?: string;
   workspaceId?: string;
+  clientNowIso?: string;
+  clientTimeZone?: string;
+  clientLocale?: string;
   onCitations: (c: AiSourceCitation[]) => void;
   onChunk: (text: string) => void;
   onToolCall?: (call: { id: string; name: string; args?: Record<string, unknown> }) => void;
@@ -390,6 +402,9 @@ export async function streamAiChat(params: {
       executionMode: params.executionMode,
       model: params.model,
       workspaceId: params.workspaceId ?? "global",
+      clientNowIso: params.clientNowIso,
+      clientTimeZone: params.clientTimeZone,
+      clientLocale: params.clientLocale,
     }),
   });
 

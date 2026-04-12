@@ -102,6 +102,7 @@ export type IntegrationToolDefinition = {
   description?: string;
   providerKey: IntegrationProviderKey;
   accessLevel: "read" | "write";
+  riskTier?: "low" | "medium" | "high" | "critical";
   requiresConfirmation: boolean;
   argsShape?: Record<string, unknown>;
 };

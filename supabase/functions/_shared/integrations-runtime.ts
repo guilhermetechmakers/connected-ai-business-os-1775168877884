@@ -26,6 +26,18 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
 
 type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks";
 type ToolAccessLevel = "read" | "write";
+type ToolRiskTier = "low" | "medium" | "high" | "critical";
+type ToolRoleGroup =
+  | "reader_plus"
+  | "comms_plus"
+  | "comms_admin_plus"
+  | "sales_ops_plus"
+  | "sales_admin_plus"
+  | "finance_read_plus"
+  | "finance_ops_plus"
+  | "finance_admin_plus"
+  | "ops_plus"
+  | "integration_admin_plus";
 
 export type ProviderCatalogItem = {
   id: ProviderKey;
@@ -36,12 +48,14 @@ export type ProviderCatalogItem = {
   linkedGroup?: "google_workspace";
 };
 
-type RuntimeToolDefinition = {
+export type RuntimeToolDefinition = {
   id: string;
   providerKey: ProviderKey;
   label: string;
   description: string;
   accessLevel: ToolAccessLevel;
+  riskTier?: ToolRiskTier;
+  roleGroup?: ToolRoleGroup;
   requiresConfirmation: boolean;
   argsShape: Record<string, string>;
 };
@@ -76,6 +90,7 @@ export type RuntimeToolListItem = {
   label: string;
   description: string;
   accessLevel: ToolAccessLevel;
+  riskTier: ToolRiskTier;
   requiresConfirmation: boolean;
 };
 
@@ -86,6 +101,7 @@ export type RuntimeToolExecutionResult = {
   connectorId: string;
   toolId: string;
   requiresConfirmation: boolean;
+  riskTier?: ToolRiskTier;
   result?: Record<string, unknown>;
   preview?: Record<string, unknown>;
   citations?: ToolCitation[];
@@ -290,6 +306,8 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
       start: "string",
       end: "string",
       description: "string?",
+      attendees: "array?",
+      sendCalendarInvites: "boolean?",
     },
   },
   {
@@ -389,7 +407,303 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { invoiceId: "string", privateNote: "string?", txnStatus: "string?" },
   },
+  {
+    id: "slack.list_channels",
+    providerKey: "slack",
+    label: "Slack: list channels",
+    description: "List channels the bot can access.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", cursor: "string?" },
+  },
+  {
+    id: "slack.fetch_thread_replies",
+    providerKey: "slack",
+    label: "Slack: fetch thread replies",
+    description: "Read thread replies by channel and thread ts.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { channel: "string", threadTs: "string", limit: "number?" },
+  },
+  {
+    id: "slack.list_users",
+    providerKey: "slack",
+    label: "Slack: list users",
+    description: "List workspace users.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", cursor: "string?" },
+  },
+  {
+    id: "slack.update_message",
+    providerKey: "slack",
+    label: "Slack: update message",
+    description: "Update a previously posted message.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { channel: "string", ts: "string", text: "string" },
+  },
+  {
+    id: "slack.delete_message",
+    providerKey: "slack",
+    label: "Slack: delete message",
+    description: "Delete a message in a channel.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_admin_plus",
+    requiresConfirmation: true,
+    argsShape: { channel: "string", ts: "string" },
+  },
+  {
+    id: "slack.add_reaction",
+    providerKey: "slack",
+    label: "Slack: add reaction",
+    description: "Add a reaction to a message.",
+    accessLevel: "write",
+    riskTier: "low",
+    roleGroup: "comms_plus",
+    requiresConfirmation: false,
+    argsShape: { channel: "string", ts: "string", name: "string" },
+  },
+  {
+    id: "google_drive.fetch_file_content",
+    providerKey: "google_drive",
+    label: "Drive: fetch file content",
+    description: "Fetch content from Drive file or export Google docs.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { fileId: "string", mimeType: "string?" },
+  },
+  {
+    id: "google_drive.list_revisions",
+    providerKey: "google_drive",
+    label: "Drive: list revisions",
+    description: "List revisions for a Drive file.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { fileId: "string", pageSize: "number?" },
+  },
+  {
+    id: "google_drive.create_folder",
+    providerKey: "google_drive",
+    label: "Drive: create folder",
+    description: "Create a folder in Drive.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { name: "string", parentId: "string?" },
+  },
+  {
+    id: "google_drive.update_file_metadata",
+    providerKey: "google_drive",
+    label: "Drive: update file metadata",
+    description: "Update file metadata in Drive.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { fileId: "string", name: "string?", description: "string?" },
+  },
+  {
+    id: "google_drive.create_permission",
+    providerKey: "google_drive",
+    label: "Drive: create permission",
+    description: "Grant access permission to a file.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "integration_admin_plus",
+    requiresConfirmation: true,
+    argsShape: { fileId: "string", role: "reader|commenter|writer", type: "user|group|domain|anyone", emailAddress: "string?" },
+  },
+  {
+    id: "gmail.get_message",
+    providerKey: "gmail",
+    label: "Gmail: get message",
+    description: "Fetch full metadata/payload for a message.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { messageId: "string", format: "metadata|full|minimal?" },
+  },
+  {
+    id: "gmail.get_thread",
+    providerKey: "gmail",
+    label: "Gmail: get thread",
+    description: "Fetch an entire thread.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { threadId: "string", format: "metadata|full|minimal?" },
+  },
+  {
+    id: "gmail.list_labels",
+    providerKey: "gmail",
+    label: "Gmail: list labels",
+    description: "List mailbox labels.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: {},
+  },
+  {
+    id: "gmail.create_draft",
+    providerKey: "gmail",
+    label: "Gmail: create draft",
+    description: "Create a Gmail draft.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { to: "string", subject: "string", body: "string" },
+  },
+  {
+    id: "gmail.modify_message_labels",
+    providerKey: "gmail",
+    label: "Gmail: modify message labels",
+    description: "Add/remove labels for a message.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { messageId: "string", addLabelIds: "string[]?", removeLabelIds: "string[]?" },
+  },
+  {
+    id: "google_calendar.get_event",
+    providerKey: "google_calendar",
+    label: "Calendar: get event",
+    description: "Get a single calendar event.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { calendarId: "string?", eventId: "string" },
+  },
+  {
+    id: "google_calendar.list_calendars",
+    providerKey: "google_calendar",
+    label: "Calendar: list calendars",
+    description: "List calendars for the connected account.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { maxResults: "number?" },
+  },
+  {
+    id: "google_calendar.delete_event",
+    providerKey: "google_calendar",
+    label: "Calendar: delete event",
+    description: "Delete an existing event.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_admin_plus",
+    requiresConfirmation: true,
+    argsShape: { calendarId: "string?", eventId: "string" },
+  },
+  {
+    id: "hubspot.get_record",
+    providerKey: "hubspot",
+    label: "HubSpot: get record",
+    description: "Get a CRM record by object type and id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { objectType: "contacts|companies|deals", recordId: "string" },
+  },
+  {
+    id: "hubspot.create_contact",
+    providerKey: "hubspot",
+    label: "HubSpot: create contact",
+    description: "Create contact record.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "sales_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { email: "string", firstname: "string?", lastname: "string?", phone: "string?" },
+  },
+  {
+    id: "hubspot.create_deal",
+    providerKey: "hubspot",
+    label: "HubSpot: create deal",
+    description: "Create deal record.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "sales_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { dealname: "string", dealstage: "string", pipeline: "string?", amount: "string?" },
+  },
+  {
+    id: "quickbooks.get_invoice",
+    providerKey: "quickbooks",
+    label: "QuickBooks: get invoice",
+    description: "Fetch a single invoice by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { invoiceId: "string" },
+  },
+  {
+    id: "quickbooks.create_customer",
+    providerKey: "quickbooks",
+    label: "QuickBooks: create customer",
+    description: "Create a customer.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { displayName: "string", email: "string?" },
+  },
+  {
+    id: "quickbooks.create_invoice",
+    providerKey: "quickbooks",
+    label: "QuickBooks: create invoice",
+    description: "Create an invoice.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
+  },
 ];
+
+function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
+  if (tool.riskTier) return tool.riskTier;
+  if (tool.accessLevel === "read") return "low";
+  if (/delete|remove|permission|deal_stage|invoice|send_email|send_message/.test(tool.id)) {
+    return "high";
+  }
+  return "medium";
+}
+
+function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefined {
+  if (tool.roleGroup) return tool.roleGroup;
+  if (tool.accessLevel === "read") return "reader_plus";
+  if (tool.providerKey === "quickbooks") return "finance_ops_plus";
+  if (tool.providerKey === "hubspot") return "sales_ops_plus";
+  if (tool.providerKey === "slack" || tool.providerKey === "gmail" || tool.providerKey === "google_calendar") {
+    return "comms_plus";
+  }
+  if (tool.providerKey === "google_drive") return "ops_plus";
+  return undefined;
+}
 
 function isProviderKey(value: string): value is ProviderKey {
   return PROVIDER_CATALOG.some((p) => p.id === value);
@@ -415,6 +729,107 @@ function canWriteTools(roles: string[]): boolean {
     "builder",
     "super_admin",
   ].some((x) => r.has(x));
+}
+
+const TOOL_ROLE_GROUPS: Record<ToolRoleGroup, string[]> = {
+  reader_plus: [
+    "admin",
+    "owner",
+    "manager",
+    "company_admin",
+    "company admin",
+    "executive",
+    "analyst",
+    "auditor",
+    "compliance_auditor",
+  ],
+  comms_plus: [
+    "admin",
+    "owner",
+    "manager",
+    "company_admin",
+    "company admin",
+    "executive",
+    "comms_ops",
+  ],
+  comms_admin_plus: [
+    "admin",
+    "owner",
+    "company_admin",
+    "company admin",
+    "executive",
+    "comms_admin",
+  ],
+  sales_ops_plus: [
+    "admin",
+    "owner",
+    "manager",
+    "company_admin",
+    "company admin",
+    "executive",
+    "sales_ops",
+  ],
+  sales_admin_plus: [
+    "admin",
+    "owner",
+    "company_admin",
+    "company admin",
+    "executive",
+    "sales_admin",
+  ],
+  finance_read_plus: [
+    "admin",
+    "owner",
+    "manager",
+    "company_admin",
+    "company admin",
+    "executive",
+    "finance_ops",
+    "finance_admin",
+    "auditor",
+  ],
+  finance_ops_plus: [
+    "admin",
+    "owner",
+    "company_admin",
+    "company admin",
+    "executive",
+    "finance_ops",
+    "finance_admin",
+  ],
+  finance_admin_plus: [
+    "admin",
+    "owner",
+    "company_admin",
+    "company admin",
+    "executive",
+    "finance_admin",
+  ],
+  ops_plus: [
+    "admin",
+    "owner",
+    "manager",
+    "company_admin",
+    "company admin",
+    "executive",
+    "builder",
+    "integration_admin",
+  ],
+  integration_admin_plus: [
+    "admin",
+    "owner",
+    "company_admin",
+    "company admin",
+    "executive",
+    "integration_admin",
+    "super_admin",
+  ],
+};
+
+function canExecuteRoleGroup(roles: string[], group?: ToolRoleGroup): boolean {
+  if (!group) return true;
+  const normalized = new Set(normalizeRoles(roles));
+  return (TOOL_ROLE_GROUPS[group] ?? []).some((allowed) => normalized.has(allowed));
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -499,8 +914,12 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "channels:read",
         "channels:history",
         "groups:history",
+        "im:history",
+        "mpim:history",
         "chat:write",
+        "reactions:write",
         "users:read",
+        "users:read.email",
       ],
       extraAuthParams: { redirect_uri: redirectUri },
     };
@@ -519,10 +938,16 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "openid",
         "email",
         "profile",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/drive.metadata.readonly",
         "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.compose",
         "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.labels",
+        "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.readonly",
       ],
@@ -546,8 +971,11 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
       scopes: [
         "crm.objects.contacts.read",
         "crm.objects.contacts.write",
+        "crm.objects.companies.read",
+        "crm.objects.companies.write",
         "crm.objects.deals.read",
         "crm.objects.deals.write",
+        "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
     };
@@ -1738,7 +2166,7 @@ async function pullProviderSyncData(
 }
 
 async function providerToolExecute(
-  providerKey: ProviderKey,
+  _providerKey: ProviderKey,
   toolId: string,
   credential: ProviderCredentialPayload,
   args: Record<string, unknown>,
@@ -1784,6 +2212,123 @@ async function providerToolExecute(
     return { result: { channel, messages }, citations };
   }
 
+  if (toolId === "slack.list_channels") {
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 50)));
+    const cursor = typeof args.cursor === "string" ? args.cursor : "";
+    const q = new URLSearchParams();
+    q.set("limit", String(limit));
+    q.set("types", "public_channel,private_channel");
+    if (cursor) q.set("cursor", cursor);
+    const out = await providerRequest(
+      "GET",
+      `https://slack.com/api/conversations.list?${q.toString()}`,
+      accessToken,
+    );
+    const channels = Array.isArray(out.channels) ? out.channels : [];
+    return {
+      result: {
+        channels,
+        nextCursor: asObject(out.response_metadata).next_cursor ?? null,
+      },
+      citations: channels.slice(0, 5).map((c) => {
+        const channel = asObject(c);
+        return toolCitation("slack", String(channel.id ?? crypto.randomUUID()), String(channel.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "slack.fetch_thread_replies") {
+    const channel = String(args.channel ?? "");
+    const threadTs = String(args.threadTs ?? "");
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 20)));
+    const out = await providerRequest(
+      "GET",
+      `https://slack.com/api/conversations.replies?channel=${
+        encodeURIComponent(channel)
+      }&ts=${encodeURIComponent(threadTs)}&limit=${limit}`,
+      accessToken,
+    );
+    const messages = Array.isArray(out.messages) ? out.messages : [];
+    return {
+      result: { channel, threadTs, messages },
+      citations: messages.slice(0, 5).map((m) => {
+        const msg = asObject(m);
+        return toolCitation("slack", `${channel}:${msg.ts ?? crypto.randomUUID()}`, String(msg.text ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "slack.list_users") {
+    const limit = Math.max(1, Math.min(200, Number(args.limit ?? 100)));
+    const cursor = typeof args.cursor === "string" ? args.cursor : "";
+    const q = new URLSearchParams();
+    q.set("limit", String(limit));
+    if (cursor) q.set("cursor", cursor);
+    const out = await providerRequest(
+      "GET",
+      `https://slack.com/api/users.list?${q.toString()}`,
+      accessToken,
+    );
+    const members = Array.isArray(out.members) ? out.members : [];
+    return {
+      result: {
+        members,
+        nextCursor: asObject(out.response_metadata).next_cursor ?? null,
+      },
+      citations: members.slice(0, 5).map((u) => {
+        const user = asObject(u);
+        return toolCitation("slack", String(user.id ?? crypto.randomUUID()), String(user.real_name ?? user.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "slack.update_message") {
+    const channel = String(args.channel ?? "");
+    const ts = String(args.ts ?? "");
+    const text = String(args.text ?? "");
+    const out = await providerRequest(
+      "POST",
+      "https://slack.com/api/chat.update",
+      accessToken,
+      { channel, ts, text },
+    );
+    return {
+      result: { channel, ts, ok: out.ok ?? true },
+      citations: [toolCitation("slack", `${channel}:${ts}`, text)],
+    };
+  }
+
+  if (toolId === "slack.delete_message") {
+    const channel = String(args.channel ?? "");
+    const ts = String(args.ts ?? "");
+    const out = await providerRequest(
+      "POST",
+      "https://slack.com/api/chat.delete",
+      accessToken,
+      { channel, ts },
+    );
+    return {
+      result: { channel, ts, ok: out.ok ?? true },
+      citations: [toolCitation("slack", `${channel}:${ts}`)],
+    };
+  }
+
+  if (toolId === "slack.add_reaction") {
+    const channel = String(args.channel ?? "");
+    const ts = String(args.ts ?? "");
+    const name = String(args.name ?? "");
+    const out = await providerRequest(
+      "POST",
+      "https://slack.com/api/reactions.add",
+      accessToken,
+      { channel, timestamp: ts, name },
+    );
+    return {
+      result: { channel, ts, name, ok: out.ok ?? true },
+      citations: [toolCitation("slack", `${channel}:${ts}`, `:${name}:`)],
+    };
+  }
+
   if (toolId === "google_drive.search_files") {
     const query = typeof args.query === "string" ? args.query : "";
     const pageSize = Math.max(1, Math.min(200, Number(args.pageSize ?? 50)));
@@ -1820,6 +2365,122 @@ async function providerToolExecute(
     return {
       result: out,
       citations: [toolCitation("google_drive", fileId, String(out.name ?? ""))],
+    };
+  }
+
+  if (toolId === "google_drive.fetch_file_content") {
+    const fileId = String(args.fileId ?? "");
+    const mimeType = typeof args.mimeType === "string" ? args.mimeType : "";
+    const isGoogleDoc = mimeType.startsWith("application/vnd.google-apps");
+    const fetchText = async (url: string) => {
+      const res = await fetchWithRetry(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }, 3);
+      if (!res.ok) {
+        const err = await parseJsonSafe(res);
+        throw new Error(`provider request failed (${res.status}) ${String(err.error ?? err.message ?? "request failed")}`);
+      }
+      return await res.text();
+    };
+    if (isGoogleDoc) {
+      const exportMimeType = mimeType === "application/vnd.google-apps.spreadsheet"
+        ? "text/csv"
+        : "text/plain";
+      const out = await fetchText(
+        `https://www.googleapis.com/drive/v3/files/${
+          encodeURIComponent(fileId)
+        }/export?mimeType=${encodeURIComponent(exportMimeType)}`,
+      );
+      return {
+        result: { fileId, exportMimeType, content: out.slice(0, 50000) },
+        citations: [toolCitation("google_drive", fileId)],
+      };
+    }
+    const out = await fetchText(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`,
+    );
+    return {
+      result: { fileId, content: out.slice(0, 50000) },
+      citations: [toolCitation("google_drive", fileId)],
+    };
+  }
+
+  if (toolId === "google_drive.list_revisions") {
+    const fileId = String(args.fileId ?? "");
+    const pageSize = Math.max(1, Math.min(100, Number(args.pageSize ?? 30)));
+    const out = await providerRequest(
+      "GET",
+      `https://www.googleapis.com/drive/v3/files/${
+        encodeURIComponent(fileId)
+      }/revisions?pageSize=${pageSize}`,
+      accessToken,
+    );
+    const revisions = Array.isArray(out.revisions) ? out.revisions : [];
+    return {
+      result: { fileId, revisions },
+      citations: revisions.slice(0, 5).map((r) => {
+        const rev = asObject(r);
+        return toolCitation("google_drive", `${fileId}:rev:${rev.id ?? crypto.randomUUID()}`);
+      }),
+    };
+  }
+
+  if (toolId === "google_drive.create_folder") {
+    const name = String(args.name ?? "").trim();
+    const parentId = typeof args.parentId === "string" ? args.parentId.trim() : "";
+    const payload: Record<string, unknown> = {
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+    };
+    if (parentId) payload.parents = [parentId];
+    const out = await providerRequest(
+      "POST",
+      "https://www.googleapis.com/drive/v3/files",
+      accessToken,
+      payload,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_drive", String(out.id ?? crypto.randomUUID()), name)],
+    };
+  }
+
+  if (toolId === "google_drive.update_file_metadata") {
+    const fileId = String(args.fileId ?? "");
+    const payload: Record<string, unknown> = {};
+    if (typeof args.name === "string") payload.name = args.name;
+    if (typeof args.description === "string") payload.description = args.description;
+    const out = await providerRequest(
+      "PATCH",
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`,
+      accessToken,
+      payload,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_drive", fileId, String(out.name ?? ""))],
+    };
+  }
+
+  if (toolId === "google_drive.create_permission") {
+    const fileId = String(args.fileId ?? "");
+    const role = String(args.role ?? "reader");
+    const type = String(args.type ?? "user");
+    const emailAddress = typeof args.emailAddress === "string" ? args.emailAddress : undefined;
+    const payload: Record<string, unknown> = { role, type };
+    if (emailAddress) payload.emailAddress = emailAddress;
+    const out = await providerRequest(
+      "POST",
+      `https://www.googleapis.com/drive/v3/files/${
+        encodeURIComponent(fileId)
+      }/permissions?sendNotificationEmail=false`,
+      accessToken,
+      payload,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_drive", `${fileId}:permission:${out.id ?? crypto.randomUUID()}`)],
     };
   }
 
@@ -1907,6 +2568,91 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "gmail.get_message") {
+    const messageId = String(args.messageId ?? "");
+    const format = typeof args.format === "string" ? args.format : "full";
+    const out = await providerRequest(
+      "GET",
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${
+        encodeURIComponent(messageId)
+      }?format=${encodeURIComponent(format)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("gmail", messageId, String(out.snippet ?? ""))],
+    };
+  }
+
+  if (toolId === "gmail.get_thread") {
+    const threadId = String(args.threadId ?? "");
+    const format = typeof args.format === "string" ? args.format : "full";
+    const out = await providerRequest(
+      "GET",
+      `https://gmail.googleapis.com/gmail/v1/users/me/threads/${
+        encodeURIComponent(threadId)
+      }?format=${encodeURIComponent(format)}`,
+      accessToken,
+    );
+    const messages = Array.isArray(out.messages) ? out.messages : [];
+    return {
+      result: out,
+      citations: messages.slice(0, 5).map((m) => {
+        const msg = asObject(m);
+        return toolCitation("gmail", String(msg.id ?? crypto.randomUUID()));
+      }),
+    };
+  }
+
+  if (toolId === "gmail.list_labels") {
+    const out = await providerRequest(
+      "GET",
+      "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+      accessToken,
+    );
+    const labels = Array.isArray(out.labels) ? out.labels : [];
+    return {
+      result: { labels },
+      citations: labels.slice(0, 10).map((l) => {
+        const label = asObject(l);
+        return toolCitation("gmail", `label:${label.id ?? crypto.randomUUID()}`, String(label.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "gmail.create_draft") {
+    const to = String(args.to ?? "");
+    const subject = String(args.subject ?? "");
+    const body = String(args.body ?? "");
+    const raw = encodeGmailRaw(to, subject, body);
+    const out = await providerRequest(
+      "POST",
+      "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+      accessToken,
+      { message: { raw } },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("gmail", String(asObject(out.message).id ?? crypto.randomUUID()), subject)],
+    };
+  }
+
+  if (toolId === "gmail.modify_message_labels") {
+    const messageId = String(args.messageId ?? "");
+    const addLabelIds = Array.isArray(args.addLabelIds) ? args.addLabelIds.map((x) => String(x)) : [];
+    const removeLabelIds = Array.isArray(args.removeLabelIds) ? args.removeLabelIds.map((x) => String(x)) : [];
+    const out = await providerRequest(
+      "POST",
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,
+      accessToken,
+      { addLabelIds, removeLabelIds },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("gmail", messageId)],
+    };
+  }
+
   if (toolId === "google_calendar.list_events") {
     const calendarId = String(args.calendarId ?? "primary");
     const maxResults = Math.max(1, Math.min(250, Number(args.maxResults ?? 50)));
@@ -1937,17 +2683,72 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "google_calendar.get_event") {
+    const calendarId = String(args.calendarId ?? "primary");
+    const eventId = String(args.eventId ?? "");
+    const out = await providerRequest(
+      "GET",
+      `https://www.googleapis.com/calendar/v3/calendars/${
+        encodeURIComponent(calendarId)
+      }/events/${encodeURIComponent(eventId)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_calendar", `${calendarId}:${eventId}`, String(out.summary ?? ""))],
+    };
+  }
+
+  if (toolId === "google_calendar.list_calendars") {
+    const maxResults = Math.max(1, Math.min(100, Number(args.maxResults ?? 50)));
+    const out = await providerRequest(
+      "GET",
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=${maxResults}`,
+      accessToken,
+    );
+    const items = Array.isArray(out.items) ? out.items : [];
+    return {
+      result: { items },
+      citations: items.slice(0, 10).map((it) => {
+        const cal = asObject(it);
+        return toolCitation("google_calendar", String(cal.id ?? crypto.randomUUID()), String(cal.summary ?? ""));
+      }),
+    };
+  }
+
   if (toolId === "google_calendar.create_event") {
     const calendarId = String(args.calendarId ?? "primary");
-    const payload = {
+    const startRaw = String(args.start ?? "");
+    const endRaw = String(args.end ?? "");
+    const allDay = args.allDay === true ||
+      (/^\d{4}-\d{2}-\d{2}$/.test(startRaw) && /^\d{4}-\d{2}-\d{2}$/.test(endRaw));
+    const payload: Record<string, unknown> = {
       summary: String(args.summary ?? ""),
       description: typeof args.description === "string" ? args.description : undefined,
-      start: { dateTime: String(args.start ?? "") },
-      end: { dateTime: String(args.end ?? "") },
+      start: allDay ? { date: startRaw } : { dateTime: startRaw },
+      end: allDay ? { date: endRaw } : { dateTime: endRaw },
     };
+    const attendeeList: Array<{ email: string }> = [];
+    if (Array.isArray(args.attendees)) {
+      for (const a of args.attendees) {
+        if (typeof a === "string" && a.includes("@")) {
+          attendeeList.push({ email: a.trim() });
+        } else if (typeof a === "object" && a !== null && typeof (a as { email?: unknown }).email === "string") {
+          attendeeList.push({ email: String((a as { email: string }).email).trim() });
+        }
+      }
+    }
+    if (attendeeList.length > 0) {
+      payload.attendees = attendeeList;
+    }
+    const sendInvites = args.sendCalendarInvites !== false && attendeeList.length > 0;
+    const eventsUrl = new URL(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+    );
+    eventsUrl.searchParams.set("sendUpdates", sendInvites ? "all" : "none");
     const out = await providerRequest(
       "POST",
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+      eventsUrl.toString(),
       accessToken,
       payload,
     );
@@ -1963,8 +2764,12 @@ async function providerToolExecute(
     const patch: Record<string, unknown> = {};
     if (typeof args.summary === "string") patch.summary = args.summary;
     if (typeof args.description === "string") patch.description = args.description;
-    if (typeof args.start === "string") patch.start = { dateTime: args.start };
-    if (typeof args.end === "string") patch.end = { dateTime: args.end };
+    if (typeof args.start === "string") {
+      patch.start = /^\d{4}-\d{2}-\d{2}$/.test(args.start) ? { date: args.start } : { dateTime: args.start };
+    }
+    if (typeof args.end === "string") {
+      patch.end = /^\d{4}-\d{2}-\d{2}$/.test(args.end) ? { date: args.end } : { dateTime: args.end };
+    }
     const out = await providerRequest(
       "PATCH",
       `https://www.googleapis.com/calendar/v3/calendars/${
@@ -1976,6 +2781,22 @@ async function providerToolExecute(
     return {
       result: out,
       citations: [toolCitation("google_calendar", `${calendarId}:${eventId}`, String(out.summary ?? ""))],
+    };
+  }
+
+  if (toolId === "google_calendar.delete_event") {
+    const calendarId = String(args.calendarId ?? "primary");
+    const eventId = String(args.eventId ?? "");
+    await providerRequest(
+      "DELETE",
+      `https://www.googleapis.com/calendar/v3/calendars/${
+        encodeURIComponent(calendarId)
+      }/events/${encodeURIComponent(eventId)}`,
+      accessToken,
+    );
+    return {
+      result: { deleted: true, calendarId, eventId },
+      citations: [toolCitation("google_calendar", `${calendarId}:${eventId}`)],
     };
   }
 
@@ -2000,11 +2821,68 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "hubspot.get_record") {
+    const objectType = String(args.objectType ?? "contacts");
+    const recordId = String(args.recordId ?? "");
+    const out = await providerRequest(
+      "GET",
+      `https://api.hubapi.com/crm/v3/objects/${
+        encodeURIComponent(objectType)
+      }/${encodeURIComponent(recordId)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("hubspot", `${objectType}:${recordId}`)],
+    };
+  }
+
   if (toolId === "hubspot.upsert_contact") {
     const email = String(args.email ?? "");
     const props: Record<string, unknown> = {
       email,
     };
+    if (typeof args.firstname === "string") props.firstname = args.firstname;
+    if (typeof args.lastname === "string") props.lastname = args.lastname;
+    if (typeof args.phone === "string") props.phone = args.phone;
+    const search = await providerRequest(
+      "POST",
+      "https://api.hubapi.com/crm/v3/objects/contacts/search",
+      accessToken,
+      {
+        filterGroups: [{
+          filters: [{ propertyName: "email", operator: "EQ", value: email }],
+        }],
+        limit: 1,
+        properties: ["email", "firstname", "lastname", "phone"],
+      },
+    );
+    const first = Array.isArray(search.results) && search.results.length > 0
+      ? asObject(search.results[0])
+      : null;
+    const contactId = first && typeof first.id === "string" ? first.id : "";
+    const out = contactId
+      ? await providerRequest(
+        "PATCH",
+        `https://api.hubapi.com/crm/v3/objects/contacts/${encodeURIComponent(contactId)}`,
+        accessToken,
+        { properties: props },
+      )
+      : await providerRequest(
+        "POST",
+        "https://api.hubapi.com/crm/v3/objects/contacts",
+        accessToken,
+        { properties: props },
+      );
+    return {
+      result: out,
+      citations: [toolCitation("hubspot", `contact:${out.id ?? crypto.randomUUID()}`, email)],
+    };
+  }
+
+  if (toolId === "hubspot.create_contact") {
+    const email = String(args.email ?? "");
+    const props: Record<string, unknown> = { email };
     if (typeof args.firstname === "string") props.firstname = args.firstname;
     if (typeof args.lastname === "string") props.lastname = args.lastname;
     if (typeof args.phone === "string") props.phone = args.phone;
@@ -2063,6 +2941,24 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "hubspot.create_deal") {
+    const dealname = String(args.dealname ?? "");
+    const dealstage = String(args.dealstage ?? "");
+    const props: Record<string, unknown> = { dealname, dealstage };
+    if (typeof args.pipeline === "string") props.pipeline = args.pipeline;
+    if (typeof args.amount === "string") props.amount = args.amount;
+    const out = await providerRequest(
+      "POST",
+      "https://api.hubapi.com/crm/v3/objects/deals",
+      accessToken,
+      { properties: props },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("hubspot", `deal:${out.id ?? crypto.randomUUID()}`, dealname)],
+    };
+  }
+
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks realm_id missing");
 
@@ -2097,6 +2993,70 @@ async function providerToolExecute(
         const obj = asObject(inv);
         return toolCitation("quickbooks", `invoice:${obj.Id ?? crypto.randomUUID()}`, String(obj.DocNumber ?? ""));
       }),
+    };
+  }
+
+  if (toolId === "quickbooks.get_invoice") {
+    const invoiceId = String(args.invoiceId ?? "");
+    const out = await providerRequest(
+      "GET",
+      `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(realmId)}/invoice/${
+        encodeURIComponent(invoiceId)
+      }?minorversion=65`,
+      accessToken,
+      undefined,
+      { Accept: "application/json" },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("quickbooks", `invoice:${invoiceId}`)],
+    };
+  }
+
+  if (toolId === "quickbooks.create_customer") {
+    const displayName = String(args.displayName ?? "");
+    const email = typeof args.email === "string" ? args.email : "";
+    const payload: Record<string, unknown> = { DisplayName: displayName };
+    if (email) payload.PrimaryEmailAddr = { Address: email };
+    const out = await providerRequest(
+      "POST",
+      `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(realmId)}/customer?minorversion=65`,
+      accessToken,
+      payload,
+      { Accept: "application/json" },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("quickbooks", `customer:${asObject(out.Customer).Id ?? crypto.randomUUID()}`, displayName)],
+    };
+  }
+
+  if (toolId === "quickbooks.create_invoice") {
+    const customerId = String(args.customerId ?? "");
+    const totalAmt = Number(args.totalAmt ?? 0);
+    const privateNote = typeof args.privateNote === "string" ? args.privateNote : "";
+    const payload: Record<string, unknown> = {
+      CustomerRef: { value: customerId },
+      Line: [{
+        Amount: totalAmt,
+        DetailType: "SalesItemLineDetail",
+        SalesItemLineDetail: {
+          ItemRef: { value: "1" },
+        },
+      }],
+    };
+    if (privateNote) payload.PrivateNote = privateNote;
+    const out = await providerRequest(
+      "POST",
+      `https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(realmId)}/invoice?minorversion=65`,
+      accessToken,
+      payload,
+      { Accept: "application/json" },
+    );
+    const invoice = asObject(out.Invoice);
+    return {
+      result: out,
+      citations: [toolCitation("quickbooks", `invoice:${invoice.Id ?? crypto.randomUUID()}`, String(invoice.DocNumber ?? ""))],
     };
   }
 
@@ -2163,6 +3123,104 @@ function findToolDefinition(
   return TOOL_DEFINITIONS.find((t) => t.id === toolId);
 }
 
+/** Public lookup for intent planning / validation (ai-api, intent-agent). */
+export function getRuntimeToolDefinition(
+  toolId: string,
+): RuntimeToolDefinition | undefined {
+  return findToolDefinition(toolId);
+}
+
+export function listRuntimeToolDefinitions(): RuntimeToolDefinition[] {
+  return TOOL_DEFINITIONS.map((tool) => ({
+    ...tool,
+    riskTier: getToolRiskTier(tool),
+    roleGroup: getToolRoleGroup(tool),
+  }));
+}
+
+export const runtimePolicyTestHooks = {
+  getToolRiskTier,
+  getToolRoleGroup,
+  constrainToolArgs,
+  validateToolArgs,
+  canExecuteRoleGroup,
+};
+
+/**
+ * Primary calendar IANA timezone from Google Calendar API (calendarList).
+ * Used for intent-time resolution (provider-first).
+ */
+export async function getGoogleCalendarPrimaryTimezone(
+  supabase: SupabaseClient,
+  params: {
+    companyId: string;
+    masterKey: string;
+  },
+): Promise<{ timeZone: string | null; resolutionNote: string }> {
+  const { data: rows, error } = await supabase
+    .from("connectors")
+    .select("id, status")
+    .eq("company_id", params.companyId)
+    .eq("provider_key", "google_calendar");
+  if (error) throw error;
+  const list = Array.isArray(rows) ? rows : [];
+  const connected = list.find((c) =>
+    ["connected", "healthy"].includes(String(c.status).toLowerCase())
+  );
+  if (!connected) {
+    return { timeZone: null, resolutionNote: "no_google_calendar_connector" };
+  }
+  const loaded = await loadConnectorWithCredential(
+    supabase,
+    params.companyId,
+    connected.id as string,
+  );
+  if (!loaded?.encrypted_payload) {
+    return { timeZone: null, resolutionNote: "no_credentials" };
+  }
+  let credential = await decryptCredential(loaded.encrypted_payload, params.masterKey);
+  credential = await refreshAccessTokenIfNeeded(supabase, {
+    companyId: params.companyId,
+    connectorId: connected.id as string,
+    providerKey: "google_calendar",
+    credential,
+    masterKey: params.masterKey,
+  });
+  const accessToken = typeof credential.access_token === "string" ? credential.access_token : "";
+  if (!accessToken) {
+    return { timeZone: null, resolutionNote: "no_access_token" };
+  }
+  const out = await providerRequest(
+    "GET",
+    "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=50",
+    accessToken,
+  );
+  const items = Array.isArray(out.items) ? out.items : [];
+  let primary: Record<string, unknown> | undefined;
+  for (const it of items) {
+    const o = asObject(it);
+    if (o.primary === true) {
+      primary = o;
+      break;
+    }
+  }
+  if (!primary) {
+    for (const it of items) {
+      const o = asObject(it);
+      if (String(o.id ?? "") === "primary") {
+        primary = o;
+        break;
+      }
+    }
+  }
+  if (!primary && items.length > 0) primary = asObject(items[0]);
+  const tz = typeof primary?.timeZone === "string" ? String(primary.timeZone) : null;
+  return {
+    timeZone: tz,
+    resolutionNote: tz ? "calendar_list" : "no_timezone_in_list",
+  };
+}
+
 function previewArgs(args: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
@@ -2173,6 +3231,63 @@ function previewArgs(args: Record<string, unknown>): Record<string, unknown> {
     }
   }
   return out;
+}
+
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...args };
+  if ("limit" in next) next.limit = clampInt(next.limit, 20, 1, 100);
+  if ("maxResults" in next) next.maxResults = clampInt(next.maxResults, 20, 1, 100);
+  if ("pageSize" in next) next.pageSize = clampInt(next.pageSize, 50, 1, 100);
+  if ("page" in next) next.page = clampInt(next.page, 1, 1, 10_000);
+
+  // Keep tool input bounded even if caller sends oversized payloads.
+  for (const [key, value] of Object.entries(next)) {
+    if (typeof value === "string" && value.length > 20_000) {
+      next[key] = value.slice(0, 20_000);
+    }
+    if (Array.isArray(value) && value.length > 500) {
+      next[key] = value.slice(0, 500);
+    }
+  }
+
+  // Provider-specific minimum constraints for high-cost operations.
+  if (tool.id === "gmail.search_messages") {
+    next.maxResults = clampInt(next.maxResults, 20, 1, 50);
+  }
+  if (tool.id === "slack.fetch_channel_messages" || tool.id === "slack.fetch_thread_replies") {
+    next.limit = clampInt(next.limit, 20, 1, 100);
+  }
+  if (tool.id === "google_calendar.list_events") {
+    next.maxResults = clampInt(next.maxResults, 50, 1, 150);
+  }
+  return next;
+}
+
+function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unknown>): void {
+  for (const [argName, shape] of Object.entries(tool.argsShape ?? {})) {
+    const optional = shape.includes("?");
+    if (!optional && (args[argName] === undefined || args[argName] === null || args[argName] === "")) {
+      throw new Error(`Missing required argument: ${argName}`);
+    }
+  }
+  if (tool.id === "google_drive.create_permission") {
+    const type = String(args.type ?? "user");
+    if (["user", "group"].includes(type) && typeof args.emailAddress !== "string") {
+      throw new Error("emailAddress is required for user/group permissions");
+    }
+  }
+  if (tool.id === "quickbooks.create_invoice") {
+    const totalAmt = Number(args.totalAmt ?? 0);
+    if (!Number.isFinite(totalAmt) || totalAmt <= 0) {
+      throw new Error("totalAmt must be a positive number");
+    }
+  }
 }
 
 export function listProviderCatalog(): ProviderCatalogItem[] {
@@ -2599,7 +3714,6 @@ export async function toolsList(
     .select("id, provider_key, status")
     .eq("company_id", params.companyId);
   if (error) throw error;
-  const canWrite = canWriteTools(params.roles);
   const connected = (Array.isArray(data) ? data : [])
     .filter((c) => isProviderKey(String(c.provider_key)))
     .filter((c) => ["connected", "healthy"].includes(String(c.status).toLowerCase()));
@@ -2608,7 +3722,9 @@ export async function toolsList(
   for (const c of connected) {
     const provider = c.provider_key as ProviderKey;
     for (const tool of TOOL_DEFINITIONS.filter((t) => t.providerKey === provider)) {
-      if (tool.accessLevel === "write" && !canWrite) continue;
+      const roleGroup = getToolRoleGroup(tool);
+      if (tool.accessLevel === "write" && !canWriteTools(params.roles)) continue;
+      if (!canExecuteRoleGroup(params.roles, roleGroup)) continue;
       out.push({
         id: tool.id,
         providerKey: provider,
@@ -2616,6 +3732,7 @@ export async function toolsList(
         label: tool.label,
         description: tool.description,
         accessLevel: tool.accessLevel,
+        riskTier: getToolRiskTier(tool),
         requiresConfirmation: tool.requiresConfirmation,
       });
     }
@@ -2638,8 +3755,14 @@ export async function toolsExecute(
     masterKey: string;
   },
 ): Promise<RuntimeToolExecutionResult> {
+  const startedAt = Date.now();
   const tool = findToolDefinition(params.toolId);
   if (!tool) throw new Error(`Unknown tool: ${params.toolId}`);
+  const roleGroup = getToolRoleGroup(tool);
+  const riskTier = getToolRiskTier(tool);
+  if (!canExecuteRoleGroup(params.roles, roleGroup)) {
+    throw new Error("Role does not permit this tool");
+  }
   if (tool.accessLevel === "write" && !canWriteTools(params.roles)) {
     throw new Error("Role does not permit write tool execution");
   }
@@ -2660,15 +3783,19 @@ export async function toolsExecute(
       providerKey: tool.providerKey,
       connectorId: connector.id,
       toolId: tool.id,
+      riskTier,
       requiresConfirmation: true,
       preview: {
         label: tool.label,
         provider: tool.providerKey,
+        riskTier,
         args: previewArgs(params.args),
       },
     };
   }
 
+  const safeArgs = constrainToolArgs(tool, params.args);
+  validateToolArgs(tool, safeArgs);
   const rawCredential = await decryptCredential(loaded.encrypted_payload, params.masterKey);
   const credential = await refreshAccessTokenIfNeeded(supabase, {
     companyId: params.companyId,
@@ -2681,7 +3808,7 @@ export async function toolsExecute(
     tool.providerKey,
     tool.id,
     credential,
-    params.args,
+    safeArgs,
   );
   const result = execution.result;
   const citations = execution.citations;
@@ -2691,10 +3818,13 @@ export async function toolsExecute(
     toolId: tool.id,
     providerKey: tool.providerKey,
     accessLevel: tool.accessLevel,
-    args: previewArgs(params.args),
+    roleGroup: roleGroup ?? null,
+    riskTier,
+    args: previewArgs(safeArgs),
     conversationId: params.conversationId ?? null,
     workflowRunId: params.workflowRunId ?? null,
     resultPreview: previewArgs(result),
+    executionMs: Date.now() - startedAt,
   };
 
   await supabase.from("activity_logs").insert({
@@ -2716,8 +3846,11 @@ export async function toolsExecute(
     details: {
       providerKey: tool.providerKey,
       accessLevel: tool.accessLevel,
+      roleGroup: roleGroup ?? null,
+      riskTier,
+      executionMs: Date.now() - startedAt,
       source: params.source,
-      args: previewArgs(params.args),
+      args: previewArgs(safeArgs),
       result: previewArgs(result),
       citations,
     },
@@ -2729,6 +3862,7 @@ export async function toolsExecute(
     providerKey: tool.providerKey,
     connectorId: connector.id,
     toolId: tool.id,
+    riskTier,
     requiresConfirmation: tool.requiresConfirmation,
     result,
     citations,

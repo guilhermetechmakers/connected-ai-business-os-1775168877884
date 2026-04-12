@@ -5,6 +5,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
+import { resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -56,7 +57,7 @@ serve(async (req) => {
       });
     }
 
-    const model = body.model ?? "gpt-4o-mini";
+    const model = resolveOpenAiModel(body.model, "fast");
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {

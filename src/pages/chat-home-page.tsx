@@ -4,14 +4,13 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Edit3,
   Eye,
   Loader2,
-  Lock,
   MoreHorizontal,
+  Pencil,
   Plus,
-  Search,
   Sparkles,
+  Trash2,
   WrenchIcon,
   X,
 } from "lucide-react";
@@ -35,9 +34,12 @@ import {
   useAiConversationDetail,
   useAiConversationsList,
   useCreateAiConversation,
+  useDeleteAiConversation,
   useExecuteAiAction,
   useUpdateAiConversation,
 } from "@/hooks/use-ai";
+import { saveCustomDashboard } from "@/api/dashboard";
+import { useAuth } from "@/contexts/auth-context";
 import { streamAiChat } from "@/lib/ai-api";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -77,6 +79,79 @@ function payloadFromPreview(
   return rawArgs as Record<string, unknown>;
 }
 
+function normalizeRoleNames(roles: string[] | null | undefined): string[] {
+  const list = Array.isArray(roles) ? roles : [];
+  return Array.from(
+    new Set(
+      list
+        .map((role) => String(role).trim().toLowerCase())
+        .filter((role) => role.length > 0),
+    ),
+  );
+}
+
+function customDashboardPayloadFromArtifact(artifact: AiChatArtifact): {
+  title: string;
+  description: string | null;
+  codeTsx: string;
+  queryPlan: Array<{ toolId: string; args?: Record<string, unknown>; provider?: string; label?: string }>;
+  snapshotData: Record<string, unknown>;
+  sources: string[];
+} | null {
+  if (artifact.type !== "custom_dashboard") return null;
+  const payload =
+    artifact.payload && typeof artifact.payload === "object" && !Array.isArray(artifact.payload)
+      ? (artifact.payload as Record<string, unknown>)
+      : {};
+  const codeTsx = typeof payload.codeTsx === "string" ? payload.codeTsx : "";
+  if (!codeTsx.trim()) return null;
+  const queryPlanRaw = Array.isArray(payload.queryPlan) ? payload.queryPlan : [];
+  const queryPlan: Array<{ toolId: string; args?: Record<string, unknown>; provider?: string; label?: string }> = [];
+  for (const step of queryPlanRaw) {
+    if (!step || typeof step !== "object") continue;
+    const row = step as Record<string, unknown>;
+    if (typeof row.toolId !== "string" || row.toolId.length === 0) continue;
+    const next: { toolId: string; args?: Record<string, unknown>; provider?: string; label?: string } = {
+      toolId: row.toolId,
+      args: row.args && typeof row.args === "object"
+        ? (row.args as Record<string, unknown>)
+        : {},
+    };
+    if (typeof row.provider === "string" && row.provider.length > 0) {
+      next.provider = row.provider;
+    }
+    if (typeof row.label === "string" && row.label.length > 0) {
+      next.label = row.label;
+    }
+    queryPlan.push(next);
+  }
+  const sourcesRaw = Array.isArray(payload.sources)
+    ? payload.sources
+    : Array.isArray(payload.integrationSources)
+      ? payload.integrationSources
+      : [];
+  const sources = sourcesRaw
+    .map((source) => (typeof source === "string" ? source.toLowerCase().trim() : null))
+    .filter((source): source is string => Boolean(source));
+  const snapshotData = payload.snapshotData && typeof payload.snapshotData === "object" && !Array.isArray(payload.snapshotData)
+    ? (payload.snapshotData as Record<string, unknown>)
+    : {};
+  const description = typeof artifact.description === "string"
+    ? artifact.description
+    : typeof payload.description === "string"
+      ? payload.description
+      : null;
+
+  return {
+    title: artifact.title || "Custom dashboard",
+    description,
+    codeTsx,
+    queryPlan,
+    snapshotData,
+    sources,
+  };
+}
+
 function ThoughtStep({
   label,
   done = false,
@@ -106,6 +181,7 @@ function ThoughtStep({
 export default function ChatHomePage() {
   const qc = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const { profile } = useAuth();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [mode, setMode] = useState<AiChatMode>("Ask");
@@ -120,6 +196,8 @@ export default function ChatHomePage() {
   const [pendingConfirmations, setPendingConfirmations] = useState<
     PendingConfirmation[]
   >([]);
+  const [savingArtifactIds, setSavingArtifactIds] = useState<string[]>([]);
+  const [savedArtifactIds, setSavedArtifactIds] = useState<string[]>([]);
   const [showSidebar, setShowSidebar] = useState(true);
 
   const { data: convoList = [], isLoading: listLoading } =
@@ -131,6 +209,7 @@ export default function ChatHomePage() {
 
   const createConvo = useCreateAiConversation();
   const updateConvo = useUpdateAiConversation();
+  const deleteConvo = useDeleteAiConversation();
   const executeMutation = useExecuteAiAction();
 
   const messages = useMemo(
@@ -212,6 +291,8 @@ export default function ChatHomePage() {
           setLiveToolCalls([]);
           setLiveArtifacts([]);
           setPendingConfirmations([]);
+          setSavingArtifactIds([]);
+          setSavedArtifactIds([]);
           void qc.invalidateQueries({
             queryKey: aiQueryKeys.conversations(),
           });
@@ -241,6 +322,62 @@ export default function ChatHomePage() {
       });
     }
   };
+
+  const renameConversation = useCallback(
+    async (target: { id: string; title: string | null; mode: string }) => {
+      const suggested = target.title?.trim() || `${target.mode} chat`;
+      const nextTitle = window.prompt("Rename conversation", suggested);
+      if (nextTitle === null) return;
+      const trimmedTitle = nextTitle.trim();
+      if (!trimmedTitle) {
+        toast.error("Conversation title cannot be empty.");
+        return;
+      }
+      if (trimmedTitle === (target.title ?? "").trim()) return;
+      try {
+        await updateConvo.mutateAsync({
+          conversationId: target.id,
+          patch: { title: trimmedTitle },
+        });
+        toast.success("Conversation renamed.");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not rename conversation",
+        );
+      }
+    },
+    [updateConvo],
+  );
+
+  const deleteConversation = useCallback(
+    async (target: { id: string; title: string | null; mode: string }) => {
+      const label = target.title?.trim() || `${target.mode} chat`;
+      const approved = window.confirm(
+        `Delete "${label}"? This will permanently remove all messages in this chat.`,
+      );
+      if (!approved) return;
+      try {
+        await deleteConvo.mutateAsync(target.id);
+        if (conversationId === target.id) {
+          const nextConversation = conversations.find((c) => c.id !== target.id);
+          setConversationId(nextConversation?.id ?? null);
+          setStreamingText("");
+          setLiveCitations([]);
+          setLiveToolCalls([]);
+          setLiveArtifacts([]);
+          setPendingConfirmations([]);
+          setSavingArtifactIds([]);
+          setSavedArtifactIds([]);
+        }
+        toast.success("Conversation deleted.");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not delete conversation",
+        );
+      }
+    },
+    [conversationId, conversations, deleteConvo],
+  );
 
   const executePendingConfirmation = async (pending: PendingConfirmation) => {
     if (!conversationId) return;
@@ -354,6 +491,50 @@ export default function ChatHomePage() {
     ],
   );
 
+  const saveCustomDashboardArtifact = useCallback(
+    async (artifact: AiChatArtifact) => {
+      if (artifact.type !== "custom_dashboard") return;
+      if (savedArtifactIds.includes(artifact.id)) {
+        toast.success("This dashboard preview is already saved.");
+        return;
+      }
+
+      const payload = customDashboardPayloadFromArtifact(artifact);
+      if (!payload) {
+        toast.error("Invalid custom dashboard artifact payload.");
+        return;
+      }
+
+      const sharedRoles = normalizeRoleNames(profile?.roles);
+      setSavingArtifactIds((prev) => [...prev, artifact.id]);
+      try {
+        const saved = await saveCustomDashboard({
+          title: payload.title,
+          description: payload.description,
+          codeTsx: payload.codeTsx,
+          queryPlan: payload.queryPlan,
+          snapshotData: payload.snapshotData,
+          sources: payload.sources,
+          visibilityMode: "roles",
+          sharedRoles,
+        });
+        if (!saved) {
+          toast.error("Could not save custom dashboard.");
+          return;
+        }
+        setSavedArtifactIds((prev) =>
+          prev.includes(artifact.id) ? prev : [...prev, artifact.id]
+        );
+        toast.success("Custom dashboard saved.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not save custom dashboard.");
+      } finally {
+        setSavingArtifactIds((prev) => prev.filter((id) => id !== artifact.id));
+      }
+    },
+    [profile?.roles, savedArtifactIds],
+  );
+
   const send = async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -389,7 +570,15 @@ export default function ChatHomePage() {
     setLiveToolCalls([]);
     setLiveArtifacts([]);
     setPendingConfirmations([]);
+    setSavingArtifactIds([]);
+    setSavedArtifactIds([]);
     setIsStreaming(true);
+
+    const clientNowIso = new Date().toISOString();
+    const clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const clientLocale = typeof navigator?.language === "string"
+      ? navigator.language
+      : undefined;
 
     await streamAiChat({
       conversationId: cid,
@@ -397,6 +586,9 @@ export default function ChatHomePage() {
       mode,
       executionMode,
       workspaceId: "global",
+      clientNowIso,
+      clientTimeZone,
+      clientLocale,
       onCitations: (c) => setLiveCitations(Array.isArray(c) ? c : []),
       onChunk: (c) => setStreamingText((prev) => prev + c),
       onToolCall: (call) => {
@@ -480,26 +672,74 @@ export default function ChatHomePage() {
               </p>
             ) : (
               conversations.slice(0, 20).map((c) => (
-                <button
+                <div
                   key={c.id}
-                  type="button"
-                  onClick={() => {
-                    setConversationId(c.id);
-                    setStreamingText("");
-                    setLiveArtifacts([]);
-                    setPendingConfirmations([]);
-                  }}
                   className={cn(
-                    "w-full rounded-lg px-3 py-2 text-left text-sm transition-colors duration-150",
+                    "group flex items-center gap-1 rounded-lg pl-1 pr-0.5 text-sm transition-colors duration-150",
                     c.id === conversationId
                       ? "bg-primary/10 text-foreground"
                       : "text-muted-foreground hover:bg-muted/40 hover:text-foreground",
                   )}
                 >
-                  <span className="line-clamp-1 font-medium">
-                    {c.title ?? c.mode}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConversationId(c.id);
+                      setStreamingText("");
+                      setLiveArtifacts([]);
+                      setPendingConfirmations([]);
+                      setSavingArtifactIds([]);
+                      setSavedArtifactIds([]);
+                    }}
+                    className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left"
+                  >
+                    <span className="line-clamp-1 font-medium">
+                      {c.title ?? c.mode}
+                    </span>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                        aria-label={`Conversation actions for ${c.title ?? c.mode}`}
+                      >
+                        <MoreHorizontal className="h-3.5 w-3.5" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[180px]">
+                      <DropdownMenuItem
+                        onClick={() =>
+                          void renameConversation({
+                            id: c.id,
+                            title: c.title,
+                            mode: c.mode,
+                          })
+                        }
+                        disabled={updateConvo.isPending || deleteConvo.isPending}
+                      >
+                        <Pencil className="mr-2 h-3.5 w-3.5" />
+                        Rename chat
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() =>
+                          void deleteConversation({
+                            id: c.id,
+                            title: c.title,
+                            mode: c.mode,
+                          })
+                        }
+                        className="text-destructive focus:text-destructive"
+                        disabled={deleteConvo.isPending || updateConvo.isPending}
+                      >
+                        <Trash2 className="mr-2 h-3.5 w-3.5" />
+                        Delete chat
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               ))
             )}
           </div>
@@ -538,41 +778,6 @@ export default function ChatHomePage() {
             <h1 className="text-sm font-medium text-foreground">
               {currentTitle}
             </h1>
-            <span className="inline-flex items-center gap-1 rounded-md border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-              <Lock className="h-2.5 w-2.5" />
-              Private
-            </span>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-              onClick={() => startNewChat()}
-              disabled={createConvo.isPending}
-              aria-label="New conversation"
-            >
-              <Edit3 className="h-4 w-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-              aria-label="Search messages"
-            >
-              <Search className="h-4 w-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-              aria-label="More actions"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
           </div>
         </header>
 
@@ -608,6 +813,9 @@ export default function ChatHomePage() {
                     message={m}
                     refreshArtifact={refreshArtifact}
                     regeneratePdfArtifact={regeneratePdfArtifact}
+                    onSaveCustomDashboard={saveCustomDashboardArtifact}
+                    savingArtifactIds={savingArtifactIds}
+                    savedArtifactIds={savedArtifactIds}
                     busy={executeMutation.isPending}
                   />
                 ))}
@@ -692,7 +900,12 @@ export default function ChatHomePage() {
                                 artifact={artifact}
                                 onRefresh={refreshArtifact}
                                 onRegenerate={regeneratePdfArtifact}
-                                busy={executeMutation.isPending}
+                                onSave={saveCustomDashboardArtifact}
+                                busy={
+                                  executeMutation.isPending ||
+                                  savingArtifactIds.includes(artifact.id) ||
+                                  savedArtifactIds.includes(artifact.id)
+                                }
                               />
                             ))}
                           </div>
@@ -734,16 +947,6 @@ export default function ChatHomePage() {
               {/* Bottom bar inside input */}
               <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                    aria-label="Attach"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-
                   {/* Mode dropdown */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -853,11 +1056,17 @@ function MessageBubble({
   message,
   refreshArtifact,
   regeneratePdfArtifact,
+  onSaveCustomDashboard,
+  savingArtifactIds,
+  savedArtifactIds,
   busy,
 }: {
   message: AiMessageRow;
   refreshArtifact: (artifact: AiChatArtifact) => void;
   regeneratePdfArtifact: (artifact: AiChatArtifact) => void;
+  onSaveCustomDashboard: (artifact: AiChatArtifact) => void;
+  savingArtifactIds: string[];
+  savedArtifactIds: string[];
   busy: boolean;
 }) {
   const isUser = message.role === "user";
@@ -903,7 +1112,8 @@ function MessageBubble({
                       artifact={artifact}
                       onRefresh={refreshArtifact}
                       onRegenerate={regeneratePdfArtifact}
-                      busy={busy}
+                      onSave={onSaveCustomDashboard}
+                      busy={busy || savingArtifactIds.includes(artifact.id) || savedArtifactIds.includes(artifact.id)}
                     />
                   ))}
                 </div>

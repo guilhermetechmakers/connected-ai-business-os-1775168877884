@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createAiConversation,
+  deleteAiConversation,
   executeAiAction,
   fetchAiContexts,
   fetchAiDashboardSummary,
@@ -142,6 +143,17 @@ export function useUpdateAiConversation() {
     onSuccess: (_, v) => {
       void qc.invalidateQueries({ queryKey: aiQueryKeys.conversations() });
       void qc.invalidateQueries({ queryKey: aiQueryKeys.conversation(v.conversationId) });
+    },
+  });
+}
+
+export function useDeleteAiConversation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (conversationId: string) => deleteAiConversation(conversationId),
+    onSuccess: (_, conversationId) => {
+      void qc.invalidateQueries({ queryKey: aiQueryKeys.conversations() });
+      void qc.invalidateQueries({ queryKey: aiQueryKeys.conversation(conversationId) });
     },
   });
 }

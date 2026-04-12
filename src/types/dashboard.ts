@@ -88,6 +88,71 @@ export type DashboardAuditEventRow = {
   created_at: string;
 };
 
+export type CustomDashboardVisibilityMode = "private" | "roles" | "company";
+
+export type CustomDashboardQueryPlanStep = {
+  toolId: string;
+  args?: Record<string, unknown>;
+  provider?: string;
+  label?: string;
+};
+
+export type CustomDashboardSnapshotDataset = {
+  step?: number;
+  key?: string;
+  toolId?: string;
+  providerKey?: string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  error?: string;
+  status?: "succeeded" | "failed";
+  executedAt?: string;
+  executionMs?: number;
+};
+
+export type CustomDashboardSnapshotData = {
+  generatedAt?: string;
+  refreshedAt?: string;
+  status?: "succeeded" | "failed";
+  errors?: string[];
+  datasets?: CustomDashboardSnapshotDataset[];
+  summary?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type CustomDashboardRow = {
+  id: string;
+  company_id: string;
+  creator_user_id: string;
+  title: string;
+  description: string | null;
+  code_tsx: string;
+  query_plan: CustomDashboardQueryPlanStep[] | Record<string, unknown>;
+  snapshot_data: CustomDashboardSnapshotData | Record<string, unknown>;
+  visibility_mode: CustomDashboardVisibilityMode;
+  shared_roles: string[];
+  integration_sources: string[];
+  latest_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CustomDashboardRunRow = {
+  id: string;
+  company_id: string;
+  dashboard_id: string | null;
+  actor_user_id: string;
+  trigger_type: "generation" | "refresh";
+  status: "succeeded" | "failed";
+  query_plan: CustomDashboardQueryPlanStep[] | Record<string, unknown>;
+  result_snapshot: CustomDashboardSnapshotData | Record<string, unknown>;
+  integration_sources: string[];
+  error_message: string | null;
+  execution_ms: number | null;
+  created_at: string;
+  completed_at: string;
+};
+
 export type ExecutiveBriefResult = {
   brief: string;
   actionItems: string[];

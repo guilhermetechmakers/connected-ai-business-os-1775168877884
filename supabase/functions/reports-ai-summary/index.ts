@@ -1,12 +1,13 @@
 /**
  * Reports AI summary — tenant-scoped narrative for report / KPI context.
- * Optional: OPENAI_API_KEY + OPENAI_MODEL (default gpt-4o-mini). Without key, returns deterministic template.
+ * Optional: OPENAI_API_KEY + OPENAI_MODEL/OPENAI_MODEL_FAST (default gpt-5.4-mini). Without key, returns deterministic template.
  * Client: supabase.functions.invoke('reports-ai-summary', { body: { reportName, highlights } }).
  */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 const bodySchema = z.object({
   reportName: z.string().min(1).max(400),
@@ -57,7 +58,7 @@ serve(async (req) => {
     const safeKpis = Array.isArray(kpiNames) ? kpiNames : [];
 
     const apiKey = Deno.env.get("OPENAI_API_KEY");
-    const model = Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
+    const model = resolveOpenAiModel(Deno.env.get("OPENAI_MODEL"), "fast");
 
     if (apiKey) {
       const sys =

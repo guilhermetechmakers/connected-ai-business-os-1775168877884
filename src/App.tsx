@@ -18,6 +18,8 @@ import AdminMaintenancePage from "@/pages/dashboard/admin/admin-maintenance-page
 import AdminTenantsPage from "@/pages/dashboard/admin/admin-tenants-page";
 import ActivityLogPage from "@/pages/dashboard/activity-log-page";
 import CreateModulePage from "@/pages/dashboard/create-module-page";
+import CustomDashboardDetailPage from "@/pages/dashboard/custom-dashboard-detail-page";
+import CustomDashboardsPage from "@/pages/dashboard/custom-dashboards-page";
 import DepartmentWorkspacePage from "@/pages/dashboard/department-workspace-page";
 import DepartmentsListPage from "@/pages/dashboard/departments-list-page";
 import EditModulePage from "@/pages/dashboard/edit-module-page";
@@ -126,6 +128,8 @@ export default function App() {
             <Route index element={<Navigate to="global" replace />} />
             <Route path="global" element={<GlobalDashboardPage />} />
             <Route path="executive" element={<ExecutiveDashboardPage />} />
+            <Route path="custom-dashboards" element={<CustomDashboardsPage />} />
+            <Route path="custom-dashboards/:id" element={<CustomDashboardDetailPage />} />
             <Route path="workflows" element={<WorkflowsPage />} />
             <Route path="workflows/:workflowId" element={<WorkflowDetailPage />} />
             <Route path="modules" element={<ModulesHubPage />} />

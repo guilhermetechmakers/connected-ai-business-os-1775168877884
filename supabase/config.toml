@@ -248,6 +248,10 @@ verify_jwt = false
 [functions.ai-api]
 verify_jwt = false
 
+# Same as ai-api: ES256 access tokens + Kong JWT verification; validate bearer in code.
+[functions.intent-agent]
+verify_jwt = false
+
 [functions.unified-data-api]
 verify_jwt = false
 

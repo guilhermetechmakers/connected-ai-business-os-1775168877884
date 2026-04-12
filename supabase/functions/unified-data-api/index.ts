@@ -7,6 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 const sourceRefSchema = z.object({
   provider: z.string().min(1),
@@ -1019,7 +1020,7 @@ serve(async (req) => {
           ];
         }
 
-        const { data: deptRows, error: deptErr } = await supabase
+        const { data: deptRows, error: _deptErr } = await supabase
           .from("departments")
           .select("id, name")
           .eq("company_id", companyId)
@@ -1144,6 +1145,7 @@ serve(async (req) => {
 
         const sys = `You are an assistant summarizing tenant-scoped business entities. Output 2-4 sentences. No PII beyond what is in the payload. Entity type: ${entity.entity_type}.`;
         const userMsg = JSON.stringify(entity.payload ?? {});
+        const model = resolveOpenAiModel(null, "fast");
 
         const res = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
@@ -1152,7 +1154,7 @@ serve(async (req) => {
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: "gpt-4o-mini",
+            model,
             messages: [
               { role: "system", content: sys },
               { role: "user", content: userMsg },

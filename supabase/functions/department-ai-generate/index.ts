@@ -7,6 +7,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 const bodySchema = z.object({
   departmentId: z.string().uuid(),
@@ -110,6 +111,7 @@ serve(async (req) => {
       reply =
         `[Offline] Received your question for “${deptLabel}”. Configure OPENAI_API_KEY on the project for live answers. Preview: ${prompt.slice(0, 120)}${prompt.length > 120 ? "…" : ""}`;
     } else {
+      const model = resolveOpenAiModel(null, "fast");
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -117,7 +119,7 @@ serve(async (req) => {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
+          model,
           messages: [
             { role: "system", content: systemParts.join("\n") },
             { role: "user", content: prompt },

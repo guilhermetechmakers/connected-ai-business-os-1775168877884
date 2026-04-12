@@ -8,6 +8,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import { resolveOpenAiModel } from "../_shared/openai-models.ts";
 
 function taskPayloadIsOpen(payload: unknown): boolean {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -533,6 +534,7 @@ serve(async (req) => {
           reply =
             `[Offline mode] Received: ${op.prompt.slice(0, 280)}${op.prompt.length > 280 ? "…" : ""}\n\nConfigure OPENAI_API_KEY on the project for live completions.`;
         } else {
+          const model = resolveOpenAiModel(null, "fast");
           const res = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -540,7 +542,7 @@ serve(async (req) => {
               Authorization: `Bearer ${apiKey}`,
             },
             body: JSON.stringify({
-              model: "gpt-4o-mini",
+              model,
               messages: [
                 { role: "system", content: system },
                 { role: "user", content: op.prompt },

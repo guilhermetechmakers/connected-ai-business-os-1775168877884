@@ -8,6 +8,10 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { z } from "https://esm.sh/zod@3.25.76";
 import { corsHeaders } from "../_shared/cors.ts";
+import {
+  getRuntimeToolDefinition,
+  toolsExecute,
+} from "../_shared/integrations-runtime.ts";
 
 const visibilityRulesSchema = z.object({
   roles: z.array(z.string()).optional(),
@@ -19,6 +23,15 @@ const instanceInputSchema = z.object({
   widgetType: z.string().min(1),
   config: z.record(z.unknown()).optional(),
   isVisible: z.boolean().optional(),
+});
+
+const customDashboardVisibilityModeSchema = z.enum(["private", "roles", "company"]);
+
+const customDashboardQueryStepSchema = z.object({
+  toolId: z.string().min(1).max(200),
+  args: z.record(z.unknown()).optional(),
+  provider: z.string().min(1).max(80).optional(),
+  label: z.string().min(1).max(200).optional(),
 });
 
 const opSchema = z.discriminatedUnion("op", [
@@ -71,6 +84,42 @@ const opSchema = z.discriminatedUnion("op", [
     config: z.record(z.unknown()).optional(),
     isVisible: z.boolean().optional(),
   }),
+  z.object({
+    op: z.literal("customDashboards.list"),
+    limit: z.number().int().positive().max(200).optional(),
+  }),
+  z.object({
+    op: z.literal("customDashboards.get"),
+    dashboardId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("customDashboards.save"),
+    dashboardId: z.string().uuid().optional(),
+    title: z.string().min(1).max(200),
+    description: z.string().max(4000).nullable().optional(),
+    codeTsx: z.string().min(1).max(300000),
+    queryPlan: z.array(customDashboardQueryStepSchema).optional(),
+    snapshotData: z.record(z.unknown()).optional(),
+    sources: z.array(z.string().min(1).max(80)).optional(),
+    visibilityMode: customDashboardVisibilityModeSchema.optional(),
+    sharedRoles: z.array(z.string().min(1).max(120)).optional(),
+  }),
+  z.object({
+    op: z.literal("customDashboards.updateMeta"),
+    dashboardId: z.string().uuid(),
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().max(4000).nullable().optional(),
+    visibilityMode: customDashboardVisibilityModeSchema.optional(),
+    sharedRoles: z.array(z.string().min(1).max(120)).optional(),
+  }),
+  z.object({
+    op: z.literal("customDashboards.refreshData"),
+    dashboardId: z.string().uuid(),
+  }),
+  z.object({
+    op: z.literal("customDashboards.delete"),
+    dashboardId: z.string().uuid(),
+  }),
 ]);
 
 type ParsedOp = z.infer<typeof opSchema>;
@@ -85,9 +134,316 @@ type DefRow = {
   data_adapter_key: string | null;
 };
 
+type CustomDashboardQueryStep = {
+  toolId: string;
+  args?: Record<string, unknown>;
+  provider?: string;
+  label?: string;
+};
+
+type CustomDashboardRow = {
+  id: string;
+  company_id: string;
+  creator_user_id: string;
+  title: string;
+  description: string | null;
+  code_tsx: string;
+  query_plan: unknown;
+  snapshot_data: Record<string, unknown> | null;
+  visibility_mode: "private" | "roles" | "company";
+  shared_roles: string[] | null;
+  integration_sources: string[] | null;
+  latest_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type CustomDashboardRunRow = {
+  id: string;
+  company_id: string;
+  dashboard_id: string | null;
+  actor_user_id: string;
+  trigger_type: "generation" | "refresh";
+  status: "succeeded" | "failed";
+  query_plan: unknown;
+  result_snapshot: Record<string, unknown> | null;
+  integration_sources: string[] | null;
+  error_message: string | null;
+  execution_ms: number | null;
+  created_at: string;
+  completed_at: string;
+};
+
 function normalizeRoles(roles: string[] | null | undefined): string[] {
   const r = Array.isArray(roles) ? roles : [];
-  return r.map((x) => String(x).toLowerCase());
+  return Array.from(
+    new Set(
+      r
+        .map((x) => String(x).trim().toLowerCase())
+        .filter((x) => x.length > 0),
+    ),
+  );
+}
+
+function normalizeRoleNames(roles: string[] | null | undefined): string[] {
+  return normalizeRoles(roles);
+}
+
+function normalizeIntegrationSources(sources: string[] | null | undefined): string[] {
+  const raw = Array.isArray(sources) ? sources : [];
+  return Array.from(
+    new Set(
+      raw
+        .map((x) => String(x).trim().toLowerCase())
+        .filter((x) => x.length > 0)
+        .slice(0, 40),
+    ),
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
+}
+
+function toIsoNow(): string {
+  return new Date().toISOString();
+}
+
+function parseCustomQueryPlan(raw: unknown): CustomDashboardQueryStep[] {
+  const parsed = z.array(customDashboardQueryStepSchema).safeParse(raw);
+  if (!parsed.success) return [];
+  return parsed.data.map((step) => ({
+    toolId: step.toolId,
+    args: step.args ?? {},
+    provider: step.provider,
+    label: step.label,
+  }));
+}
+
+function runtimeSupabaseForTools(fallback: SupabaseClient): SupabaseClient {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (supabaseUrl && serviceRoleKey) {
+    return createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
+  }
+  return fallback;
+}
+
+async function isFeatureEnabled(
+  supabase: SupabaseClient,
+  companyId: string,
+  flagKey: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("feature_flags")
+    .select("company_id, enabled, rollout")
+    .eq("flag_key", flagKey)
+    .or(`company_id.eq.${companyId},company_id.is.null`);
+  if (error) throw error;
+  const rows = Array.isArray(data)
+    ? data
+    : [];
+  const tenantRow = rows.find((row) => row && row.company_id === companyId);
+  const globalRow = rows.find((row) => row && row.company_id === null);
+  const selected = tenantRow ?? globalRow;
+  if (!selected) return false;
+  const enabled = selected.enabled === true;
+  const rollout = typeof selected.rollout === "number" ? selected.rollout : 100;
+  return enabled && rollout > 0;
+}
+
+async function assertCustomDashboardsEnabled(
+  supabase: SupabaseClient,
+  companyId: string,
+): Promise<void> {
+  const enabled = await isFeatureEnabled(supabase, companyId, "custom_dashboards_v1");
+  if (!enabled) {
+    throw new Response(JSON.stringify({ error: "Feature disabled: custom_dashboards_v1" }), {
+      status: 403,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+}
+
+function canViewCustomDashboardRow(
+  dashboard: CustomDashboardRow,
+  userId: string,
+  userRoles: string[],
+): boolean {
+  if (dashboard.creator_user_id === userId) return true;
+  if (dashboard.visibility_mode === "company") return true;
+  if (dashboard.visibility_mode !== "roles") return false;
+  const shared = new Set(normalizeRoleNames(dashboard.shared_roles));
+  return userRoles.some((role) => shared.has(role));
+}
+
+function sanitizeSnapshotValue(value: unknown, depth = 0): unknown {
+  if (value === null) return null;
+  if (typeof value === "string") {
+    return value.length > 8000 ? `${value.slice(0, 8000)}...(truncated)` : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (depth >= 4) return "[max-depth]";
+  if (Array.isArray(value)) {
+    return value.slice(0, 120).map((item) => sanitizeSnapshotValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(record).slice(0, 120)) {
+      out[key] = sanitizeSnapshotValue(val, depth + 1);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+async function insertCustomDashboardRun(
+  supabase: SupabaseClient,
+  payload: {
+    companyId: string;
+    dashboardId: string | null;
+    userId: string;
+    triggerType: "generation" | "refresh";
+    status: "succeeded" | "failed";
+    queryPlan: CustomDashboardQueryStep[];
+    snapshot: Record<string, unknown>;
+    integrationSources: string[];
+    errorMessage?: string | null;
+    executionMs?: number;
+  },
+): Promise<CustomDashboardRunRow | null> {
+  const { data, error } = await supabase
+    .from("custom_dashboard_runs")
+    .insert({
+      company_id: payload.companyId,
+      dashboard_id: payload.dashboardId,
+      actor_user_id: payload.userId,
+      trigger_type: payload.triggerType,
+      status: payload.status,
+      query_plan: payload.queryPlan,
+      result_snapshot: payload.snapshot,
+      integration_sources: payload.integrationSources,
+      error_message: payload.errorMessage ?? null,
+      execution_ms: payload.executionMs ?? null,
+      completed_at: toIsoNow(),
+    })
+    .select("*")
+    .maybeSingle();
+  if (error) {
+    console.warn(`custom_dashboard_runs.insert failed: ${error.message}`);
+    return null;
+  }
+  return (data ?? null) as CustomDashboardRunRow | null;
+}
+
+async function executeCustomDashboardQueryPlan(params: {
+  runtimeSupabase: SupabaseClient;
+  companyId: string;
+  userId: string;
+  userRoles: string[];
+  queryPlan: CustomDashboardQueryStep[];
+}): Promise<{
+  snapshotData: Record<string, unknown>;
+  integrationSources: string[];
+  steps: Array<Record<string, unknown>>;
+  errors: string[];
+}> {
+  const masterKey = Deno.env.get("CREDENTIALS_MASTER_KEY");
+  if (!masterKey) {
+    throw new Error("CREDENTIALS_MASTER_KEY is not configured");
+  }
+
+  const stepsOut: Array<Record<string, unknown>> = [];
+  const errors: string[] = [];
+  const sources = new Set<string>();
+
+  for (let index = 0; index < params.queryPlan.length; index++) {
+    const step = params.queryPlan[index];
+    const toolId = typeof step.toolId === "string" ? step.toolId : "";
+    const toolDef = getRuntimeToolDefinition(toolId);
+    if (!toolDef) {
+      const msg = `Unknown tool in query plan: ${toolId}`;
+      errors.push(msg);
+      stepsOut.push({
+        step: index + 1,
+        toolId,
+        args: step.args ?? {},
+        status: "failed",
+        error: msg,
+        executedAt: toIsoNow(),
+      });
+      continue;
+    }
+    if (toolDef.accessLevel !== "read") {
+      const msg = `Query plan tool must be read-only: ${toolId}`;
+      errors.push(msg);
+      stepsOut.push({
+        step: index + 1,
+        toolId,
+        args: step.args ?? {},
+        status: "failed",
+        error: msg,
+        executedAt: toIsoNow(),
+      });
+      continue;
+    }
+
+    try {
+      const started = Date.now();
+      const exec = await toolsExecute(params.runtimeSupabase, {
+        companyId: params.companyId,
+        userId: params.userId,
+        roles: params.userRoles,
+        toolId,
+        args: asRecord(step.args),
+        confirmed: true,
+        source: "integrations_api",
+        masterKey,
+      });
+      const elapsed = Date.now() - started;
+      if (exec.providerKey) sources.add(exec.providerKey);
+      stepsOut.push({
+        step: index + 1,
+        toolId,
+        providerKey: exec.providerKey,
+        args: asRecord(step.args),
+        status: "succeeded",
+        executionMs: elapsed,
+        executedAt: toIsoNow(),
+        result: sanitizeSnapshotValue(exec.result ?? {}),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Query execution failed";
+      errors.push(`${toolId}: ${message}`);
+      stepsOut.push({
+        step: index + 1,
+        toolId,
+        args: asRecord(step.args),
+        status: "failed",
+        error: message,
+        executedAt: toIsoNow(),
+      });
+    }
+  }
+
+  return {
+    snapshotData: {
+      generatedAt: toIsoNow(),
+      datasets: stepsOut,
+      summary: {
+        stepCount: params.queryPlan.length,
+        successCount: stepsOut.filter((row) => row.status === "succeeded").length,
+        errorCount: errors.length,
+      },
+    },
+    integrationSources: normalizeIntegrationSources(Array.from(sources)),
+    steps: stepsOut,
+    errors,
+  };
 }
 
 function roleAllowedForWidget(
@@ -141,8 +497,32 @@ async function loadProfile(
     .eq("id", userId)
     .maybeSingle();
   if (error) throw error;
-  const roles = Array.isArray(data?.roles) ? (data!.roles as string[]) : [];
-  return { company_id: data?.company_id ?? null, roles };
+  const companyId = data?.company_id ?? null;
+  const profileRoles = Array.isArray(data?.roles) ? (data!.roles as string[]) : [];
+
+  if (!companyId) {
+    return { company_id: null, roles: normalizeRoles(profileRoles) };
+  }
+
+  const { data: assignedRows, error: assignedError } = await supabase
+    .from("profile_role_assignments")
+    .select("role_id, roles!inner(name, company_id)")
+    .eq("profile_id", userId);
+  if (assignedError) throw assignedError;
+  const assignedRoleNames = (Array.isArray(assignedRows) ? assignedRows : [])
+    .map((row) => {
+      const joined = row && typeof row === "object" && "roles" in row
+        ? (row as { roles?: { name?: unknown; company_id?: unknown } }).roles
+        : undefined;
+      if (!joined || joined.company_id !== companyId || typeof joined.name !== "string") return null;
+      return joined.name;
+    })
+    .filter((name): name is string => Boolean(name));
+
+  return {
+    company_id: companyId,
+    roles: normalizeRoles([...profileRoles, ...assignedRoleNames]),
+  };
 }
 
 function assertCompany(companyId: string | null): asserts companyId is string {
@@ -696,6 +1076,338 @@ serve(async (req) => {
           instanceId: op.instanceId,
         });
         return new Response(JSON.stringify({ data: { instance: inst } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.list": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const limit = typeof op.limit === "number" ? Math.max(1, Math.min(op.limit, 200)) : 80;
+        const { data, error } = await supabase
+          .from("custom_dashboards")
+          .select(
+            "id, company_id, creator_user_id, title, description, visibility_mode, shared_roles, integration_sources, latest_run_at, created_at, updated_at",
+          )
+          .eq("company_id", companyId)
+          .order("updated_at", { ascending: false })
+          .limit(limit);
+        if (error) throw error;
+        const dashboards = (Array.isArray(data) ? data : []) as CustomDashboardRow[];
+        return new Response(JSON.stringify({ data: { dashboards } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.get": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const { data, error } = await supabase
+          .from("custom_dashboards")
+          .select("*")
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const dashboard = data as CustomDashboardRow;
+        if (!canViewCustomDashboardRow(dashboard, userId, userRoles)) {
+          return new Response(JSON.stringify({ error: "Forbidden" }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const { data: runsData, error: runsError } = await supabase
+          .from("custom_dashboard_runs")
+          .select("*")
+          .eq("company_id", companyId)
+          .eq("dashboard_id", op.dashboardId)
+          .order("created_at", { ascending: false })
+          .limit(25);
+        if (runsError) throw runsError;
+        const runs = (Array.isArray(runsData) ? runsData : []) as CustomDashboardRunRow[];
+        return new Response(JSON.stringify({ data: { dashboard, runs } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.save": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const now = toIsoNow();
+        const queryPlan = parseCustomQueryPlan(op.queryPlan ?? []);
+        const snapshotData = sanitizeSnapshotValue(op.snapshotData ?? {}) as Record<string, unknown>;
+        const planSources = queryPlan
+          .map((step) => (typeof step.provider === "string" ? step.provider : ""))
+          .filter((source) => source.length > 0);
+        const integrationSources = normalizeIntegrationSources([...(op.sources ?? []), ...planSources]);
+        const visibilityMode = op.visibilityMode ?? "roles";
+        const sharedRoles = visibilityMode === "roles"
+          ? normalizeRoleNames(op.sharedRoles ?? userRoles)
+          : normalizeRoleNames(op.sharedRoles ?? []);
+
+        if (op.dashboardId) {
+          const { data: existing, error: existingErr } = await supabase
+            .from("custom_dashboards")
+            .select("id, creator_user_id")
+            .eq("id", op.dashboardId)
+            .eq("company_id", companyId)
+            .maybeSingle();
+          if (existingErr) throw existingErr;
+          if (!existing) {
+            return new Response(JSON.stringify({ error: "Not found" }), {
+              status: 404,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          if (existing.creator_user_id !== userId) {
+            return new Response(JSON.stringify({ error: "Only the creator can overwrite this dashboard." }), {
+              status: 403,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          const { data: updated, error: updateErr } = await supabase
+            .from("custom_dashboards")
+            .update({
+              title: op.title,
+              description: op.description ?? null,
+              code_tsx: op.codeTsx,
+              query_plan: queryPlan,
+              snapshot_data: snapshotData,
+              visibility_mode: visibilityMode,
+              shared_roles: sharedRoles,
+              integration_sources: integrationSources,
+              updated_at: now,
+            })
+            .eq("id", op.dashboardId)
+            .eq("company_id", companyId)
+            .select("*")
+            .single();
+          if (updateErr) throw updateErr;
+          await logDashboardAudit(supabase, companyId, userId, "custom_dashboard.saved", {
+            dashboardId: op.dashboardId,
+            updated: true,
+            visibilityMode,
+            sharedRoles,
+          });
+          return new Response(JSON.stringify({ data: { dashboard: updated } }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const { data: created, error: createErr } = await supabase
+          .from("custom_dashboards")
+          .insert({
+            company_id: companyId,
+            creator_user_id: userId,
+            title: op.title,
+            description: op.description ?? null,
+            code_tsx: op.codeTsx,
+            query_plan: queryPlan,
+            snapshot_data: snapshotData,
+            visibility_mode: visibilityMode,
+            shared_roles: sharedRoles,
+            integration_sources: integrationSources,
+            latest_run_at: null,
+            created_at: now,
+            updated_at: now,
+          })
+          .select("*")
+          .single();
+        if (createErr) throw createErr;
+        await logDashboardAudit(supabase, companyId, userId, "custom_dashboard.saved", {
+          dashboardId: created.id,
+          updated: false,
+          visibilityMode,
+          sharedRoles,
+        });
+        return new Response(JSON.stringify({ data: { dashboard: created } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.updateMeta": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const { data: existing, error: existingErr } = await supabase
+          .from("custom_dashboards")
+          .select("*")
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (existingErr) throw existingErr;
+        if (!existing) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const row = existing as CustomDashboardRow;
+        if (row.creator_user_id !== userId) {
+          return new Response(JSON.stringify({ error: "Only the creator can update sharing or metadata." }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const nextVisibility = op.visibilityMode ?? row.visibility_mode;
+        const nextSharedRoles = nextVisibility === "roles"
+          ? normalizeRoleNames(op.sharedRoles ?? row.shared_roles ?? [])
+          : normalizeRoleNames(op.sharedRoles ?? []);
+
+        const patch: Record<string, unknown> = { updated_at: toIsoNow() };
+        if (op.title !== undefined) patch.title = op.title;
+        if (op.description !== undefined) patch.description = op.description ?? null;
+        if (op.visibilityMode !== undefined) patch.visibility_mode = nextVisibility;
+        if (op.sharedRoles !== undefined || op.visibilityMode !== undefined) {
+          patch.shared_roles = nextSharedRoles;
+        }
+
+        const { data: updated, error: updateErr } = await supabase
+          .from("custom_dashboards")
+          .update(patch)
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .select("*")
+          .single();
+        if (updateErr) throw updateErr;
+
+        const sharingTouched = op.visibilityMode !== undefined || op.sharedRoles !== undefined;
+        await logDashboardAudit(supabase, companyId, userId, sharingTouched ? "custom_dashboard.shared" : "custom_dashboard.meta_updated", {
+          dashboardId: op.dashboardId,
+          visibilityMode: sharingTouched ? nextVisibility : undefined,
+          sharedRoles: sharingTouched ? nextSharedRoles : undefined,
+        });
+
+        return new Response(JSON.stringify({ data: { dashboard: updated } }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.refreshData": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const { data: existing, error: existingErr } = await supabase
+          .from("custom_dashboards")
+          .select("*")
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (existingErr) throw existingErr;
+        if (!existing) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const dashboard = existing as CustomDashboardRow;
+        if (!canViewCustomDashboardRow(dashboard, userId, userRoles)) {
+          return new Response(JSON.stringify({ error: "Forbidden" }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const queryPlan = parseCustomQueryPlan(dashboard.query_plan);
+        if (queryPlan.length === 0) {
+          return new Response(JSON.stringify({ error: "No query plan stored for this dashboard." }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const started = Date.now();
+        const runtimeSupabase = runtimeSupabaseForTools(supabase);
+        const execution = await executeCustomDashboardQueryPlan({
+          runtimeSupabase,
+          companyId,
+          userId,
+          userRoles,
+          queryPlan,
+        });
+        const now = toIsoNow();
+        const status: "succeeded" | "failed" = execution.errors.length > 0 ? "failed" : "succeeded";
+        const errorMessage = execution.errors.length > 0 ? execution.errors.slice(0, 8).join(" | ") : null;
+        const executionMs = Date.now() - started;
+        const snapshotWithStatus = {
+          ...execution.snapshotData,
+          status,
+          errors: execution.errors,
+          refreshedAt: now,
+        };
+
+        const { data: updated, error: updateErr } = await supabase
+          .from("custom_dashboards")
+          .update({
+            snapshot_data: snapshotWithStatus,
+            integration_sources: execution.integrationSources,
+            latest_run_at: now,
+            updated_at: now,
+          })
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .select("*")
+          .single();
+        if (updateErr) throw updateErr;
+
+        const run = await insertCustomDashboardRun(supabase, {
+          companyId,
+          dashboardId: op.dashboardId,
+          userId,
+          triggerType: "refresh",
+          status,
+          queryPlan,
+          snapshot: snapshotWithStatus,
+          integrationSources: execution.integrationSources,
+          errorMessage,
+          executionMs,
+        });
+
+        await logDashboardAudit(supabase, companyId, userId, "custom_dashboard.refreshed", {
+          dashboardId: op.dashboardId,
+          status,
+          errorCount: execution.errors.length,
+          executionMs,
+          runId: run?.id ?? null,
+        });
+
+        return new Response(JSON.stringify({
+          data: {
+            dashboard: updated,
+            run,
+            status,
+            errors: execution.errors,
+          },
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      case "customDashboards.delete": {
+        await assertCustomDashboardsEnabled(supabase, companyId);
+        const { data: existing, error: existingErr } = await supabase
+          .from("custom_dashboards")
+          .select("id, creator_user_id")
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (existingErr) throw existingErr;
+        if (!existing) {
+          return new Response(JSON.stringify({ error: "Not found" }), {
+            status: 404,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        if (existing.creator_user_id !== userId) {
+          return new Response(JSON.stringify({ error: "Only the creator can delete this dashboard." }), {
+            status: 403,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        const { error: deleteErr } = await supabase
+          .from("custom_dashboards")
+          .delete()
+          .eq("id", op.dashboardId)
+          .eq("company_id", companyId);
+        if (deleteErr) throw deleteErr;
+        await logDashboardAudit(supabase, companyId, userId, "custom_dashboard.deleted", {
+          dashboardId: op.dashboardId,
+        });
+        return new Response(JSON.stringify({ data: { ok: true } }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }

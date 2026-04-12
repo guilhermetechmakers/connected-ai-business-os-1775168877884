@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import { FileBarChart2, FileText, LayoutDashboard } from "lucide-react";
+import { FileBarChart2, FileText, LayoutDashboard, LayoutTemplate, Save } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { useAuth } from "@/contexts/auth-context";
 import { toChatDashboardRenderModel } from "@/lib/chat-dashboard-artifact";
+import { CustomDashboardRuntime } from "@/components/custom-dashboards/custom-dashboard-runtime";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,10 +13,11 @@ import { DashboardWidgetCard } from "@/components/dashboard/widget-card";
 import { hasWidgetAccess } from "@/dashboard/widget-access";
 import { definitionByType, useDashboardDefinitions } from "@/hooks/use-dashboard-framework";
 import type { AiChatArtifact } from "@/types/ai";
-import type { DashboardWidgetDefinitionRow } from "@/types/dashboard";
+import type { CustomDashboardQueryPlanStep, DashboardWidgetDefinitionRow } from "@/types/dashboard";
 
 function artifactIcon(artifact: AiChatArtifact) {
   if (artifact.type === "dashboard") return LayoutDashboard;
+  if (artifact.type === "custom_dashboard") return LayoutTemplate;
   if (artifact.type === "report") return FileBarChart2;
   return FileText;
 }
@@ -31,6 +33,12 @@ function artifactRoute(artifact: AiChatArtifact): string | null {
     if (artifact.dashboardKind === "executive") return "/dashboard/executive";
     return "/dashboard/global";
   }
+  if (artifact.type === "custom_dashboard") {
+    if (artifact.customDashboardId) {
+      return `/dashboard/custom-dashboards/${artifact.customDashboardId}`;
+    }
+    return "/dashboard/custom-dashboards";
+  }
   return null;
 }
 
@@ -43,6 +51,53 @@ function extractDashboardWidgetLabels(payload: Record<string, unknown> | null): 
   return payload.widgetTypes
     .map((x) => (typeof x === "string" ? x.replace(/_/g, " ") : null))
     .filter((x): x is string => Boolean(x));
+}
+
+function extractCustomDashboardSources(payload: Record<string, unknown> | null): string[] {
+  if (!payload) return [];
+  const fromSources = Array.isArray(payload.sources)
+    ? payload.sources
+    : Array.isArray(payload.integrationSources)
+      ? payload.integrationSources
+      : [];
+  return fromSources
+    .map((x) => (typeof x === "string" ? x : null))
+    .filter((x): x is string => Boolean(x));
+}
+
+function extractCustomDashboardCode(payload: Record<string, unknown> | null): string {
+  if (!payload) return "";
+  return typeof payload.codeTsx === "string" ? payload.codeTsx : "";
+}
+
+function extractCustomDashboardQueryPlan(payload: Record<string, unknown> | null): CustomDashboardQueryPlanStep[] {
+  const raw = payload && Array.isArray(payload.queryPlan) ? payload.queryPlan : [];
+  const out: CustomDashboardQueryPlanStep[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.toolId !== "string" || row.toolId.length === 0) continue;
+    const next: CustomDashboardQueryPlanStep = {
+      toolId: row.toolId,
+      args: row.args && typeof row.args === "object" ? (row.args as Record<string, unknown>) : {},
+    };
+    if (typeof row.provider === "string" && row.provider.length > 0) {
+      next.provider = row.provider;
+    }
+    if (typeof row.label === "string" && row.label.length > 0) {
+      next.label = row.label;
+    }
+    out.push(next);
+  }
+  return out;
+}
+
+function extractCustomDashboardSnapshot(payload: Record<string, unknown> | null): Record<string, unknown> {
+  if (!payload) return {};
+  const value = payload.snapshotData;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function widgetSpanClass(width: number | undefined): string {
@@ -167,11 +222,13 @@ export function ChatArtifactCard({
   artifact,
   onRefresh,
   onRegenerate,
+  onSave,
   busy = false,
 }: {
   artifact: AiChatArtifact;
   onRefresh?: (artifact: AiChatArtifact) => void;
   onRegenerate?: (artifact: AiChatArtifact) => void;
+  onSave?: (artifact: AiChatArtifact) => void;
   busy?: boolean;
 }) {
   const Icon = artifactIcon(artifact);
@@ -184,8 +241,26 @@ export function ChatArtifactCard({
   const dashboardWidgets = artifact.type === "dashboard" ? extractDashboardWidgetLabels(payload) : [];
   const isReused =
     artifact.type === "dashboard" && payload && payload.reused === true;
+  const customSources = artifact.type === "custom_dashboard" ? extractCustomDashboardSources(payload) : [];
+  const customCodeTsx = artifact.type === "custom_dashboard" ? extractCustomDashboardCode(payload) : "";
+  const customQueryPlan = artifact.type === "custom_dashboard" ? extractCustomDashboardQueryPlan(payload) : [];
+  const customSnapshotData = artifact.type === "custom_dashboard" ? extractCustomDashboardSnapshot(payload) : {};
+  const canRenderCustomPreview = artifact.type === "custom_dashboard" && customCodeTsx.trim().length > 0;
+  const customCodeLineCount = artifact.type === "custom_dashboard" && typeof payload?.codeTsx === "string"
+    ? payload.codeTsx.split("\n").length
+    : 0;
+  const customDescription = artifact.type === "custom_dashboard"
+    ? (typeof artifact.description === "string" && artifact.description.length > 0
+      ? artifact.description
+      : typeof payload?.description === "string"
+        ? payload.description
+        : "")
+    : "";
+  const isUnsavedCustom = artifact.type === "custom_dashboard" &&
+    (artifact.unsaved !== false || payload?.unsaved === true);
   const canRefresh = artifact.type === "dashboard" || artifact.type === "report";
   const canRegenerate = artifact.type === "pdf" && Boolean(artifact.reportId);
+  const canSaveCustom = artifact.type === "custom_dashboard" && isUnsavedCustom && Boolean(onSave);
 
   return (
     <Card className="border-border/70 bg-surface-inner/60">
@@ -220,9 +295,56 @@ export function ChatArtifactCard({
         {artifact.type === "dashboard" && isReused ? (
           <p className="text-[11px] text-amber-500">Existing layout reused.</p>
         ) : null}
+        {artifact.type === "custom_dashboard" ? (
+          <div className="space-y-3 rounded-lg border border-border/60 bg-background/40 p-3 text-[11px] text-foreground/85">
+            {canRenderCustomPreview ? (
+              <CustomDashboardRuntime
+                embedded
+                codeTsx={customCodeTsx}
+                snapshotData={customSnapshotData}
+                queryPlan={customQueryPlan}
+                sources={customSources}
+                titleHint={artifact.title}
+                iframeClassName="h-[320px]"
+              />
+            ) : null}
+            {customDescription ? <p>{customDescription}</p> : null}
+            <p className="text-muted-foreground">
+              Code lines: <span className="text-foreground">{customCodeLineCount || "n/a"}</span>
+            </p>
+            {customSources.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {customSources.slice(0, 12).map((source) => (
+                  <span
+                    key={source}
+                    className="rounded-full border border-border/50 bg-background/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-foreground/80"
+                  >
+                    {source}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted-foreground">No source metadata attached yet.</p>
+            )}
+          </div>
+        ) : null}
+        {artifact.type === "custom_dashboard" && isUnsavedCustom ? (
+          <p className="text-[11px] text-amber-500">Unsaved preview | save explicitly to keep it.</p>
+        ) : null}
         {route ? (
           <Button size="sm" variant="outline" asChild>
             <Link to={route}>Open</Link>
+          </Button>
+        ) : null}
+        {canSaveCustom && onSave ? (
+          <Button
+            size="sm"
+            variant="cta"
+            onClick={() => onSave(artifact)}
+            disabled={busy}
+          >
+            <Save className="mr-1.5 h-3.5 w-3.5" />
+            Save
           </Button>
         ) : null}
         {artifact.type === "pdf" && artifact.downloadUrl ? (
