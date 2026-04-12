@@ -15,6 +15,7 @@ export type ProviderKey =
   | "google_drive"
   | "gmail"
   | "google_calendar"
+  | "zoom"
   | "hubspot"
   | "quickbooks"
   | "notion";
@@ -25,7 +26,7 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks" | "notion";
+type OAuthProviderKey = "slack" | "google" | "zoom" | "hubspot" | "quickbooks" | "notion";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -209,6 +210,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     supportsOAuth: true,
     supportsApiKey: false,
     linkedGroup: "google_workspace",
+  },
+  {
+    id: "zoom",
+    name: "Zoom",
+    description: "List and create Zoom meetings for scheduling workflows.",
+    supportsOAuth: true,
+    supportsApiKey: false,
   },
   {
     id: "hubspot",
@@ -626,6 +634,35 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     argsShape: { calendarId: "string?", eventId: "string" },
   },
   {
+    id: "zoom.list_meetings",
+    providerKey: "zoom",
+    label: "Zoom: list meetings",
+    description: "List upcoming meetings for the connected Zoom user.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { userId: "string?", type: "scheduled|live|upcoming|upcoming_meetings|previous_meetings?", pageSize: "number?" },
+  },
+  {
+    id: "zoom.create_meeting",
+    providerKey: "zoom",
+    label: "Zoom: create meeting",
+    description: "Create a Zoom meeting for a connected Zoom user.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: {
+      userId: "string?",
+      topic: "string",
+      startTime: "string?",
+      durationMinutes: "number?",
+      timezone: "string?",
+      agenda: "string?",
+    },
+  },
+  {
     id: "hubspot.get_record",
     providerKey: "hubspot",
     label: "HubSpot: get record",
@@ -751,7 +788,12 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
   if (tool.accessLevel === "read") return "reader_plus";
   if (tool.providerKey === "quickbooks") return "finance_ops_plus";
   if (tool.providerKey === "hubspot") return "sales_ops_plus";
-  if (tool.providerKey === "slack" || tool.providerKey === "gmail" || tool.providerKey === "google_calendar") {
+  if (
+    tool.providerKey === "slack" ||
+    tool.providerKey === "gmail" ||
+    tool.providerKey === "google_calendar" ||
+    tool.providerKey === "zoom"
+  ) {
     return "comms_plus";
   }
   if (tool.providerKey === "google_drive" || tool.providerKey === "notion") return "ops_plus";
@@ -938,6 +980,7 @@ async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
 function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (GOOGLE_PROVIDER_KEYS.includes(providerKey)) return "google";
   if (providerKey === "slack") return "slack";
+  if (providerKey === "zoom") return "zoom";
   if (providerKey === "hubspot") return "hubspot";
   if (providerKey === "notion") return "notion";
   return "quickbooks";
@@ -1047,6 +1090,23 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
       scopes: [],
       extraAuthParams: { owner: "user" },
       authCodeUsesBasicAuth: true,
+    };
+  }
+
+  if (provider === "zoom") {
+    return {
+      provider,
+      authUrl: Deno.env.get("ZOOM_OAUTH_AUTH_URL") ??
+        "https://zoom.us/oauth/authorize",
+      tokenUrl: Deno.env.get("ZOOM_OAUTH_TOKEN_URL") ??
+        "https://zoom.us/oauth/token",
+      clientId: envRequired("ZOOM_CLIENT_ID"),
+      clientSecret: envRequired("ZOOM_CLIENT_SECRET"),
+      scopes: [
+        "meeting:read",
+        "meeting:write",
+        "user:read",
+      ],
     };
   }
 
@@ -1675,6 +1735,10 @@ async function runHubspotConnectionTest(accessToken: string): Promise<Record<str
   return await providerRequest("GET", "https://api.hubapi.com/integrations/v1/me", accessToken);
 }
 
+async function runZoomConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await providerRequest("GET", "https://api.zoom.us/v2/users/me", accessToken);
+}
+
 async function runQuickbooksConnectionTest(
   accessToken: string,
   realmId: string,
@@ -1710,6 +1774,7 @@ async function runProviderConnectionTest(
   if (providerKey === "google_drive") return await runDriveConnectionTest(accessToken);
   if (providerKey === "gmail") return await runGmailConnectionTest(accessToken);
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
+  if (providerKey === "zoom") return await runZoomConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
   if (providerKey === "notion") return await runNotionConnectionTest(accessToken);
 
@@ -2246,6 +2311,52 @@ async function pullProviderSyncData(
   }
   if (providerKey === "google_calendar") {
     return await pullCalendarSyncData(token, cursorState);
+  }
+  if (providerKey === "zoom") {
+    const q = new URLSearchParams();
+    q.set("type", "upcoming");
+    q.set("page_size", "50");
+    const out = await providerRequest(
+      "GET",
+      `https://api.zoom.us/v2/users/me/meetings?${q.toString()}`,
+      token,
+    );
+    const meetings = Array.isArray(out.meetings) ? out.meetings : [];
+    const now = nowIso();
+    const records: SyncEntityRecord[] = meetings.slice(0, 100).map((item) => {
+      const m = asObject(item);
+      return {
+        entityType: "meeting",
+        externalId: String(m.id ?? crypto.randomUUID()),
+        payload: m,
+      };
+    });
+    const documents: SyncDocumentRecord[] = meetings.slice(0, 100).map((item) => {
+      const m = asObject(item);
+      const meetingId = String(m.id ?? crypto.randomUUID());
+      return {
+        externalId: `meeting:${meetingId}`,
+        title: String(m.topic ?? "Zoom meeting"),
+        snippet: String(m.agenda ?? ""),
+        content:
+          `Topic: ${String(m.topic ?? "Zoom meeting")}\n` +
+          `Start: ${String(m.start_time ?? "")}\n` +
+          `DurationMinutes: ${String(m.duration ?? "")}`,
+        metadata: {
+          provider: "zoom",
+          meetingId,
+          startTime: m.start_time ?? null,
+          duration: m.duration ?? null,
+          joinUrl: m.join_url ?? null,
+        },
+      };
+    });
+    return {
+      records,
+      documents,
+      nextCursor: cursorState,
+      notes: [`zoom meetings fetched=${meetings.length} at=${now}`],
+    };
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
@@ -2893,6 +3004,58 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "zoom.list_meetings") {
+    const userId = String(args.userId ?? "me");
+    const type = String(args.type ?? "upcoming");
+    const pageSize = clampInt(args.pageSize, 20, 1, 100);
+    const q = new URLSearchParams();
+    q.set("type", type);
+    q.set("page_size", String(pageSize));
+    const out = await providerRequest(
+      "GET",
+      `https://api.zoom.us/v2/users/${encodeURIComponent(userId)}/meetings?${q.toString()}`,
+      accessToken,
+    );
+    const meetings = Array.isArray(out.meetings) ? out.meetings : [];
+    return {
+      result: { userId, type, meetings },
+      citations: meetings.slice(0, 10).map((item) => {
+        const meeting = asObject(item);
+        const meetingId = String(meeting.id ?? crypto.randomUUID());
+        return toolCitation("zoom", `${userId}:${meetingId}`, String(meeting.topic ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "zoom.create_meeting") {
+    const userId = String(args.userId ?? "me");
+    const topic = String(args.topic ?? "");
+    const startTime = typeof args.startTime === "string" ? args.startTime : undefined;
+    const durationMinutes = Number.isFinite(Number(args.durationMinutes))
+      ? clampInt(args.durationMinutes, 30, 1, 600)
+      : undefined;
+    const timezone = typeof args.timezone === "string" ? args.timezone : undefined;
+    const agenda = typeof args.agenda === "string" ? args.agenda : undefined;
+    const payload: Record<string, unknown> = {
+      topic,
+      type: startTime ? 2 : 1,
+      agenda,
+    };
+    if (startTime) payload.start_time = startTime;
+    if (durationMinutes !== undefined) payload.duration = durationMinutes;
+    if (timezone) payload.timezone = timezone;
+    const out = await providerRequest(
+      "POST",
+      `https://api.zoom.us/v2/users/${encodeURIComponent(userId)}/meetings`,
+      accessToken,
+      payload,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("zoom", `${userId}:${String(out.id ?? crypto.randomUUID())}`, String(out.topic ?? topic))],
+    };
+  }
+
   if (toolId === "hubspot.search_records") {
     const objectType = String(args.objectType ?? "contacts");
     const query = typeof args.query === "string" ? args.query : "";
@@ -3477,6 +3640,9 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "notion.pages.search") {
     next.pageSize = clampInt(next.pageSize, 20, 1, 100);
   }
+  if (tool.id === "zoom.list_meetings") {
+    next.pageSize = clampInt(next.pageSize, 20, 1, 100);
+  }
   return next;
 }
 
@@ -3502,6 +3668,12 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
   if (tool.id === "notion.pages.update") {
     if (!args.title && !args.appendContent) {
       throw new Error("notion.pages.update requires title or appendContent");
+    }
+  }
+  if (tool.id === "zoom.create_meeting") {
+    const durationMinutes = Number(args.durationMinutes ?? 30);
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 600) {
+      throw new Error("durationMinutes must be between 1 and 600");
     }
   }
 }

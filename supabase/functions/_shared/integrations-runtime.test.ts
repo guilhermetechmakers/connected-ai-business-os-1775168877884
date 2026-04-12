@@ -14,6 +14,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "gmail.get_message",
     "google_drive.fetch_file_content",
     "google_calendar.delete_event",
+    "zoom.list_meetings",
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
@@ -61,14 +62,22 @@ Deno.test("validateToolArgs enforces required fields", () => {
   );
 });
 
+Deno.test("zoom.create_meeting validates duration bounds", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "zoom.create_meeting");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { topic: "Exec sync", durationMinutes: 0 }),
+    Error,
+    "durationMinutes must be between 1 and 600",
+  );
+});
+
 Deno.test("role group guard enforces finance admin tools", () => {
   const allowed = runtimePolicyTestHooks.canExecuteRoleGroup(["finance_admin"], "finance_admin_plus");
   const denied = runtimePolicyTestHooks.canExecuteRoleGroup(["sales_ops"], "finance_admin_plus");
   assertEquals(allowed, true);
   assertEquals(denied, false);
 });
-
-
 Deno.test("notion.pages.update requires at least one mutating field", () => {
   const tool = listRuntimeToolDefinitions().find((t) => t.id === "notion.pages.update");
   if (!tool) throw new Error("tool missing");
