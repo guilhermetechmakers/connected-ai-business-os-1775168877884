@@ -18,6 +18,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
+    "notion.pages.search",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -76,4 +77,23 @@ Deno.test("role group guard enforces finance admin tools", () => {
   const denied = runtimePolicyTestHooks.canExecuteRoleGroup(["sales_ops"], "finance_admin_plus");
   assertEquals(allowed, true);
   assertEquals(denied, false);
+});
+
+
+
+Deno.test("notion.pages.update requires at least one mutating field", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "notion.pages.update");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { pageId: "abc123" }),
+    Error,
+    "requires title or appendContent",
+  );
+});
+
+Deno.test("constrainToolArgs clamps notion search pageSize", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "notion.pages.search");
+  if (!tool) throw new Error("tool missing");
+  const constrained = runtimePolicyTestHooks.constrainToolArgs(tool, { pageSize: 9999 });
+  assertEquals(constrained.pageSize, 100);
 });

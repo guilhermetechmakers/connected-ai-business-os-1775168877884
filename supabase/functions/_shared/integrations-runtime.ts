@@ -17,7 +17,8 @@ export type ProviderKey =
   | "google_calendar"
   | "zoom"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "notion";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -25,7 +26,8 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "zoom" | "hubspot" | "quickbooks";
+
+type OAuthProviderKey = "slack" | "google" | "zoom" | "hubspot" | "quickbooks" | "notion";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -125,6 +127,7 @@ type OAuthConfig = {
   scopes: string[];
   extraAuthParams?: Record<string, string>;
   refreshUsesBasicAuth?: boolean;
+  authCodeUsesBasicAuth?: boolean;
 };
 
 type SyncEntityRecord = {
@@ -227,6 +230,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "quickbooks",
     name: "QuickBooks",
     description: "Customer and invoice sync with finance-safe updates.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "notion",
+    name: "Notion",
+    description: "Workspace pages search and page updates.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -719,6 +729,50 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
   },
+  {
+    id: "notion.pages.search",
+    providerKey: "notion",
+    label: "Notion: search pages",
+    description: "Search workspace pages by text query.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { query: "string?", pageSize: "number?", startCursor: "string?" },
+  },
+  {
+    id: "notion.pages.retrieve",
+    providerKey: "notion",
+    label: "Notion: retrieve page",
+    description: "Fetch a single page and selected properties.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { pageId: "string" },
+  },
+  {
+    id: "notion.pages.create",
+    providerKey: "notion",
+    label: "Notion: create page",
+    description: "Create a new page under an existing parent page.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { parentPageId: "string", title: "string", content: "string?" },
+  },
+  {
+    id: "notion.pages.update",
+    providerKey: "notion",
+    label: "Notion: update page",
+    description: "Update page title and append paragraph content.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { pageId: "string", title: "string?", appendContent: "string?" },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -743,7 +797,7 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
   ) {
     return "comms_plus";
   }
-  if (tool.providerKey === "google_drive") return "ops_plus";
+  if (tool.providerKey === "google_drive" || tool.providerKey === "notion") return "ops_plus";
   return undefined;
 }
 
@@ -929,6 +983,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (providerKey === "slack") return "slack";
   if (providerKey === "zoom") return "zoom";
   if (providerKey === "hubspot") return "hubspot";
+  if (providerKey === "notion") return "notion";
   return "quickbooks";
 }
 
@@ -1038,6 +1093,18 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "meeting:write",
         "user:read",
       ],
+  if (provider === "notion") {
+    return {
+      provider,
+      authUrl: Deno.env.get("NOTION_OAUTH_AUTH_URL") ??
+        "https://api.notion.com/v1/oauth/authorize",
+      tokenUrl: Deno.env.get("NOTION_OAUTH_TOKEN_URL") ??
+        "https://api.notion.com/v1/oauth/token",
+      clientId: envRequired("NOTION_CLIENT_ID"),
+      clientSecret: envRequired("NOTION_CLIENT_SECRET"),
+      scopes: [],
+      extraAuthParams: { owner: "user" },
+      authCodeUsesBasicAuth: true,
     };
   }
 
@@ -1199,6 +1266,16 @@ async function exchangeAuthCodeForToken(
   };
 
   if (oauth.provider === "quickbooks") {
+    const basic = btoa(`${oauth.clientId}:${oauth.clientSecret}`);
+    headers = {
+      ...headers,
+      Authorization: `Basic ${basic}`,
+    };
+    params.delete("client_id");
+    params.delete("client_secret");
+  }
+
+  if (oauth.authCodeUsesBasicAuth) {
     const basic = btoa(`${oauth.clientId}:${oauth.clientSecret}`);
     headers = {
       ...headers,
@@ -1675,6 +1752,16 @@ async function runQuickbooksConnectionTest(
   );
 }
 
+async function runNotionConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await providerRequest(
+    "GET",
+    "https://api.notion.com/v1/users/me",
+    accessToken,
+    undefined,
+    { "Notion-Version": "2022-06-28" },
+  );
+}
+
 async function runProviderConnectionTest(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -1687,6 +1774,7 @@ async function runProviderConnectionTest(
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
   if (providerKey === "zoom") return await runZoomConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
+  if (providerKey === "notion") return await runNotionConnectionTest(accessToken);
 
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) {
@@ -2270,6 +2358,9 @@ async function pullProviderSyncData(
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
+  }
+  if (providerKey === "notion") {
+    return { entities: [], documents: [], events: [], cursorState };
   }
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks credential missing realm_id");
@@ -3277,6 +3368,121 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "notion.pages.search") {
+    const query = typeof args.query === "string" ? args.query.trim() : "";
+    const pageSize = Math.max(1, Math.min(100, Number(args.pageSize ?? 20)));
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor : "";
+    const payload: Record<string, unknown> = {
+      filter: { value: "page", property: "object" },
+      page_size: pageSize,
+    };
+    if (query) payload.query = query;
+    if (startCursor) payload.start_cursor = startCursor;
+    const out = await providerRequest(
+      "POST",
+      "https://api.notion.com/v1/search",
+      accessToken,
+      payload,
+      { "Notion-Version": "2022-06-28" },
+    );
+    const results = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: { results, hasMore: out.has_more ?? false, nextCursor: out.next_cursor ?? null },
+      citations: results.slice(0, 5).map((item) => {
+        const page = asObject(item);
+        return toolCitation("notion", String(page.id ?? crypto.randomUUID()));
+      }),
+    };
+  }
+
+  if (toolId === "notion.pages.retrieve") {
+    const pageId = String(args.pageId ?? "").trim();
+    const out = await providerRequest(
+      "GET",
+      `https://api.notion.com/v1/pages/${encodeURIComponent(pageId)}`,
+      accessToken,
+      undefined,
+      { "Notion-Version": "2022-06-28" },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("notion", pageId)],
+    };
+  }
+
+  if (toolId === "notion.pages.create") {
+    const parentPageId = String(args.parentPageId ?? "").trim();
+    const title = String(args.title ?? "").trim();
+    const content = typeof args.content === "string" ? args.content.trim() : "";
+    const payload: Record<string, unknown> = {
+      parent: { page_id: parentPageId },
+      properties: {
+        title: {
+          title: [{ type: "text", text: { content: title } }],
+        },
+      },
+    };
+    if (content) {
+      payload.children = [{
+        object: "block",
+        type: "paragraph",
+        paragraph: { rich_text: [{ type: "text", text: { content } }] },
+      }];
+    }
+    const out = await providerRequest(
+      "POST",
+      "https://api.notion.com/v1/pages",
+      accessToken,
+      payload,
+      { "Notion-Version": "2022-06-28" },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("notion", String(out.id ?? crypto.randomUUID()), title)],
+    };
+  }
+
+  if (toolId === "notion.pages.update") {
+    const pageId = String(args.pageId ?? "").trim();
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    const appendContent = typeof args.appendContent === "string" ? args.appendContent.trim() : "";
+    let updatedPage: Record<string, unknown> = {};
+    if (title) {
+      updatedPage = await providerRequest(
+        "PATCH",
+        `https://api.notion.com/v1/pages/${encodeURIComponent(pageId)}`,
+        accessToken,
+        {
+          properties: {
+            title: {
+              title: [{ type: "text", text: { content: title } }],
+            },
+          },
+        },
+        { "Notion-Version": "2022-06-28" },
+      );
+    }
+    if (appendContent) {
+      await providerRequest(
+        "PATCH",
+        `https://api.notion.com/v1/blocks/${encodeURIComponent(pageId)}/children`,
+        accessToken,
+        {
+          children: [{
+            object: "block",
+            type: "paragraph",
+            paragraph: { rich_text: [{ type: "text", text: { content: appendContent } }] },
+          }],
+        },
+        { "Notion-Version": "2022-06-28" },
+      );
+    }
+    return {
+      result: { pageId, updatedPage, appendedContent: Boolean(appendContent) },
+      citations: [toolCitation("notion", pageId, title || appendContent.slice(0, 120))],
+    };
+  }
+
   throw new Error(`Unsupported tool: ${toolId}`);
 }
 
@@ -3430,6 +3636,11 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
     next.maxResults = clampInt(next.maxResults, 50, 1, 150);
   }
   if (tool.id === "zoom.list_meetings") {
+   next.pageSize = clampInt(next.pageSize, 20, 1, 100);
+  }
+  return next;
+}
+  if (tool.id === "notion.pages.search") {
     next.pageSize = clampInt(next.pageSize, 20, 1, 100);
   }
   return next;
@@ -3458,6 +3669,9 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const durationMinutes = Number(args.durationMinutes ?? 30);
     if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 600) {
       throw new Error("durationMinutes must be between 1 and 600");
+  if (tool.id === "notion.pages.update") {
+    if (!args.title && !args.appendContent) {
+      throw new Error("notion.pages.update requires title or appendContent");
     }
   }
 }
@@ -3509,7 +3723,9 @@ export async function oauthStart(
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", oauth.clientId);
   url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("scope", oauth.scopes.join(" "));
+  if (oauth.scopes.length > 0) {
+    url.searchParams.set("scope", oauth.scopes.join(" "));
+  }
   url.searchParams.set("state", state);
   for (const [k, v] of Object.entries(oauth.extraAuthParams ?? {})) {
     url.searchParams.set(k, v);
