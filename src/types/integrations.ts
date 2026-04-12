@@ -12,7 +12,8 @@ export type IntegrationProviderKey =
   | "gmail"
   | "google_calendar"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "notion";
 
 export type ConnectorRow = {
   id: string;

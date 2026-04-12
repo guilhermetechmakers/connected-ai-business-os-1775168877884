@@ -1,7 +1,7 @@
 # Integrations Capability Matrix (AI Agent)
 
 This matrix defines the canonical provider-to-tool mapping for AI execution via `toolsExecute`.
-It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, and Slack.
+It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, and Notion.
 
 ## Policy Columns
 
@@ -98,3 +98,12 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 - `ops+`: `admin`, `owner`, `manager`, `company_admin`, `executive`, `builder`, `integration_admin`.
 - `integration_admin+`: `admin`, `owner`, `company_admin`, `executive`, `integration_admin`, `super_admin`.
 
+
+## Notion
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `notion.pages.search` | `POST /v1/search` | read | low | reader+ | no | safe read |
+| `notion.pages.retrieve` | `GET /v1/pages/{pageId}` | read | low | reader+ | no | safe read |
+| `notion.pages.create` | `POST /v1/pages` | write | medium | ops+ | yes | non-idempotent |
+| `notion.pages.update` | `PATCH /v1/pages/{pageId}` + optional `PATCH /v1/blocks/{pageId}/children` | write | medium | ops+ | yes | idempotent-ish |
