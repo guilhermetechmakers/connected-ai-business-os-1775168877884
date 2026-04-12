@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "notion"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4191,6 +4191,70 @@ async function executeAgentTool(
         return await genericRead("google_drive.search_files", {
           query: q,
           pageSize: Math.min(50, limit),
+        });
+      }
+
+      if (provider === "notion") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+
+        if (operation === "create") {
+          const parentPageId = String(queryArgs.parentPageId ?? queryArgs.parent_id ?? "").trim();
+          const title = String(queryArgs.title ?? "").trim();
+          const content = typeof queryArgs.content === "string" ? queryArgs.content : undefined;
+          if (!parentPageId || !title) return "Notion page create requires parentPageId and title.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Notion: create page".`,
+              status: "pending_confirmation",
+              actionId: "notion.pages.create",
+              pendingConfirmation: {
+                actionId: "notion.pages.create",
+                label: "Notion: create page",
+                preview: { args: { parentPageId, title, content: content ?? null } },
+              },
+              result: { parentPageId, title },
+            };
+          }
+          return await genericRead("notion.pages.create", { parentPageId, title, content });
+        }
+
+        if (operation === "update") {
+          const pageId = String(queryArgs.pageId ?? "").trim();
+          const title = typeof queryArgs.title === "string" ? queryArgs.title : undefined;
+          const appendContent = typeof queryArgs.appendContent === "string"
+            ? queryArgs.appendContent
+            : typeof queryArgs.content === "string"
+            ? queryArgs.content
+            : undefined;
+          if (!pageId) return "Notion page update requires pageId.";
+          if (!title && !appendContent) return "Notion page update requires title or appendContent.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Notion: update page".`,
+              status: "pending_confirmation",
+              actionId: "notion.pages.update",
+              pendingConfirmation: {
+                actionId: "notion.pages.update",
+                label: "Notion: update page",
+                preview: { args: { pageId, title: title ?? null, appendContent: appendContent ?? null } },
+              },
+              result: { pageId },
+            };
+          }
+          return await genericRead("notion.pages.update", { pageId, title, appendContent });
+        }
+
+        if (queryType.includes("page") && queryType.includes("get")) {
+          const pageId = String(queryArgs.pageId ?? "").trim();
+          if (!pageId) return "Notion page lookup requires pageId.";
+          return await genericRead("notion.pages.retrieve", { pageId });
+        }
+
+        const search = typeof filters.search === "string" ? filters.search.trim() : "";
+        return await genericRead("notion.pages.search", {
+          query: search || undefined,
+          pageSize: Math.min(limit, 50),
+          startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
         });
       }
 
@@ -5389,7 +5453,7 @@ serve(async (req) => {
     const started = performance.now();
     const integrationToolsCatalogBlock =
       `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
-      "For factual questions about this user's email, calendar, Slack, Drive, CRM, or accounting data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, or Notion data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
       "--- End integration tools ---";
 
     const systemPreamble = [
