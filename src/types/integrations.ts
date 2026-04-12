@@ -14,7 +14,9 @@ export type IntegrationProviderKey =
   | "zoom"
   | "hubspot"
   | "quickbooks"
-  | "notion";
+  | "notion"
+  | "clickup"
+  | "monday";
 
 export type ConnectorRow = {
   id: string;

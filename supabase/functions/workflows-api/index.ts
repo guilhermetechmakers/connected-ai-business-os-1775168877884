@@ -25,6 +25,8 @@ const providerKeySchema = z.enum([
   "google_calendar",
   "hubspot",
   "quickbooks",
+  "clickup",
+  "monday",
 ]);
 
 const nodeSchema = z.object({

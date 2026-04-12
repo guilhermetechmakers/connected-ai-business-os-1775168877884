@@ -19,6 +19,8 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "hubspot.create_deal",
     "quickbooks.create_invoice",
     "notion.pages.search",
+    "clickup.create_task",
+    "monday.list_boards",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -93,4 +95,29 @@ Deno.test("constrainToolArgs clamps notion search pageSize", () => {
   if (!tool) throw new Error("tool missing");
   const constrained = runtimePolicyTestHooks.constrainToolArgs(tool, { pageSize: 9999 });
   assertEquals(constrained.pageSize, 100);
+});
+
+Deno.test("clickup task creation validates required fields and assignment shape", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "clickup.create_task");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "123" }),
+    Error,
+    "Missing required argument: name",
+  );
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "123", name: "Task", assignees: "bad-shape" }),
+    Error,
+    "assignees must be an array of user ids",
+  );
+});
+
+Deno.test("validateToolArgs rejects invalid monday.com column values json", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "monday.change_item_column_values");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { boardId: "123", itemId: "456", columnValues: "{bad" }),
+    Error,
+    "columnValues must be valid JSON string",
+  );
 });

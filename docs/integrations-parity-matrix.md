@@ -1,7 +1,7 @@
 # Integrations Capability Matrix (AI Agent)
 
 This matrix defines the canonical provider-to-tool mapping for AI execution via `toolsExecute`.
-It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, Zoom, and Notion.
+It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, Zoom, Notion, ClickUp, and monday.com.
 
 ## Policy Columns
 
@@ -91,6 +91,23 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `quickbooks.create_invoice` | `POST /v3/company/{realmId}/invoice` | write | high | finance_ops+ | yes | non-idempotent |
 | `quickbooks.send_invoice_reminder` | `POST /v3/company/{realmId}/invoice/{id}/send` | write | medium | finance_ops+ | yes | non-idempotent |
 | `quickbooks.update_invoice_safe_fields` | `GET invoice + sparse update` | write | high | finance_admin+ | yes | idempotent-ish |
+
+## monday.com
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `monday.list_boards` | `POST /v2` GraphQL `boards(limit,page)` | read | low | reader+ | no | safe read |
+| `monday.list_board_items` | `POST /v2` GraphQL `boards(ids){items_page}` | read | low | reader+ | no | safe read |
+| `monday.create_item` | `POST /v2` GraphQL `create_item` | write | medium | ops+ | yes | non-idempotent |
+| `monday.change_item_column_values` | `POST /v2` GraphQL `change_multiple_column_values` | write | medium | ops+ | yes | idempotent-ish |
+
+## ClickUp
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `clickup.list_workspaces` | `GET /v2/team` | read | low | reader+ | no | safe read |
+| `clickup.list_tasks` | `GET /v2/list/{listId}/task` | read | low | reader+ | no | safe read |
+| `clickup.create_task` | `POST /v2/list/{listId}/task` | write | medium | ops+ | yes | non-idempotent |
 
 ## Role Groups (normalized)
 
