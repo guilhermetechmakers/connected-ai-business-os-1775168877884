@@ -16,7 +16,8 @@ export type ProviderKey =
   | "gmail"
   | "google_calendar"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "stripe";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -24,7 +25,7 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks";
+type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks" | "stripe";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -219,6 +220,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "quickbooks",
     name: "QuickBooks",
     description: "Customer and invoice sync with finance-safe updates.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "stripe",
+    name: "Stripe",
+    description: "Payments and customer operations with refund workflows.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -682,6 +690,50 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
   },
+  {
+    id: "stripe.list_customers",
+    providerKey: "stripe",
+    label: "Stripe: list customers",
+    description: "List Stripe customers.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", startingAfter: "string?" },
+  },
+  {
+    id: "stripe.list_payment_intents",
+    providerKey: "stripe",
+    label: "Stripe: list payment intents",
+    description: "List recent Stripe payment intents.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", customer: "string?" },
+  },
+  {
+    id: "stripe.get_payment_intent",
+    providerKey: "stripe",
+    label: "Stripe: get payment intent",
+    description: "Fetch payment intent details.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { paymentIntentId: "string" },
+  },
+  {
+    id: "stripe.create_refund",
+    providerKey: "stripe",
+    label: "Stripe: create refund",
+    description: "Create a refund by payment intent or charge.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { paymentIntentId: "string?", chargeId: "string?", amount: "number?", reason: "string?" },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -697,6 +749,7 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
   if (tool.roleGroup) return tool.roleGroup;
   if (tool.accessLevel === "read") return "reader_plus";
   if (tool.providerKey === "quickbooks") return "finance_ops_plus";
+  if (tool.providerKey === "stripe") return "finance_ops_plus";
   if (tool.providerKey === "hubspot") return "sales_ops_plus";
   if (tool.providerKey === "slack" || tool.providerKey === "gmail" || tool.providerKey === "google_calendar") {
     return "comms_plus";
@@ -886,6 +939,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (GOOGLE_PROVIDER_KEYS.includes(providerKey)) return "google";
   if (providerKey === "slack") return "slack";
   if (providerKey === "hubspot") return "hubspot";
+  if (providerKey === "stripe") return "stripe";
   return "quickbooks";
 }
 
@@ -978,6 +1032,19 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
+    };
+  }
+
+  if (provider === "stripe") {
+    return {
+      provider,
+      authUrl: Deno.env.get("STRIPE_OAUTH_AUTH_URL") ??
+        "https://connect.stripe.com/oauth/authorize",
+      tokenUrl: Deno.env.get("STRIPE_OAUTH_TOKEN_URL") ??
+        "https://connect.stripe.com/oauth/token",
+      clientId: envRequired("STRIPE_CLIENT_ID"),
+      clientSecret: envRequired("STRIPE_CLIENT_SECRET"),
+      scopes: [Deno.env.get("STRIPE_OAUTH_SCOPE") ?? "read_write"],
     };
   }
 
@@ -1327,6 +1394,38 @@ async function providerRequest(
   return json;
 }
 
+async function stripeRequest(
+  method: string,
+  path: string,
+  accessToken: string,
+  body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const url = `https://api.stripe.com${path}`;
+  const initHeaders: HeadersInit = {
+    Authorization: `Bearer ${accessToken}`,
+  };
+  let payload: string | undefined;
+  if (body && Object.keys(body).length > 0) {
+    const form = new URLSearchParams();
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined || value === null || value === "") continue;
+      form.set(key, String(value));
+    }
+    payload = form.toString();
+    (initHeaders as Record<string, string>)["Content-Type"] = "application/x-www-form-urlencoded";
+  }
+  const res = await fetchWithRetry(url, { method, headers: initHeaders, body: payload }, 3);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) {
+    const err = asObject(json.error);
+    const message = typeof err.message === "string"
+      ? err.message
+      : `stripe request failed (${res.status})`;
+    throw new Error(`provider request failed (${res.status}) [api.stripe.com] ${message}`);
+  }
+  return json;
+}
+
 function toConnectorStatusOnFailure(error: unknown): {
   message: string;
   remediation: string;
@@ -1611,6 +1710,10 @@ async function runQuickbooksConnectionTest(
   );
 }
 
+async function runStripeConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await stripeRequest("GET", "/v1/account", accessToken);
+}
+
 async function runProviderConnectionTest(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -1622,6 +1725,7 @@ async function runProviderConnectionTest(
   if (providerKey === "gmail") return await runGmailConnectionTest(accessToken);
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
+  if (providerKey === "stripe") return await runStripeConnectionTest(accessToken);
 
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) {
@@ -2159,6 +2263,44 @@ async function pullProviderSyncData(
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
+  }
+  if (providerKey === "stripe") {
+    const limit = 50;
+    const customerList = await stripeRequest("GET", `/v1/customers?limit=${limit}`, token);
+    const paymentIntentList = await stripeRequest("GET", `/v1/payment_intents?limit=${limit}`, token);
+    const records: SyncEntityRecord[] = [];
+    const documents: SyncDocumentRecord[] = [];
+    const customerRows = Array.isArray(customerList.data) ? customerList.data : [];
+    const paymentRows = Array.isArray(paymentIntentList.data) ? paymentIntentList.data : [];
+    for (const c of customerRows) {
+      const row = asObject(c);
+      if (typeof row.id !== "string") continue;
+      records.push({ entityType: "Customer", externalId: row.id, payload: row });
+      const email = typeof row.email === "string" ? row.email : "";
+      documents.push({
+        externalId: row.id,
+        title: `Stripe customer ${row.id}`,
+        snippet: email,
+        metadata: { provider: "stripe", object: "customer", email },
+      });
+    }
+    for (const p of paymentRows) {
+      const row = asObject(p);
+      if (typeof row.id !== "string") continue;
+      records.push({ entityType: "PaymentIntent", externalId: row.id, payload: row });
+      documents.push({
+        externalId: row.id,
+        title: `Stripe payment intent ${row.id}`,
+        snippet: typeof row.description === "string" ? row.description : "",
+        metadata: { provider: "stripe", object: "payment_intent", status: row.status ?? null },
+      });
+    }
+    return {
+      records,
+      documents,
+      nextCursor: { syncedAt: nowIso() },
+      notes: [`Stripe rows synced: ${records.length}`],
+    };
   }
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks credential missing realm_id");
@@ -3114,6 +3256,72 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "stripe.list_customers") {
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 25)));
+    const startingAfter = typeof args.startingAfter === "string" ? args.startingAfter : "";
+    const query = new URLSearchParams();
+    query.set("limit", String(limit));
+    if (startingAfter) query.set("starting_after", startingAfter);
+    const out = await stripeRequest("GET", `/v1/customers?${query.toString()}`, accessToken);
+    const customers = Array.isArray(out.data) ? out.data : [];
+    return {
+      result: out,
+      citations: customers.slice(0, 5).map((value) => {
+        const row = asObject(value);
+        return toolCitation("stripe", `customer:${row.id ?? crypto.randomUUID()}`, String(row.email ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "stripe.list_payment_intents") {
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 25)));
+    const customer = typeof args.customer === "string" ? args.customer : "";
+    const query = new URLSearchParams();
+    query.set("limit", String(limit));
+    if (customer) query.set("customer", customer);
+    const out = await stripeRequest("GET", `/v1/payment_intents?${query.toString()}`, accessToken);
+    const paymentIntents = Array.isArray(out.data) ? out.data : [];
+    return {
+      result: out,
+      citations: paymentIntents.slice(0, 5).map((value) => {
+        const row = asObject(value);
+        return toolCitation("stripe", `payment_intent:${row.id ?? crypto.randomUUID()}`, String(row.status ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "stripe.get_payment_intent") {
+    const paymentIntentId = String(args.paymentIntentId ?? "");
+    const out = await stripeRequest("GET", `/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`, accessToken);
+    return {
+      result: out,
+      citations: [toolCitation("stripe", `payment_intent:${paymentIntentId}`, String(out.status ?? ""))],
+    };
+  }
+
+  if (toolId === "stripe.create_refund") {
+    const paymentIntentId = typeof args.paymentIntentId === "string" ? args.paymentIntentId : "";
+    const chargeId = typeof args.chargeId === "string" ? args.chargeId : "";
+    const amount = Number(args.amount ?? NaN);
+    const reason = typeof args.reason === "string" ? args.reason : "";
+    const body: Record<string, unknown> = {};
+    if (paymentIntentId) {
+      const pi = await stripeRequest("GET", `/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`, accessToken);
+      const latestCharge = typeof pi.latest_charge === "string" ? pi.latest_charge : "";
+      if (!latestCharge) throw new Error("Stripe payment intent has no charge to refund");
+      body.charge = latestCharge;
+    } else if (chargeId) {
+      body.charge = chargeId;
+    }
+    if (Number.isFinite(amount)) body.amount = Math.trunc(amount);
+    if (reason) body.reason = reason;
+    const out = await stripeRequest("POST", "/v1/refunds", accessToken, body);
+    return {
+      result: out,
+      citations: [toolCitation("stripe", `refund:${out.id ?? crypto.randomUUID()}`)],
+    };
+  }
+
   throw new Error(`Unsupported tool: ${toolId}`);
 }
 
@@ -3286,6 +3494,19 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const totalAmt = Number(args.totalAmt ?? 0);
     if (!Number.isFinite(totalAmt) || totalAmt <= 0) {
       throw new Error("totalAmt must be a positive number");
+    }
+  }
+  if (tool.id === "stripe.create_refund") {
+    const paymentIntentId = String(args.paymentIntentId ?? "");
+    const chargeId = String(args.chargeId ?? "");
+    if (!paymentIntentId && !chargeId) {
+      throw new Error("stripe.create_refund requires paymentIntentId or chargeId");
+    }
+    if (args.amount !== undefined) {
+      const amount = Number(args.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("amount must be a positive integer in the smallest currency unit");
+      }
     }
   }
 }

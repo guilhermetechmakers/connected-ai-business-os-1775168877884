@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "stripe"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4546,7 +4546,45 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
+      if (provider === "stripe") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation !== "list") {
+          const paymentIntentId = String(queryArgs.paymentIntentId ?? "");
+          const chargeId = String(queryArgs.chargeId ?? "");
+          const amount = queryArgs.amount;
+          const reason = typeof queryArgs.reason === "string" ? queryArgs.reason : undefined;
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Stripe: create refund".`,
+              status: "pending_confirmation",
+              actionId: "stripe.create_refund",
+              pendingConfirmation: {
+                actionId: "stripe.create_refund",
+                label: "Stripe: create refund",
+                preview: { args: { paymentIntentId, chargeId, amount, reason } },
+              },
+              result: { paymentIntentId, chargeId, amount, reason },
+            };
+          }
+          return await genericRead("stripe.create_refund", { paymentIntentId, chargeId, amount, reason });
+        }
+        if (queryType.includes("payment_intent")) {
+          const paymentIntentId = String(queryArgs.paymentIntentId ?? "");
+          if (paymentIntentId) return await genericRead("stripe.get_payment_intent", { paymentIntentId });
+          const customer = typeof queryArgs.customer === "string" ? queryArgs.customer : undefined;
+          return await genericRead("stripe.list_payment_intents", {
+            limit: Math.min(50, limit),
+            customer,
+          });
+        }
+        const startingAfter = typeof queryArgs.startingAfter === "string" ? queryArgs.startingAfter : undefined;
+        return await genericRead("stripe.list_customers", {
+          limit: Math.min(50, limit),
+          startingAfter,
+        });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks, stripe.`;
     }
 
     case "send_slack_message": {

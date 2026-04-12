@@ -26,6 +26,7 @@ const providerKeySchema = z.enum([
   "google_calendar",
   "hubspot",
   "quickbooks",
+  "stripe",
 ]);
 
 const opSchema = z.discriminatedUnion("op", [

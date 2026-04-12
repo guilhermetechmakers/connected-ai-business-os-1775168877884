@@ -17,6 +17,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
+    "stripe.create_refund",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -60,10 +61,24 @@ Deno.test("validateToolArgs enforces required fields", () => {
   );
 });
 
+Deno.test("validateToolArgs enforces Stripe refund id source and amount positivity", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "stripe.create_refund");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, {}),
+    Error,
+    "requires paymentIntentId or chargeId",
+  );
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { chargeId: "ch_123", amount: 0 }),
+    Error,
+    "positive integer",
+  );
+});
+
 Deno.test("role group guard enforces finance admin tools", () => {
   const allowed = runtimePolicyTestHooks.canExecuteRoleGroup(["finance_admin"], "finance_admin_plus");
   const denied = runtimePolicyTestHooks.canExecuteRoleGroup(["sales_ops"], "finance_admin_plus");
   assertEquals(allowed, true);
   assertEquals(denied, false);
 });
-
