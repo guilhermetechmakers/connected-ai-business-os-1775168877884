@@ -17,6 +17,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
+    "trello.create_card",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -60,10 +61,19 @@ Deno.test("validateToolArgs enforces required fields", () => {
   );
 });
 
+Deno.test("validateToolArgs enforces Trello card limits", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "trello.create_card");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "abc", name: "x".repeat(161) }),
+    Error,
+    "name must be 160 characters or fewer",
+  );
+});
+
 Deno.test("role group guard enforces finance admin tools", () => {
   const allowed = runtimePolicyTestHooks.canExecuteRoleGroup(["finance_admin"], "finance_admin_plus");
   const denied = runtimePolicyTestHooks.canExecuteRoleGroup(["sales_ops"], "finance_admin_plus");
   assertEquals(allowed, true);
   assertEquals(denied, false);
 });
-

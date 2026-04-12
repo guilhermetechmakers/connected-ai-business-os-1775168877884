@@ -16,7 +16,8 @@ export type ProviderKey =
   | "gmail"
   | "google_calendar"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "trello";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -24,7 +25,7 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks";
+type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks" | "trello";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -219,6 +220,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "quickbooks",
     name: "QuickBooks",
     description: "Customer and invoice sync with finance-safe updates.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "trello",
+    name: "Trello",
+    description: "Boards and cards read actions with safe card creation.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -682,6 +690,39 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
   },
+  {
+    id: "trello.list_boards",
+    providerKey: "trello",
+    label: "Trello: list boards",
+    description: "List boards available to the connected Trello account.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?" },
+  },
+  {
+    id: "trello.list_cards",
+    providerKey: "trello",
+    label: "Trello: list cards",
+    description: "List cards from a Trello list.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { listId: "string", limit: "number?" },
+  },
+  {
+    id: "trello.create_card",
+    providerKey: "trello",
+    label: "Trello: create card",
+    description: "Create a card in a Trello list.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { listId: "string", name: "string", desc: "string?" },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -886,7 +927,8 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (GOOGLE_PROVIDER_KEYS.includes(providerKey)) return "google";
   if (providerKey === "slack") return "slack";
   if (providerKey === "hubspot") return "hubspot";
-  return "quickbooks";
+  if (providerKey === "quickbooks") return "quickbooks";
+  return "trello";
 }
 
 function envRequired(key: string): string {
@@ -978,6 +1020,23 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
+    };
+  }
+
+  if (provider === "trello") {
+    return {
+      provider,
+      authUrl: Deno.env.get("TRELLO_OAUTH_AUTH_URL") ??
+        "https://trello.com/1/authorize",
+      tokenUrl: Deno.env.get("TRELLO_OAUTH_TOKEN_URL") ??
+        "https://trello.com/1/OAuthGetAccessToken",
+      clientId: envRequired("TRELLO_CLIENT_ID"),
+      clientSecret: envRequired("TRELLO_CLIENT_SECRET"),
+      scopes: ["read", "write"],
+      extraAuthParams: {
+        name: "Connected AI Business OS",
+        expiration: "never",
+      },
     };
   }
 
@@ -1611,6 +1670,14 @@ async function runQuickbooksConnectionTest(
   );
 }
 
+async function runTrelloConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await providerRequest(
+    "GET",
+    "https://api.trello.com/1/members/me?fields=id,fullName,username",
+    accessToken,
+  );
+}
+
 async function runProviderConnectionTest(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -1622,6 +1689,7 @@ async function runProviderConnectionTest(
   if (providerKey === "gmail") return await runGmailConnectionTest(accessToken);
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
+  if (providerKey === "trello") return await runTrelloConnectionTest(accessToken);
 
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) {
@@ -2136,6 +2204,40 @@ async function pullQuickbooksSyncData(
   };
 }
 
+async function pullTrelloSyncData(
+  accessToken: string,
+  cursorState: Record<string, unknown>,
+): Promise<SyncPullResult> {
+  const limit = clampInt(cursorState.limit, 10, 1, 25);
+  const me = await providerRequest(
+    "GET",
+    "https://api.trello.com/1/members/me?fields=id,fullName,username&boards=open&board_fields=id,name,url,closed&board_limit=25",
+    accessToken,
+  );
+  const boards = Array.isArray(me.boards) ? me.boards : [];
+  const records: SyncEntityRecord[] = [];
+  const documents: SyncDocumentRecord[] = [];
+  for (const board of boards.slice(0, limit)) {
+    const obj = asObject(board);
+    const boardId = String(obj.id ?? "");
+    if (!boardId) continue;
+    const name = String(obj.name ?? boardId);
+    records.push({ entityType: "trello_board", externalId: boardId, payload: obj });
+    documents.push({
+      externalId: `trello_board:${boardId}`,
+      title: name,
+      snippet: `Trello board ${name}`,
+      metadata: { provider: "trello", boardId, url: obj.url ?? null, closed: obj.closed ?? false },
+    });
+  }
+  return {
+    records,
+    documents,
+    nextCursor: { syncedAt: nowIso(), limit },
+    notes: [`Trello boards synced: ${records.length}`],
+  };
+}
+
 async function pullProviderSyncData(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -2159,6 +2261,9 @@ async function pullProviderSyncData(
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
+  }
+  if (providerKey === "trello") {
+    return await pullTrelloSyncData(token, cursorState);
   }
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks credential missing realm_id");
@@ -2959,6 +3064,56 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "trello.list_boards") {
+    const out = await providerRequest(
+      "GET",
+      "https://api.trello.com/1/members/me?fields=id,fullName,username&boards=open&board_fields=id,name,url,closed&board_limit=50",
+      accessToken,
+    );
+    const boards = Array.isArray(out.boards) ? out.boards : [];
+    return {
+      result: {
+        member: { id: out.id ?? null, fullName: out.fullName ?? null, username: out.username ?? null },
+        boards,
+      },
+      citations: boards.slice(0, 5).map((b) => {
+        const obj = asObject(b);
+        return toolCitation("trello", `board:${obj.id ?? crypto.randomUUID()}`, String(obj.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "trello.list_cards") {
+    const listId = String(args.listId ?? "");
+    const limit = clampInt(args.limit, 20, 1, 50);
+    const out = await providerRequest(
+      "GET",
+      `https://api.trello.com/1/lists/${encodeURIComponent(listId)}?fields=id,name&cards=open&card_fields=id,name,url,due,dateLastActivity&card_limit=${limit}`,
+      accessToken,
+    );
+    const cards = Array.isArray(out.cards) ? out.cards : [];
+    return {
+      result: { listId, listName: out.name ?? null, cards },
+      citations: cards.slice(0, 5).map((c) => {
+        const obj = asObject(c);
+        return toolCitation("trello", `card:${obj.id ?? crypto.randomUUID()}`, String(obj.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "trello.create_card") {
+    const listId = String(args.listId ?? "");
+    const name = String(args.name ?? "");
+    const desc = typeof args.desc === "string" ? args.desc : undefined;
+    const payload: Record<string, unknown> = { idList: listId, name };
+    if (desc) payload.desc = desc;
+    const out = await providerRequest("POST", "https://api.trello.com/1/cards", accessToken, payload);
+    return {
+      result: out,
+      citations: [toolCitation("trello", `card:${out.id ?? crypto.randomUUID()}`, name)],
+    };
+  }
+
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks realm_id missing");
 
@@ -3266,6 +3421,9 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "google_calendar.list_events") {
     next.maxResults = clampInt(next.maxResults, 50, 1, 150);
   }
+  if (tool.id === "trello.list_boards" || tool.id === "trello.list_cards") {
+    next.limit = clampInt(next.limit, 20, 1, 50);
+  }
   return next;
 }
 
@@ -3286,6 +3444,16 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const totalAmt = Number(args.totalAmt ?? 0);
     if (!Number.isFinite(totalAmt) || totalAmt <= 0) {
       throw new Error("totalAmt must be a positive number");
+    }
+  }
+  if (tool.id === "trello.create_card") {
+    const listId = String(args.listId ?? "").trim();
+    const name = String(args.name ?? "").trim();
+    if (!listId) throw new Error("listId is required");
+    if (!name) throw new Error("name is required");
+    if (name.length > 160) throw new Error("name must be 160 characters or fewer");
+    if (typeof args.desc === "string" && args.desc.length > 4096) {
+      throw new Error("desc must be 4096 characters or fewer");
     }
   }
 }

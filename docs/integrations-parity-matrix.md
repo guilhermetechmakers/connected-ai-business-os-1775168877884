@@ -1,7 +1,7 @@
 # Integrations Capability Matrix (AI Agent)
 
 This matrix defines the canonical provider-to-tool mapping for AI execution via `toolsExecute`.
-It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, and Slack.
+It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, and Trello.
 
 ## Policy Columns
 
@@ -85,6 +85,14 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `quickbooks.send_invoice_reminder` | `POST /v3/company/{realmId}/invoice/{id}/send` | write | medium | finance_ops+ | yes | non-idempotent |
 | `quickbooks.update_invoice_safe_fields` | `GET invoice + sparse update` | write | high | finance_admin+ | yes | idempotent-ish |
 
+## Trello
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `trello.list_boards` | `GET /1/members/me?boards=open&board_fields=id,name,url,closed` | read | low | reader+ | no | safe read |
+| `trello.list_cards` | `GET /1/lists/{listId}/cards` | read | low | reader+ | no | safe read |
+| `trello.create_card` | `POST /1/cards` | write | medium | ops+ | yes | non-idempotent |
+
 ## Role Groups (normalized)
 
 - `reader+`: `admin`, `owner`, `manager`, `company_admin`, `executive`, `analyst`, `auditor`, `compliance_auditor`.
@@ -97,4 +105,3 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 - `finance_admin+`: `admin`, `owner`, `company_admin`, `executive`, `finance_admin`.
 - `ops+`: `admin`, `owner`, `manager`, `company_admin`, `executive`, `builder`, `integration_admin`.
 - `integration_admin+`: `admin`, `owner`, `company_admin`, `executive`, `integration_admin`, `super_admin`.
-

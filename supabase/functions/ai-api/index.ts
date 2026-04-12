@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "trello"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4546,7 +4546,37 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
+      if (provider === "trello") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation !== "list" || queryType.includes("create")) {
+          const listId = String(queryArgs.listId ?? "");
+          const name = String(queryArgs.name ?? "");
+          const desc = typeof queryArgs.desc === "string" ? queryArgs.desc : undefined;
+          if (!listId || !name) return "Trello card create requires listId and name.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Trello: create card".`,
+              status: "pending_confirmation",
+              actionId: "trello.create_card",
+              pendingConfirmation: {
+                actionId: "trello.create_card",
+                label: "Trello: create card",
+                preview: { args: { listId, name, desc } },
+              },
+              result: { listId, name },
+            };
+          }
+          return await genericRead("trello.create_card", { listId, name, desc });
+        }
+        if (queryType.includes("card")) {
+          const listId = String(queryArgs.listId ?? "");
+          if (!listId) return "Trello card list requires listId.";
+          return await genericRead("trello.list_cards", { listId, limit: Math.min(50, limit) });
+        }
+        return await genericRead("trello.list_boards", { limit: Math.min(50, limit) });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks, trello.`;
     }
 
     case "send_slack_message": {
