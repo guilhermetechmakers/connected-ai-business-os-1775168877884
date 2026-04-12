@@ -6,6 +6,8 @@ import {
   ChevronRight,
   Eye,
   Loader2,
+  Mic,
+  MicOff,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -59,6 +61,31 @@ type PendingConfirmation = {
   actionId: string;
   label: string;
   preview?: Record<string, unknown>;
+};
+
+type SpeechRecognitionLike = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+};
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type SpeechRecognitionEventLike = {
+  results: ArrayLike<{
+    0: { transcript: string };
+    isFinal: boolean;
+    length: number;
+  }>;
+};
+
+type SpeechRecognitionErrorEventLike = {
+  error: string;
 };
 
 function normalizeMessages(rows: unknown): AiMessageRow[] {
@@ -182,6 +209,8 @@ function ThoughtStep({
 export default function ChatHomePage() {
   const qc = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const speechInputPrefixRef = useRef("");
   const { profile } = useAuth();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -200,6 +229,8 @@ export default function ChatHomePage() {
   const [savingArtifactIds, setSavingArtifactIds] = useState<string[]>([]);
   const [savedArtifactIds, setSavedArtifactIds] = useState<string[]>([]);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(false);
 
   const { data: convoList = [], isLoading: listLoading } =
     useAiConversationsList(20);
@@ -259,6 +290,51 @@ export default function ChatHomePage() {
       setConversationId(conversations[0].id);
     }
   }, [conversations, conversationId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const speechWindow = window as Window & {
+      SpeechRecognition?: SpeechRecognitionConstructor;
+      webkitSpeechRecognition?: SpeechRecognitionConstructor;
+    };
+    const Recognition =
+      speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition;
+    if (!Recognition) return undefined;
+
+    setSpeechSupported(true);
+    const recognition = new Recognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = navigator.language || "en-US";
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .map((result) => result[0]?.transcript ?? "")
+        .join(" ")
+        .trim();
+      if (!transcript) return;
+      setInput((prev) => {
+        const prefix = speechInputPrefixRef.current || prev;
+        const separator = prefix.trim().length > 0 ? " " : "";
+        return `${prefix}${separator}${transcript}`.trim();
+      });
+    };
+    recognition.onerror = (event) => {
+      if (event.error !== "no-speech") {
+        toast.error("Voice transcription failed. Please try again.");
+      }
+      setIsListening(false);
+    };
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const next = detail?.conversation?.mode;
@@ -634,6 +710,28 @@ export default function ChatHomePage() {
       },
     });
   };
+
+  const onMicClick = useCallback(() => {
+    if (!speechSupported || !recognitionRef.current) {
+      toast.error("Voice transcription is not supported in this browser.");
+      return;
+    }
+    if (isStreaming || listLoading) return;
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      return;
+    }
+
+    speechInputPrefixRef.current = input.trim();
+    try {
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch {
+      toast.error("Could not start voice transcription.");
+      setIsListening(false);
+    }
+  }, [input, isListening, isStreaming, listLoading, speechSupported]);
 
   return (
     <div className="flex h-[calc(100vh-4rem)] w-full overflow-hidden">
@@ -1021,24 +1119,55 @@ export default function ChatHomePage() {
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-                <Button
-                  type="button"
-                  disabled={isStreaming || !input.trim()}
-                  onClick={() => void send()}
-                  className={cn(
-                    "h-8 w-8 rounded-full p-0 transition-all duration-150",
-                    input.trim()
-                      ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
-                      : "bg-muted/40 text-muted-foreground",
-                  )}
-                  aria-label="Send message"
-                >
-                  {isStreaming ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <ArrowUp className="h-4 w-4" />
-                  )}
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={onMicClick}
+                    disabled={!speechSupported || isStreaming || listLoading}
+                    className={cn(
+                      "h-8 w-8 rounded-full transition-colors",
+                      isListening
+                        ? "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    aria-label={
+                      isListening
+                        ? "Stop voice transcription"
+                        : "Start voice transcription"
+                    }
+                    title={
+                      speechSupported
+                        ? "Speak to transcribe"
+                        : "Voice transcription not supported"
+                    }
+                  >
+                    {isListening ? (
+                      <MicOff className="h-4 w-4" />
+                    ) : (
+                      <Mic className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={isStreaming || !input.trim()}
+                    onClick={() => void send()}
+                    className={cn(
+                      "h-8 w-8 rounded-full p-0 transition-all duration-150",
+                      input.trim()
+                        ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+                        : "bg-muted/40 text-muted-foreground",
+                    )}
+                    aria-label="Send message"
+                  >
+                    {isStreaming ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ArrowUp className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
             </div>
 
