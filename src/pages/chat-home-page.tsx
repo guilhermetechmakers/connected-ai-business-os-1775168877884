@@ -103,8 +103,9 @@ function customDashboardPayloadFromArtifact(artifact: AiChatArtifact): {
     artifact.payload && typeof artifact.payload === "object" && !Array.isArray(artifact.payload)
       ? (artifact.payload as Record<string, unknown>)
       : {};
-  const codeTsx = typeof payload.codeTsx === "string" ? payload.codeTsx : "";
-  if (!codeTsx.trim()) return null;
+  const codeTsx = typeof payload.codeTsx === "string" && payload.codeTsx.trim().length > 0
+    ? payload.codeTsx
+    : "/* prebuilt-runtime */";
   const queryPlanRaw = Array.isArray(payload.queryPlan) ? payload.queryPlan : [];
   const queryPlan: Array<{ toolId: string; args?: Record<string, unknown>; provider?: string; label?: string }> = [];
   for (const step of queryPlanRaw) {

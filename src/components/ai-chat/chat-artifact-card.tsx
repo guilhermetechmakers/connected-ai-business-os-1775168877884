@@ -67,7 +67,7 @@ function extractCustomDashboardSources(payload: Record<string, unknown> | null):
 
 function extractCustomDashboardCode(payload: Record<string, unknown> | null): string {
   if (!payload) return "";
-  return typeof payload.codeTsx === "string" ? payload.codeTsx : "";
+  return typeof payload.codeTsx === "string" ? payload.codeTsx : "/* prebuilt-runtime */";
 }
 
 function extractCustomDashboardQueryPlan(payload: Record<string, unknown> | null): CustomDashboardQueryPlanStep[] {
@@ -245,10 +245,7 @@ export function ChatArtifactCard({
   const customCodeTsx = artifact.type === "custom_dashboard" ? extractCustomDashboardCode(payload) : "";
   const customQueryPlan = artifact.type === "custom_dashboard" ? extractCustomDashboardQueryPlan(payload) : [];
   const customSnapshotData = artifact.type === "custom_dashboard" ? extractCustomDashboardSnapshot(payload) : {};
-  const canRenderCustomPreview = artifact.type === "custom_dashboard" && customCodeTsx.trim().length > 0;
-  const customCodeLineCount = artifact.type === "custom_dashboard" && typeof payload?.codeTsx === "string"
-    ? payload.codeTsx.split("\n").length
-    : 0;
+  const canRenderCustomPreview = artifact.type === "custom_dashboard";
   const customDescription = artifact.type === "custom_dashboard"
     ? (typeof artifact.description === "string" && artifact.description.length > 0
       ? artifact.description
@@ -309,9 +306,7 @@ export function ChatArtifactCard({
               />
             ) : null}
             {customDescription ? <p>{customDescription}</p> : null}
-            <p className="text-muted-foreground">
-              Code lines: <span className="text-foreground">{customCodeLineCount || "n/a"}</span>
-            </p>
+            <p className="text-muted-foreground">Rendering uses the app's prebuilt dashboard components.</p>
             {customSources.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {customSources.slice(0, 12).map((source) => (
