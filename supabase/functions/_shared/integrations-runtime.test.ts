@@ -21,6 +21,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "notion.pages.search",
     "clickup.create_task",
     "monday.list_boards",
+    "trello.create_card",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -119,5 +120,27 @@ Deno.test("validateToolArgs rejects invalid monday.com column values json", () =
     () => runtimePolicyTestHooks.validateToolArgs(tool, { boardId: "123", itemId: "456", columnValues: "{bad" }),
     Error,
     "columnValues must be valid JSON string",
+  );
+});
+
+Deno.test("constrainToolArgs clamps trello listing limits", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "trello.list_cards");
+  if (!tool) throw new Error("tool missing");
+  const constrained = runtimePolicyTestHooks.constrainToolArgs(tool, { boardId: "abc123", limit: 9999 });
+  assertEquals(constrained.limit, 100);
+});
+
+Deno.test("validateToolArgs enforces trello card bounds", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "trello.create_card");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "l1", name: "" }),
+    Error,
+    "Missing required argument: name",
+  );
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "l1", name: "n", desc: "x".repeat(16385) }),
+    Error,
+    "desc exceeds maximum length",
   );
 });

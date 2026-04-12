@@ -269,6 +269,7 @@ serve(async (req) => {
     "Notion: search -> \"notion.pages.search\"; retrieve page -> \"notion.pages.retrieve\"; writes -> \"notion.pages.create\" / \"notion.pages.update\".",
     "ClickUp: workspace list -> \"clickup.list_workspaces\"; task list -> \"clickup.list_tasks\"; task create -> \"clickup.create_task\".",
     "monday.com: boards list -> \"monday.list_boards\"; board items -> \"monday.list_board_items\"; create item -> \"monday.create_item\"; update columns -> \"monday.change_item_column_values\".",
+    "Trello: boards list -> \"trello.list_boards\"; board cards -> \"trello.list_cards\"; card create -> \"trello.create_card\".",
     "Use timeWindowHint \"today\" for \"today\" / \"this day\". Use \"explicit\" only when you also set explicitDate {year,month,day} for that local calendar day.",
     "For google_calendar.list_events: any specific calendar day (including named weekdays like \"next Monday\", \"this Friday\", \"on Tuesday\") MUST set explicitDate to the resolved {year,month,day} using clientNowIso + clientTimeZone (and clientLocale for disambiguation). Never set timeWindowHint to \"explicit\" without explicitDate.",
     "Relative date phrases must be resolved using clientNowIso + clientTimeZone when provided.",

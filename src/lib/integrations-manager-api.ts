@@ -22,8 +22,13 @@ const PROVIDER_KEYS: IntegrationProviderKey[] = [
   "google_drive",
   "gmail",
   "google_calendar",
+  "zoom",
   "hubspot",
   "quickbooks",
+  "notion",
+  "clickup",
+  "monday",
+  "trello",
 ];
 
 function toProviderKey(value: string): IntegrationProviderKey {

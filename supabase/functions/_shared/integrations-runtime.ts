@@ -20,7 +20,8 @@ export type ProviderKey =
   | "quickbooks"
   | "notion"
   | "clickup"
-  | "monday";
+  | "monday"
+  | "trello";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -28,7 +29,16 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "zoom" | "hubspot" | "quickbooks" | "notion" | "clickup" | "monday";
+type OAuthProviderKey =
+  | "slack"
+  | "google"
+  | "zoom"
+  | "hubspot"
+  | "quickbooks"
+  | "notion"
+  | "clickup"
+  | "monday"
+  | "trello";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -252,6 +262,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "monday",
     name: "monday.com",
     description: "Boards and items read/write actions for work management.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "trello",
+    name: "Trello",
+    description: "Boards and cards read/write actions for lightweight project tracking.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -789,6 +806,39 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     argsShape: { boardId: "string", itemId: "string", columnValues: "string" },
   },
   {
+    id: "trello.list_boards",
+    providerKey: "trello",
+    label: "Trello: list boards",
+    description: "List Trello boards available to the connected user.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?" },
+  },
+  {
+    id: "trello.list_cards",
+    providerKey: "trello",
+    label: "Trello: list cards",
+    description: "List cards from a Trello board.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { boardId: "string", limit: "number?" },
+  },
+  {
+    id: "trello.create_card",
+    providerKey: "trello",
+    label: "Trello: create card",
+    description: "Create a card on a Trello list.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { listId: "string", name: "string", desc: "string?", due: "string?" },
+  },
+  {
     id: "notion.pages.search",
     providerKey: "notion",
     label: "Notion: search pages",
@@ -901,7 +951,8 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
     tool.providerKey === "google_drive" ||
     tool.providerKey === "notion" ||
     tool.providerKey === "clickup" ||
-    tool.providerKey === "monday"
+    tool.providerKey === "monday" ||
+    tool.providerKey === "trello"
   ) {
     return "ops_plus";
   }
@@ -1093,6 +1144,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (providerKey === "notion") return "notion";
   if (providerKey === "clickup") return "clickup";
   if (providerKey === "monday") return "monday";
+  if (providerKey === "trello") return "trello";
   return "quickbooks";
 }
 
@@ -1244,6 +1296,19 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
       clientId: envRequired("MONDAY_CLIENT_ID"),
       clientSecret: envRequired("MONDAY_CLIENT_SECRET"),
       scopes: ["boards:read", "boards:write", "users:read"],
+    };
+  }
+
+  if (provider === "trello") {
+    return {
+      provider,
+      authUrl: Deno.env.get("TRELLO_OAUTH_AUTH_URL") ??
+        "https://trello.com/1/authorize",
+      tokenUrl: Deno.env.get("TRELLO_OAUTH_TOKEN_URL") ??
+        "https://trello.com/1/oauth2/token",
+      clientId: envRequired("TRELLO_CLIENT_ID"),
+      clientSecret: envRequired("TRELLO_CLIENT_SECRET"),
+      scopes: ["read", "write"],
     };
   }
 
@@ -1926,6 +1991,14 @@ async function runNotionConnectionTest(accessToken: string): Promise<Record<stri
   );
 }
 
+async function runTrelloConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await providerRequest(
+    "GET",
+    "https://api.trello.com/1/members/me?fields=id,fullName,username",
+    accessToken,
+  );
+}
+
 async function runProviderConnectionTest(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -1940,6 +2013,7 @@ async function runProviderConnectionTest(
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
   if (providerKey === "monday") return await runMondayConnectionTest(accessToken);
   if (providerKey === "notion") return await runNotionConnectionTest(accessToken);
+  if (providerKey === "trello") return await runTrelloConnectionTest(accessToken);
   if (providerKey === "clickup") {
     return await providerRequest("GET", "https://api.clickup.com/api/v2/user", accessToken);
   }
@@ -2465,6 +2539,116 @@ async function pullMondaySyncData(
   };
 }
 
+async function pullTrelloSyncData(
+  accessToken: string,
+  _cursorState: Record<string, unknown>,
+): Promise<SyncPullResult> {
+  const records: SyncEntityRecord[] = [];
+  const documents: SyncDocumentRecord[] = [];
+  const events: ConnectorEventInput[] = [];
+
+  const me = await providerRequest(
+    "GET",
+    "https://api.trello.com/1/members/me?fields=id,fullName,username&boards=open&board_fields=id,name,url,dateLastActivity&boards_limit=25",
+    accessToken,
+  );
+  const boards = Array.isArray(me.boards) ? me.boards : [];
+  for (const boardRaw of boards.slice(0, 25)) {
+    const board = asObject(boardRaw);
+    const boardId = String(board.id ?? "");
+    if (!boardId) continue;
+
+    records.push({
+      entityType: "ProjectBoard",
+      externalId: boardId,
+      payload: {
+        id: boardId,
+        name: board.name ?? null,
+        url: board.url ?? null,
+        dateLastActivity: board.dateLastActivity ?? null,
+      },
+    });
+    documents.push({
+      externalId: `board:${boardId}`,
+      title: String(board.name ?? boardId),
+      content: JSON.stringify(board),
+      metadata: { objectType: "board", provider: "trello" },
+    });
+
+    const boardData = await providerRequest(
+      "GET",
+      `https://api.trello.com/1/boards/${encodeURIComponent(boardId)}?fields=id,name,url,dateLastActivity&lists=open&list_fields=id,name&cards=open&card_fields=id,name,idList,desc,due,url,dateLastActivity&card_limit=50`,
+      accessToken,
+    );
+    const lists = Array.isArray(boardData.lists) ? boardData.lists : [];
+    for (const listRaw of lists) {
+      const list = asObject(listRaw);
+      const listId = String(list.id ?? "");
+      if (!listId) continue;
+      records.push({
+        entityType: "ProjectList",
+        externalId: `${boardId}:${listId}`,
+        payload: {
+          boardId,
+          id: listId,
+          name: list.name ?? null,
+        },
+      });
+    }
+
+    const cards = Array.isArray(boardData.cards) ? boardData.cards : [];
+    for (const cardRaw of cards.slice(0, 50)) {
+      const card = asObject(cardRaw);
+      const cardId = String(card.id ?? "");
+      if (!cardId) continue;
+      records.push({
+        entityType: "WorkItem",
+        externalId: `${boardId}:${cardId}`,
+        payload: {
+          boardId,
+          id: cardId,
+          name: card.name ?? null,
+          idList: card.idList ?? null,
+          due: card.due ?? null,
+          dateLastActivity: card.dateLastActivity ?? null,
+          url: card.url ?? null,
+        },
+      });
+      documents.push({
+        externalId: `card:${boardId}:${cardId}`,
+        title: String(card.name ?? cardId),
+        content: typeof card.desc === "string" ? card.desc : "",
+        metadata: {
+          objectType: "card",
+          boardId,
+          listId: card.idList ?? null,
+          due: card.due ?? null,
+          url: card.url ?? null,
+        },
+      });
+      events.push({
+        providerKey: "trello",
+        eventType: "card.synced",
+        externalEventId: `card:${boardId}:${cardId}:${card.dateLastActivity ?? ""}`,
+        payload: {
+          boardId,
+          cardId,
+          name: card.name ?? null,
+          listId: card.idList ?? null,
+        },
+      });
+    }
+  }
+
+  return {
+    records,
+    documents,
+    nextCursor: { syncedAt: nowIso() },
+    notes: [`Trello rows synced: ${records.length}`],
+    events,
+  };
+}
+
 async function pullQuickbooksSyncData(
   accessToken: string,
   realmId: string,
@@ -2615,6 +2799,9 @@ async function pullProviderSyncData(
   }
   if (providerKey === "monday") {
     return await pullMondaySyncData(token, cursorState);
+  }
+  if (providerKey === "trello") {
+    return await pullTrelloSyncData(token, cursorState);
   }
   if (providerKey === "notion") {
     return { records: [], documents: [], events: [], nextCursor: cursorState, notes: [] };
@@ -3578,6 +3765,62 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "trello.list_boards") {
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 25)));
+    const out = await providerRequest(
+      "GET",
+      `https://api.trello.com/1/members/me?fields=id,fullName,username&boards=open&board_fields=id,name,url,dateLastActivity&boards_limit=${limit}`,
+      accessToken,
+    );
+    const boards = Array.isArray(out.boards) ? out.boards : [];
+    return {
+      result: { boards, limit },
+      citations: boards.slice(0, 5).map((b) => {
+        const board = asObject(b);
+        return toolCitation("trello", `board:${board.id ?? crypto.randomUUID()}`, String(board.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "trello.list_cards") {
+    const boardId = String(args.boardId ?? "");
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 25)));
+    const out = await providerRequest(
+      "GET",
+      `https://api.trello.com/1/boards/${encodeURIComponent(boardId)}?fields=id,name&lists=open&list_fields=id,name&cards=open&card_fields=id,name,idList,desc,due,url,dateLastActivity&card_limit=${limit}`,
+      accessToken,
+    );
+    const cards = Array.isArray(out.cards) ? out.cards : [];
+    const lists = Array.isArray(out.lists) ? out.lists : [];
+    return {
+      result: { boardId, cards, lists, limit },
+      citations: cards.slice(0, 5).map((c) => {
+        const card = asObject(c);
+        return toolCitation("trello", `card:${boardId}:${card.id ?? crypto.randomUUID()}`, String(card.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "trello.create_card") {
+    const listId = String(args.listId ?? "");
+    const name = String(args.name ?? "");
+    const desc = typeof args.desc === "string" ? args.desc : undefined;
+    const due = typeof args.due === "string" ? args.due : undefined;
+    const body: Record<string, unknown> = { idList: listId, name };
+    if (desc) body.desc = desc;
+    if (due) body.due = due;
+    const out = await providerRequest(
+      "POST",
+      "https://api.trello.com/1/cards",
+      accessToken,
+      body,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("trello", `card:${out.id ?? crypto.randomUUID()}`, name)],
+    };
+  }
+
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks realm_id missing");
 
@@ -4070,6 +4313,9 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "monday.list_board_items") {
     next.limit = clampInt(next.limit, 25, 1, 100);
   }
+  if (tool.id === "trello.list_boards" || tool.id === "trello.list_cards") {
+    next.limit = clampInt(next.limit, 25, 1, 100);
+  }
   return next;
 }
 
@@ -4123,6 +4369,13 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
         throw new Error("columnValues must be valid JSON string");
       }
     }
+  }
+  if (tool.id === "trello.create_card") {
+    const name = String(args.name ?? "").trim();
+    const desc = typeof args.desc === "string" ? args.desc : "";
+    if (!name) throw new Error("name is required");
+    if (name.length > 16_384) throw new Error("name exceeds maximum length");
+    if (desc.length > 16_384) throw new Error("desc exceeds maximum length");
   }
 }
 

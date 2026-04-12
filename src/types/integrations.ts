@@ -16,7 +16,8 @@ export type IntegrationProviderKey =
   | "quickbooks"
   | "notion"
   | "clickup"
-  | "monday";
+  | "monday"
+  | "trello";
 
 export type ConnectorRow = {
   id: string;

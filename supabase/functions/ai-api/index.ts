@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "zoom", "hubspot", "quickbooks", "notion", "clickup", "monday"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "zoom", "hubspot", "quickbooks", "notion", "clickup", "monday", "trello"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4765,7 +4765,48 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, zoom, hubspot, quickbooks, notion, clickup, monday.`;
+      if (provider === "trello") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        const boardId = String(queryArgs.boardId ?? filters.boardId ?? "");
+
+        if (operation === "create") {
+          const listId = String(queryArgs.listId ?? "");
+          const name = String(queryArgs.name ?? queryArgs.cardName ?? "").trim();
+          const desc = typeof queryArgs.desc === "string"
+            ? queryArgs.desc
+            : (typeof queryArgs.description === "string" ? queryArgs.description : undefined);
+          const due = typeof queryArgs.due === "string" ? queryArgs.due : undefined;
+          if (!listId || !name) return "Trello card create requires listId and name.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Trello: create card".`,
+              status: "pending_confirmation",
+              actionId: "trello.create_card",
+              pendingConfirmation: {
+                actionId: "trello.create_card",
+                label: "Trello: create card",
+                preview: { args: { listId, name, desc, due } },
+              },
+              result: { listId, name },
+            };
+          }
+          return await genericRead("trello.create_card", { listId, name, desc, due });
+        }
+
+        if (boardId || queryType.includes("card")) {
+          if (!boardId) return "Trello card listing requires boardId.";
+          return await genericRead("trello.list_cards", {
+            boardId,
+            limit: Math.min(100, limit),
+          });
+        }
+
+        return await genericRead("trello.list_boards", {
+          limit: Math.min(100, limit),
+        });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, zoom, hubspot, quickbooks, notion, clickup, monday, trello.`;
     }
 
     case "send_slack_message": {
@@ -5608,7 +5649,7 @@ serve(async (req) => {
     const started = performance.now();
     const integrationToolsCatalogBlock =
       `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
-      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, Notion, ClickUp project/task data, or monday.com board data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, Notion, ClickUp project/task data, monday.com board data, or Trello board/card data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
       "--- End integration tools ---";
 
     const systemPreamble = [

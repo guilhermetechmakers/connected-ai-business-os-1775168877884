@@ -1,7 +1,7 @@
 # Integrations Capability Matrix (AI Agent)
 
 This matrix defines the canonical provider-to-tool mapping for AI execution via `toolsExecute`.
-It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, Zoom, Notion, ClickUp, and monday.com.
+It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, Zoom, Notion, ClickUp, monday.com, and Trello.
 
 ## Policy Columns
 
@@ -108,6 +108,14 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `clickup.list_workspaces` | `GET /v2/team` | read | low | reader+ | no | safe read |
 | `clickup.list_tasks` | `GET /v2/list/{listId}/task` | read | low | reader+ | no | safe read |
 | `clickup.create_task` | `POST /v2/list/{listId}/task` | write | medium | ops+ | yes | non-idempotent |
+
+## Trello
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `trello.list_boards` | `GET /1/members/me?boards=open` | read | low | reader+ | no | safe read |
+| `trello.list_cards` | `GET /1/boards/{boardId}?cards=open` | read | low | reader+ | no | safe read |
+| `trello.create_card` | `POST /1/cards` | write | medium | ops+ | yes | non-idempotent |
 
 ## Role Groups (normalized)
 

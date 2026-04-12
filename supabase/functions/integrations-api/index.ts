@@ -29,6 +29,7 @@ const providerKeySchema = z.enum([
   "quickbooks",
   "clickup",
   "monday",
+  "trello",
 ]);
 
 const opSchema = z.discriminatedUnion("op", [
