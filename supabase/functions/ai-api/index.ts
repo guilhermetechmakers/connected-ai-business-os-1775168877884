@@ -3258,7 +3258,8 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "notion"],
+
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "zoom", "hubspot", "quickbooks", "notion"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4381,6 +4382,50 @@ async function executeAgentTool(
         });
       }
 
+      if (provider === "zoom") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation === "create") {
+          const topic = String(queryArgs.topic ?? args.query_type ?? "").trim();
+          const startTime = typeof queryArgs.startTime === "string"
+            ? queryArgs.startTime
+            : (typeof queryArgs.start_time === "string" ? queryArgs.start_time : undefined);
+          const durationMinutes = typeof queryArgs.durationMinutes === "number"
+            ? queryArgs.durationMinutes
+            : (typeof queryArgs.duration === "number" ? queryArgs.duration : undefined);
+          const timezone = typeof queryArgs.timezone === "string" ? queryArgs.timezone : undefined;
+          const agenda = typeof queryArgs.agenda === "string" ? queryArgs.agenda : undefined;
+          if (!topic) return "Zoom meeting create requires topic.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Zoom: create meeting".`,
+              status: "pending_confirmation",
+              actionId: "zoom.create_meeting",
+              pendingConfirmation: {
+                actionId: "zoom.create_meeting",
+                label: "Zoom: create meeting",
+                preview: { args: { topic, startTime, durationMinutes, timezone, agenda } },
+              },
+              result: { topic, startTime, durationMinutes, timezone },
+            };
+          }
+          return await genericRead("zoom.create_meeting", {
+            topic,
+            startTime,
+            durationMinutes,
+            timezone,
+            agenda,
+          });
+        }
+
+        const userId = typeof queryArgs.userId === "string" ? queryArgs.userId : "me";
+        const type = typeof queryArgs.type === "string" ? queryArgs.type : "upcoming";
+        return await genericRead("zoom.list_meetings", {
+          userId,
+          type,
+          pageSize: Math.min(100, limit),
+        });
+      }
+
       if (provider === "hubspot") {
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         if (queryType.includes("record") && operation === "list") {
@@ -4610,7 +4655,7 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, zoom, hubspot, quickbooks.`;
     }
 
     case "send_slack_message": {
