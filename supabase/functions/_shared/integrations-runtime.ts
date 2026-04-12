@@ -16,7 +16,8 @@ export type ProviderKey =
   | "gmail"
   | "google_calendar"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "monday";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -24,7 +25,7 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks";
+type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks" | "monday";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -219,6 +220,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "quickbooks",
     name: "QuickBooks",
     description: "Customer and invoice sync with finance-safe updates.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "monday",
+    name: "monday.com",
+    description: "Boards and items read/write actions for work management.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -682,6 +690,50 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
   },
+  {
+    id: "monday.list_boards",
+    providerKey: "monday",
+    label: "monday.com: list boards",
+    description: "List monday.com boards with pagination constraints.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", page: "number?" },
+  },
+  {
+    id: "monday.list_board_items",
+    providerKey: "monday",
+    label: "monday.com: list board items",
+    description: "List items on a specific monday.com board.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { boardId: "string", limit: "number?", cursor: "string?" },
+  },
+  {
+    id: "monday.create_item",
+    providerKey: "monday",
+    label: "monday.com: create item",
+    description: "Create a new monday.com item in a board/group.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { boardId: "string", itemName: "string", groupId: "string?", columnValues: "string?" },
+  },
+  {
+    id: "monday.change_item_column_values",
+    providerKey: "monday",
+    label: "monday.com: update item column values",
+    description: "Update monday.com item column values via JSON payload.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { boardId: "string", itemId: "string", columnValues: "string" },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -701,7 +753,7 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
   if (tool.providerKey === "slack" || tool.providerKey === "gmail" || tool.providerKey === "google_calendar") {
     return "comms_plus";
   }
-  if (tool.providerKey === "google_drive") return "ops_plus";
+  if (tool.providerKey === "google_drive" || tool.providerKey === "monday") return "ops_plus";
   return undefined;
 }
 
@@ -886,6 +938,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (GOOGLE_PROVIDER_KEYS.includes(providerKey)) return "google";
   if (providerKey === "slack") return "slack";
   if (providerKey === "hubspot") return "hubspot";
+  if (providerKey === "monday") return "monday";
   return "quickbooks";
 }
 
@@ -978,6 +1031,19 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
+    };
+  }
+
+  if (provider === "monday") {
+    return {
+      provider,
+      authUrl: Deno.env.get("MONDAY_OAUTH_AUTH_URL") ??
+        "https://auth.monday.com/oauth2/authorize",
+      tokenUrl: Deno.env.get("MONDAY_OAUTH_TOKEN_URL") ??
+        "https://auth.monday.com/oauth2/token",
+      clientId: envRequired("MONDAY_CLIENT_ID"),
+      clientSecret: envRequired("MONDAY_CLIENT_SECRET"),
+      scopes: ["boards:read", "boards:write", "users:read"],
     };
   }
 
@@ -1596,6 +1662,31 @@ async function runHubspotConnectionTest(accessToken: string): Promise<Record<str
   return await providerRequest("GET", "https://api.hubapi.com/integrations/v1/me", accessToken);
 }
 
+async function mondayGraphqlRequest(
+  accessToken: string,
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const out = await providerRequest(
+    "POST",
+    "https://api.monday.com/v2",
+    accessToken,
+    { query, variables },
+  );
+  const errors = Array.isArray(out.errors) ? out.errors : [];
+  if (errors.length > 0) {
+    const first = asObject(errors[0]);
+    const message = typeof first.message === "string" ? first.message : "monday graphql request failed";
+    throw new Error(message);
+  }
+  return asObject(out.data);
+}
+
+async function runMondayConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  const data = await mondayGraphqlRequest(accessToken, "query { me { id name email } }");
+  return { me: asObject(data.me) };
+}
+
 async function runQuickbooksConnectionTest(
   accessToken: string,
   realmId: string,
@@ -1622,6 +1713,7 @@ async function runProviderConnectionTest(
   if (providerKey === "gmail") return await runGmailConnectionTest(accessToken);
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
+  if (providerKey === "monday") return await runMondayConnectionTest(accessToken);
 
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) {
@@ -2058,6 +2150,92 @@ async function quickbooksQuery(
   );
 }
 
+async function pullMondaySyncData(
+  accessToken: string,
+  cursorState: Record<string, unknown>,
+): Promise<SyncPullResult> {
+  const records: SyncEntityRecord[] = [];
+  const documents: SyncDocumentRecord[] = [];
+  const events: ConnectorEventInput[] = [];
+  const page = Math.max(1, Number(cursorState.page ?? 1));
+  const boardsData = await mondayGraphqlRequest(
+    accessToken,
+    "query ($limit: Int!, $page: Int!) { boards(limit: $limit, page: $page) { id name state updated_at } }",
+    { limit: 25, page },
+  );
+  const boards = Array.isArray(boardsData.boards) ? boardsData.boards : [];
+  for (const boardRaw of boards) {
+    const board = asObject(boardRaw);
+    const boardId = String(board.id ?? "");
+    if (!boardId) continue;
+    records.push({
+      entityType: "ProjectBoard",
+      externalId: boardId,
+      payload: {
+        id: boardId,
+        name: board.name ?? null,
+        state: board.state ?? null,
+        updated_at: board.updated_at ?? null,
+      },
+    });
+    documents.push({
+      externalId: `board:${boardId}`,
+      title: String(board.name ?? boardId),
+      content: JSON.stringify(board),
+      metadata: { objectType: "board" },
+    });
+
+    const itemsData = await mondayGraphqlRequest(
+      accessToken,
+      "query ($boardId: [ID!], $limit: Int!) { boards(ids: $boardId) { id name items_page(limit: $limit) { items { id name updated_at state } } } }",
+      { boardId: [boardId], limit: 50 },
+    );
+    const boardsFull = Array.isArray(itemsData.boards) ? itemsData.boards : [];
+    const firstBoard = boardsFull.length > 0 ? asObject(boardsFull[0]) : {};
+    const itemsPage = asObject(firstBoard.items_page);
+    const items = Array.isArray(itemsPage.items) ? itemsPage.items : [];
+    for (const itemRaw of items) {
+      const item = asObject(itemRaw);
+      const itemId = String(item.id ?? "");
+      if (!itemId) continue;
+      records.push({
+        entityType: "WorkItem",
+        externalId: `${boardId}:${itemId}`,
+        payload: {
+          boardId,
+          id: itemId,
+          name: item.name ?? null,
+          state: item.state ?? null,
+          updated_at: item.updated_at ?? null,
+        },
+      });
+      documents.push({
+        externalId: `item:${boardId}:${itemId}`,
+        title: String(item.name ?? itemId),
+        content: JSON.stringify(item),
+        metadata: { objectType: "item", boardId },
+      });
+      events.push({
+        providerKey: "monday",
+        eventType: "item.synced",
+        externalEventId: `item:${boardId}:${itemId}:${item.updated_at ?? ""}`,
+        payload: { boardId, itemId, name: item.name ?? null },
+      });
+    }
+  }
+
+  return {
+    records,
+    documents,
+    nextCursor: {
+      page: boards.length === 25 ? page + 1 : 1,
+      syncedAt: nowIso(),
+    },
+    notes: [`monday.com rows synced: ${records.length}`],
+    events,
+  };
+}
+
 async function pullQuickbooksSyncData(
   accessToken: string,
   realmId: string,
@@ -2159,6 +2337,9 @@ async function pullProviderSyncData(
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
+  }
+  if (providerKey === "monday") {
+    return await pullMondaySyncData(token, cursorState);
   }
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks credential missing realm_id");
@@ -2959,6 +3140,80 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "monday.list_boards") {
+    const limit = Math.max(1, Math.min(50, Number(args.limit ?? 20)));
+    const page = Math.max(1, Number(args.page ?? 1));
+    const data = await mondayGraphqlRequest(
+      accessToken,
+      "query ($limit: Int!, $page: Int!) { boards(limit: $limit, page: $page) { id name state updated_at } }",
+      { limit, page },
+    );
+    const boards = Array.isArray(data.boards) ? data.boards : [];
+    return {
+      result: { boards, page, limit },
+      citations: boards.slice(0, 5).map((b) => {
+        const board = asObject(b);
+        return toolCitation("monday", `board:${board.id ?? crypto.randomUUID()}`, String(board.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "monday.list_board_items") {
+    const boardId = String(args.boardId ?? "");
+    const limit = Math.max(1, Math.min(100, Number(args.limit ?? 25)));
+    const cursor = typeof args.cursor === "string" ? args.cursor : "";
+    const query = cursor
+      ? "query ($boardId: [ID!], $limit: Int!, $cursor: String!) { boards(ids: $boardId) { id name items_page(limit: $limit, cursor: $cursor) { cursor items { id name updated_at state } } } }"
+      : "query ($boardId: [ID!], $limit: Int!) { boards(ids: $boardId) { id name items_page(limit: $limit) { cursor items { id name updated_at state } } } }";
+    const variables: Record<string, unknown> = { boardId: [boardId], limit };
+    if (cursor) variables.cursor = cursor;
+    const data = await mondayGraphqlRequest(accessToken, query, variables);
+    const boards = Array.isArray(data.boards) ? data.boards : [];
+    const board = boards.length > 0 ? asObject(boards[0]) : {};
+    const itemsPage = asObject(board.items_page);
+    const items = Array.isArray(itemsPage.items) ? itemsPage.items : [];
+    return {
+      result: { boardId, items, nextCursor: itemsPage.cursor ?? null },
+      citations: items.slice(0, 5).map((it) => {
+        const item = asObject(it);
+        return toolCitation("monday", `item:${boardId}:${item.id ?? crypto.randomUUID()}`, String(item.name ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "monday.create_item") {
+    const boardId = String(args.boardId ?? "");
+    const itemName = String(args.itemName ?? "").trim();
+    const groupId = typeof args.groupId === "string" && args.groupId.trim() ? args.groupId.trim() : undefined;
+    const columnValues = typeof args.columnValues === "string" && args.columnValues.trim()
+      ? args.columnValues
+      : undefined;
+    const query = "mutation ($boardId: ID!, $groupId: String, $itemName: String!, $columnValues: JSON) { create_item(board_id: $boardId, group_id: $groupId, item_name: $itemName, column_values: $columnValues) { id name } }";
+    const data = await mondayGraphqlRequest(
+      accessToken,
+      query,
+      { boardId, groupId, itemName, columnValues },
+    );
+    const created = asObject(data.create_item);
+    return {
+      result: { item: created, boardId },
+      citations: [toolCitation("monday", `item:${boardId}:${created.id ?? crypto.randomUUID()}`, itemName)],
+    };
+  }
+
+  if (toolId === "monday.change_item_column_values") {
+    const boardId = String(args.boardId ?? "");
+    const itemId = String(args.itemId ?? "");
+    const columnValues = String(args.columnValues ?? "{}");
+    const query = "mutation ($boardId: ID!, $itemId: ID!, $columnValues: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $columnValues) { id name } }";
+    const data = await mondayGraphqlRequest(accessToken, query, { boardId, itemId, columnValues });
+    const changed = asObject(data.change_multiple_column_values);
+    return {
+      result: { item: changed, boardId, itemId },
+      citations: [toolCitation("monday", `item:${boardId}:${itemId}`, String(changed.name ?? ""))],
+    };
+  }
+
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks realm_id missing");
 
@@ -3266,6 +3521,13 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "google_calendar.list_events") {
     next.maxResults = clampInt(next.maxResults, 50, 1, 150);
   }
+  if (tool.id === "monday.list_boards") {
+    next.limit = clampInt(next.limit, 20, 1, 50);
+    next.page = clampInt(next.page, 1, 1, 500);
+  }
+  if (tool.id === "monday.list_board_items") {
+    next.limit = clampInt(next.limit, 25, 1, 100);
+  }
   return next;
 }
 
@@ -3286,6 +3548,16 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const totalAmt = Number(args.totalAmt ?? 0);
     if (!Number.isFinite(totalAmt) || totalAmt <= 0) {
       throw new Error("totalAmt must be a positive number");
+    }
+  }
+  if (tool.id === "monday.create_item" || tool.id === "monday.change_item_column_values") {
+    const raw = typeof args.columnValues === "string" ? args.columnValues.trim() : "";
+    if (raw) {
+      try {
+        JSON.parse(raw);
+      } catch {
+        throw new Error("columnValues must be valid JSON string");
+      }
     }
   }
 }

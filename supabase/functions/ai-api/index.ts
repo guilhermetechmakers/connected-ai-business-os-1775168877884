@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "monday"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4546,7 +4546,70 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
+
+      if (provider === "monday") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        const boardId = String(queryArgs.boardId ?? filters.boardId ?? "");
+
+        if (operation !== "list") {
+          if (queryType.includes("create") || queryType.includes("new_item")) {
+            const itemName = String(queryArgs.itemName ?? queryArgs.name ?? "").trim();
+            const groupId = typeof queryArgs.groupId === "string" ? queryArgs.groupId : undefined;
+            const columnValues = typeof queryArgs.columnValues === "string" ? queryArgs.columnValues : undefined;
+            if (!boardId || !itemName) return "monday.com create item requires boardId and itemName.";
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "monday.com: create item".`,
+                status: "pending_confirmation",
+                actionId: "monday.create_item",
+                pendingConfirmation: {
+                  actionId: "monday.create_item",
+                  label: "monday.com: create item",
+                  preview: { args: { boardId, itemName, groupId, columnValues } },
+                },
+                result: { boardId, itemName },
+              };
+            }
+            return await genericRead("monday.create_item", { boardId, itemName, groupId, columnValues });
+          }
+
+          const itemId = String(queryArgs.itemId ?? "");
+          const columnValues = typeof queryArgs.columnValues === "string" ? queryArgs.columnValues : "";
+          if (!boardId || !itemId || !columnValues) {
+            return "monday.com item update requires boardId, itemId, and columnValues JSON string.";
+          }
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "monday.com: update item column values".`,
+              status: "pending_confirmation",
+              actionId: "monday.change_item_column_values",
+              pendingConfirmation: {
+                actionId: "monday.change_item_column_values",
+                label: "monday.com: update item column values",
+                preview: { args: { boardId, itemId, columnValues } },
+              },
+              result: { boardId, itemId },
+            };
+          }
+          return await genericRead("monday.change_item_column_values", { boardId, itemId, columnValues });
+        }
+
+        if (boardId || queryType.includes("item")) {
+          if (!boardId) return "monday.com board item listing requires boardId.";
+          return await genericRead("monday.list_board_items", {
+            boardId,
+            limit: Math.min(100, limit),
+            cursor: typeof queryArgs.cursor === "string" ? queryArgs.cursor : undefined,
+          });
+        }
+
+        return await genericRead("monday.list_boards", {
+          limit: Math.min(50, limit),
+          page: Number(queryArgs.page ?? 1),
+        });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks, monday.`;
     }
 
     case "send_slack_message": {
@@ -5389,7 +5452,7 @@ serve(async (req) => {
     const started = performance.now();
     const integrationToolsCatalogBlock =
       `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
-      "For factual questions about this user's email, calendar, Slack, Drive, CRM, or accounting data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, or monday.com board data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
       "--- End integration tools ---";
 
     const systemPreamble = [

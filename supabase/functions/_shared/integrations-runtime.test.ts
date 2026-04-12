@@ -17,6 +17,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
+    "monday.list_boards",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -67,3 +68,14 @@ Deno.test("role group guard enforces finance admin tools", () => {
   assertEquals(denied, false);
 });
 
+
+
+Deno.test("validateToolArgs rejects invalid monday.com column values json", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "monday.change_item_column_values");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { boardId: "123", itemId: "456", columnValues: "{bad" }),
+    Error,
+    "columnValues must be valid JSON string",
+  );
+});
