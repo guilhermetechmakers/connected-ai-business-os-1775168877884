@@ -18,6 +18,7 @@ export type ProviderKey =
   | "zoom"
   | "hubspot"
   | "quickbooks"
+  | "stripe"
   | "notion"
   | "clickup"
   | "monday"
@@ -35,6 +36,7 @@ type OAuthProviderKey =
   | "zoom"
   | "hubspot"
   | "quickbooks"
+  | "stripe"
   | "notion"
   | "clickup"
   | "monday"
@@ -83,10 +85,25 @@ type ProviderCredentialPayload = {
   scope?: string;
   expires_at?: string;
   realm_id?: string;
+  stripe_account_id?: string;
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
 };
+
+const NOTION_API_VERSION = Deno.env.get("NOTION_API_VERSION") ?? "2026-03-11";
+const GOOGLE_GMAIL_API_BASE = Deno.env.get("GOOGLE_GMAIL_API_BASE") ?? "https://gmail.googleapis.com/gmail/v1";
+const GOOGLE_DRIVE_API_BASE = Deno.env.get("GOOGLE_DRIVE_API_BASE") ?? "https://www.googleapis.com/drive/v3";
+const GOOGLE_CALENDAR_API_BASE = Deno.env.get("GOOGLE_CALENDAR_API_BASE") ?? "https://www.googleapis.com/calendar/v3";
+const SLACK_API_BASE = Deno.env.get("SLACK_API_BASE") ?? "https://slack.com/api";
+const ZOOM_API_BASE = Deno.env.get("ZOOM_API_BASE") ?? "https://api.zoom.us/v2";
+const HUBSPOT_API_BASE = Deno.env.get("HUBSPOT_API_BASE") ?? "https://api.hubapi.com";
+const QUICKBOOKS_MINOR_VERSION = Deno.env.get("QUICKBOOKS_MINOR_VERSION") ?? "75";
+const STRIPE_API_BASE = Deno.env.get("STRIPE_API_BASE") ?? "https://api.stripe.com";
+const STRIPE_API_VERSION = Deno.env.get("STRIPE_API_VERSION") ?? "2025-08-27.basil";
+const CLICKUP_API_BASE = Deno.env.get("CLICKUP_API_BASE") ?? "https://api.clickup.com/api/v2";
+const MONDAY_API_BASE = Deno.env.get("MONDAY_API_BASE") ?? "https://api.monday.com/v2";
+const TRELLO_API_BASE = Deno.env.get("TRELLO_API_BASE") ?? "https://api.trello.com/1";
 
 type ToolCitation = {
   source: string;
@@ -245,9 +262,16 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     supportsApiKey: false,
   },
   {
+    id: "stripe",
+    name: "Stripe",
+    description: "Customer, payment intent, and refund operations for finance workflows.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
     id: "notion",
     name: "Notion",
-    description: "Workspace pages search and page updates.",
+    description: "Workspace blocks, pages, databases, data sources, comments, and search operations.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -696,6 +720,35 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     },
   },
   {
+    id: "zoom.update_meeting",
+    providerKey: "zoom",
+    label: "Zoom: update meeting",
+    description: "Update an existing Zoom meeting.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: {
+      meetingId: "string",
+      topic: "string?",
+      startTime: "string?",
+      durationMinutes: "number?",
+      timezone: "string?",
+      agenda: "string?",
+    },
+  },
+  {
+    id: "zoom.delete_meeting",
+    providerKey: "zoom",
+    label: "Zoom: delete meeting",
+    description: "Delete a Zoom meeting by id.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_admin_plus",
+    requiresConfirmation: true,
+    argsShape: { meetingId: "string", occurrenceId: "string?" },
+  },
+  {
     id: "hubspot.get_record",
     providerKey: "hubspot",
     label: "HubSpot: get record",
@@ -760,6 +813,67 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     roleGroup: "finance_ops_plus",
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
+  },
+  {
+    id: "stripe.list_customers",
+    providerKey: "stripe",
+    label: "Stripe: list customers",
+    description: "List Stripe customers with optional cursor and email filter.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", startingAfter: "string?", email: "string?" },
+  },
+  {
+    id: "stripe.get_customer",
+    providerKey: "stripe",
+    label: "Stripe: get customer",
+    description: "Fetch a single Stripe customer by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { customerId: "string" },
+  },
+  {
+    id: "stripe.list_payment_intents",
+    providerKey: "stripe",
+    label: "Stripe: list payment intents",
+    description: "List Stripe payment intents with optional filters.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { limit: "number?", startingAfter: "string?", customer: "string?", status: "string?" },
+  },
+  {
+    id: "stripe.get_payment_intent",
+    providerKey: "stripe",
+    label: "Stripe: get payment intent",
+    description: "Fetch a single Stripe payment intent by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "finance_read_plus",
+    requiresConfirmation: false,
+    argsShape: { paymentIntentId: "string" },
+  },
+  {
+    id: "stripe.create_refund",
+    providerKey: "stripe",
+    label: "Stripe: create refund",
+    description: "Create a refund for a payment intent or charge.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: {
+      paymentIntentId: "string?",
+      chargeId: "string?",
+      amount: "number?",
+      reason: "string?",
+      metadata: "json?",
+    },
   },
   {
     id: "monday.list_boards",
@@ -839,10 +953,142 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     argsShape: { listId: "string", name: "string", desc: "string?", due: "string?" },
   },
   {
+    id: "trello.update_card",
+    providerKey: "trello",
+    label: "Trello: update card",
+    description: "Update a Trello card fields such as name, desc, due, or list.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { cardId: "string", name: "string?", desc: "string?", due: "string?", listId: "string?" },
+  },
+  {
+    id: "gmail.api_request",
+    providerKey: "gmail",
+    label: "Gmail: API request",
+    description: "Call any Gmail API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "google_drive.api_request",
+    providerKey: "google_drive",
+    label: "Drive: API request",
+    description: "Call any Google Drive API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "google_calendar.api_request",
+    providerKey: "google_calendar",
+    label: "Calendar: API request",
+    description: "Call any Google Calendar API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "slack.api_request",
+    providerKey: "slack",
+    label: "Slack: API request",
+    description: "Call any Slack Web API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "zoom.api_request",
+    providerKey: "zoom",
+    label: "Zoom: API request",
+    description: "Call any Zoom API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "comms_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "hubspot.api_request",
+    providerKey: "hubspot",
+    label: "HubSpot: API request",
+    description: "Call any HubSpot API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "sales_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "quickbooks.api_request",
+    providerKey: "quickbooks",
+    label: "QuickBooks: API request",
+    description: "Call any QuickBooks Accounting API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", realmId: "string?", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "stripe.api_request",
+    providerKey: "stripe",
+    label: "Stripe: API request",
+    description: "Call any Stripe API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "finance_ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "clickup.api_request",
+    providerKey: "clickup",
+    label: "ClickUp: API request",
+    description: "Call any ClickUp API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
+    id: "monday.api_request",
+    providerKey: "monday",
+    label: "monday.com: API request",
+    description: "Call monday.com GraphQL endpoint with arbitrary query/mutation (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { query: "string", variables: "json?", headers: "json?" },
+  },
+  {
+    id: "trello.api_request",
+    providerKey: "trello",
+    label: "Trello: API request",
+    description: "Call any Trello REST API endpoint (advanced).",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { method: "GET|POST|PUT|PATCH|DELETE", path: "string", query: "json?", body: "json?", headers: "json?" },
+  },
+  {
     id: "notion.pages.search",
     providerKey: "notion",
     label: "Notion: search pages",
-    description: "Search workspace pages by text query.",
+    description: "Search workspace pages by text query and cursor.",
     accessLevel: "read",
     riskTier: "low",
     roleGroup: "reader_plus",
@@ -853,34 +1099,217 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     id: "notion.pages.retrieve",
     providerKey: "notion",
     label: "Notion: retrieve page",
-    description: "Fetch a single page and selected properties.",
+    description: "Fetch a single page metadata/properties by id or URL.",
     accessLevel: "read",
     riskTier: "low",
     roleGroup: "reader_plus",
     requiresConfirmation: false,
-    argsShape: { pageId: "string" },
+    argsShape: { pageId: "string?", pageUrl: "string?" },
   },
   {
     id: "notion.pages.create",
     providerKey: "notion",
     label: "Notion: create page",
-    description: "Create a new page under an existing parent page.",
+    description: "Create a page under a page or database parent.",
     accessLevel: "write",
     riskTier: "medium",
     roleGroup: "ops_plus",
     requiresConfirmation: true,
-    argsShape: { parentPageId: "string", title: "string", content: "string?" },
+    argsShape: {
+      parentPageId: "string?",
+      parentDatabaseId: "string?",
+      title: "string",
+      titleProperty: "string?",
+      properties: "json?",
+      content: "string?",
+    },
   },
   {
     id: "notion.pages.update",
     providerKey: "notion",
     label: "Notion: update page",
-    description: "Update page title and append paragraph content.",
+    description: "Update page properties/title and optionally append paragraph content.",
     accessLevel: "write",
     riskTier: "medium",
     roleGroup: "ops_plus",
     requiresConfirmation: true,
-    argsShape: { pageId: "string", title: "string?", appendContent: "string?" },
+    argsShape: { pageId: "string?", pageUrl: "string?", title: "string?", titleProperty: "string?", properties: "json?", appendContent: "string?" },
+  },
+  {
+    id: "notion.pages.retrieve_property_item",
+    providerKey: "notion",
+    label: "Notion: retrieve page property item",
+    description: "Retrieve one page property item by property id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { pageId: "string?", pageUrl: "string?", propertyId: "string", startCursor: "string?", pageSize: "number?" },
+  },
+  {
+    id: "notion.pages.archive",
+    providerKey: "notion",
+    label: "Notion: archive page",
+    description: "Archive a page.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { pageId: "string?", pageUrl: "string?" },
+  },
+  {
+    id: "notion.pages.unarchive",
+    providerKey: "notion",
+    label: "Notion: unarchive page",
+    description: "Unarchive a page.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { pageId: "string?", pageUrl: "string?" },
+  },
+  {
+    id: "notion.blocks.retrieve",
+    providerKey: "notion",
+    label: "Notion: retrieve block",
+    description: "Retrieve a single block.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { blockId: "string?" },
+  },
+  {
+    id: "notion.blocks.list_children",
+    providerKey: "notion",
+    label: "Notion: list block children",
+    description: "List block children with cursor pagination.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { blockId: "string?", pageId: "string?", pageUrl: "string?", pageSize: "number?", startCursor: "string?" },
+  },
+  {
+    id: "notion.blocks.append_children",
+    providerKey: "notion",
+    label: "Notion: append block children",
+    description: "Append children blocks to a block or page root.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { blockId: "string?", pageId: "string?", pageUrl: "string?", children: "json[]" },
+  },
+  {
+    id: "notion.blocks.update",
+    providerKey: "notion",
+    label: "Notion: update block",
+    description: "Update a block payload.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { blockId: "string", block: "json" },
+  },
+  {
+    id: "notion.blocks.delete",
+    providerKey: "notion",
+    label: "Notion: delete block",
+    description: "Delete/archive a block.",
+    accessLevel: "write",
+    riskTier: "high",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { blockId: "string" },
+  },
+  {
+    id: "notion.databases.retrieve",
+    providerKey: "notion",
+    label: "Notion: retrieve database",
+    description: "Retrieve a database by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { databaseId: "string" },
+  },
+  {
+    id: "notion.databases.query",
+    providerKey: "notion",
+    label: "Notion: query database",
+    description: "Query a database with optional filters/sorts.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { databaseId: "string", filter: "json?", sorts: "json[]?", pageSize: "number?", startCursor: "string?" },
+  },
+  {
+    id: "notion.databases.update",
+    providerKey: "notion",
+    label: "Notion: update database",
+    description: "Update database title/description/properties.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { databaseId: "string", title: "string?", description: "string?", properties: "json?" },
+  },
+  {
+    id: "notion.data_sources.retrieve",
+    providerKey: "notion",
+    label: "Notion: retrieve data source",
+    description: "Retrieve a data source by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { dataSourceId: "string" },
+  },
+  {
+    id: "notion.data_sources.query",
+    providerKey: "notion",
+    label: "Notion: query data source",
+    description: "Query a Notion data source with cursor pagination.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { dataSourceId: "string", filter: "json?", sorts: "json[]?", pageSize: "number?", startCursor: "string?" },
+  },
+  {
+    id: "notion.comments.list",
+    providerKey: "notion",
+    label: "Notion: list comments",
+    description: "List comments for a block/page.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { blockId: "string?", pageId: "string?", pageUrl: "string?", startCursor: "string?", pageSize: "number?" },
+  },
+  {
+    id: "notion.comments.create",
+    providerKey: "notion",
+    label: "Notion: create comment",
+    description: "Create a new comment on page or discussion.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: { pageId: "string?", pageUrl: "string?", discussionId: "string?", text: "string" },
+  },
+  {
+    id: "notion.search",
+    providerKey: "notion",
+    label: "Notion: global search",
+    description: "Search pages or databases with cursor pagination.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { query: "string?", objectType: "page|database?", sortTimestamp: "last_edited_time?", sortDirection: "ascending|descending?", pageSize: "number?", startCursor: "string?" },
   },
   {
     id: "clickup.list_workspaces",
@@ -923,6 +1352,35 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
       dueDate: "number?",
     },
   },
+  {
+    id: "clickup.get_task",
+    providerKey: "clickup",
+    label: "ClickUp: get task",
+    description: "Get a ClickUp task by id.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { taskId: "string" },
+  },
+  {
+    id: "clickup.update_task",
+    providerKey: "clickup",
+    label: "ClickUp: update task",
+    description: "Update mutable fields on a ClickUp task.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: {
+      taskId: "string",
+      name: "string?",
+      description: "string?",
+      status: "string?",
+      priority: "number?",
+      dueDate: "number?",
+    },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -937,7 +1395,7 @@ function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
 function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefined {
   if (tool.roleGroup) return tool.roleGroup;
   if (tool.accessLevel === "read") return "reader_plus";
-  if (tool.providerKey === "quickbooks") return "finance_ops_plus";
+  if (tool.providerKey === "quickbooks" || tool.providerKey === "stripe") return "finance_ops_plus";
   if (tool.providerKey === "hubspot") return "sales_ops_plus";
   if (
     tool.providerKey === "slack" ||
@@ -1141,6 +1599,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (providerKey === "slack") return "slack";
   if (providerKey === "zoom") return "zoom";
   if (providerKey === "hubspot") return "hubspot";
+  if (providerKey === "stripe") return "stripe";
   if (providerKey === "notion") return "notion";
   if (providerKey === "clickup") return "clickup";
   if (providerKey === "monday") return "monday";
@@ -1237,6 +1696,19 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
+    };
+  }
+
+  if (provider === "stripe") {
+    return {
+      provider,
+      authUrl: Deno.env.get("STRIPE_OAUTH_AUTH_URL") ??
+        "https://connect.stripe.com/oauth/authorize",
+      tokenUrl: Deno.env.get("STRIPE_OAUTH_TOKEN_URL") ??
+        "https://connect.stripe.com/oauth/token",
+      clientId: envRequired("STRIPE_CLIENT_ID"),
+      clientSecret: envRequired("STRIPE_CLIENT_SECRET"),
+      scopes: ["read_write"],
     };
   }
 
@@ -1507,6 +1979,7 @@ async function exchangeAuthCodeForToken(
   const expiresIn = typeof json.expires_in === "number" ? json.expires_in : 3600;
   const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
   const realmId = typeof json.realmId === "string" ? json.realmId : undefined;
+  const stripeAccountId = typeof json.stripe_user_id === "string" ? json.stripe_user_id : undefined;
   return {
     auth_type: "oauth2",
     provider: providerKey,
@@ -1516,6 +1989,7 @@ async function exchangeAuthCodeForToken(
     scope: typeof json.scope === "string" ? json.scope : oauth.scopes.join(" "),
     expires_at: expiresAt,
     realm_id: realmId,
+    stripe_account_id: stripeAccountId,
     created_at: nowIso(),
     updated_at: nowIso(),
   };
@@ -1598,6 +2072,9 @@ async function refreshAccessTokenIfNeeded(
   if (typeof json.realmId === "string") {
     next.realm_id = json.realmId;
   }
+  if (typeof json.stripe_user_id === "string") {
+    next.stripe_account_id = json.stripe_user_id;
+  }
 
   if (GOOGLE_PROVIDER_KEYS.includes(params.providerKey)) {
     await upsertLinkedGoogleCredential(supabase, params.companyId, next, params.masterKey);
@@ -1666,6 +2143,101 @@ async function providerRequest(
     throw new Error(`provider request failed (${res.status}) [${host}] ${detail}${scopeHint}`);
   }
   return json;
+}
+
+function notionHeaders(extra?: Record<string, string>): Record<string, string> {
+  return { "Notion-Version": NOTION_API_VERSION, ...(extra ?? {}) };
+}
+
+function toRequestHeaders(input: unknown): Record<string, string> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (k && typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+function buildUrlWithQuery(baseUrl: string, path: string, query: unknown): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = new URL(`${baseUrl}${normalizedPath}`);
+  if (query && typeof query === "object" && !Array.isArray(query)) {
+    for (const [k, v] of Object.entries(query as Record<string, unknown>)) {
+      if (!k || v === undefined || v === null) continue;
+      if (Array.isArray(v)) {
+        for (const item of v) {
+          if (item === undefined || item === null) continue;
+          url.searchParams.append(k, String(item));
+        }
+      } else {
+        url.searchParams.set(k, String(v));
+      }
+    }
+  }
+  return url.toString();
+}
+
+function toNotionId(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const urlMatch = raw.match(/[0-9a-fA-F]{32}/);
+  if (urlMatch) {
+    const compact = urlMatch[0].toLowerCase();
+    return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+  }
+  if (/^[0-9a-fA-F-]{32,36}$/.test(raw)) {
+    const compact = raw.replace(/-/g, "").toLowerCase();
+    if (compact.length === 32) {
+      return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+    }
+  }
+  return raw;
+}
+
+function firstRichTextPlain(value: unknown): string {
+  const arr = Array.isArray(value) ? value : [];
+  for (const item of arr) {
+    const obj = asObject(item);
+    if (typeof obj.plain_text === "string" && obj.plain_text.trim()) return obj.plain_text.trim();
+    const text = asObject(obj.text);
+    if (typeof text.content === "string" && text.content.trim()) return text.content.trim();
+  }
+  return "";
+}
+
+function notionPageTitle(pageLike: unknown): string {
+  const obj = asObject(pageLike);
+  const props = asObject(obj.properties);
+  for (const value of Object.values(props)) {
+    const prop = asObject(value);
+    if (prop.type === "title") {
+      const title = firstRichTextPlain(prop.title);
+      if (title) return title;
+    }
+  }
+  return "";
+}
+
+function notionSearchSummary(item: unknown): Record<string, unknown> {
+  const obj = asObject(item);
+  const id = typeof obj.id === "string" ? obj.id : "";
+  return {
+    id,
+    object: typeof obj.object === "string" ? obj.object : null,
+    url: typeof obj.url === "string" ? obj.url : null,
+    title: notionPageTitle(obj) || null,
+    lastEditedTime: typeof obj.last_edited_time === "string" ? obj.last_edited_time : null,
+    archived: obj.archived === true,
+  };
+}
+
+async function notionRequest(
+  method: "GET" | "POST" | "PATCH",
+  path: string,
+  accessToken: string,
+  body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return await providerRequest(method, `https://api.notion.com${path}`, accessToken, body, notionHeaders());
 }
 
 function toConnectorStatusOnFailure(error: unknown): {
@@ -1912,7 +2484,7 @@ async function runSlackConnectionTest(accessToken: string): Promise<Record<strin
 async function runDriveConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
   return await providerRequest(
     "GET",
-    "https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id,name)",
+    `${GOOGLE_DRIVE_API_BASE}/files?pageSize=1&fields=files(id,name)`,
     accessToken,
   );
 }
@@ -1920,7 +2492,7 @@ async function runDriveConnectionTest(accessToken: string): Promise<Record<strin
 async function runGmailConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
   return await providerRequest(
     "GET",
-    "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+    `${GOOGLE_GMAIL_API_BASE}/users/me/profile`,
     accessToken,
   );
 }
@@ -1928,13 +2500,13 @@ async function runGmailConnectionTest(accessToken: string): Promise<Record<strin
 async function runCalendarConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
   return await providerRequest(
     "GET",
-    "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+    `${GOOGLE_CALENDAR_API_BASE}/users/me/calendarList?maxResults=1`,
     accessToken,
   );
 }
 
 async function runHubspotConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
-  return await providerRequest("GET", "https://api.hubapi.com/integrations/v1/me", accessToken);
+  return await providerRequest("GET", `${HUBSPOT_API_BASE}/integrations/v1/me`, accessToken);
 }
 
 async function mondayGraphqlRequest(
@@ -1944,7 +2516,7 @@ async function mondayGraphqlRequest(
 ): Promise<Record<string, unknown>> {
   const out = await providerRequest(
     "POST",
-    "https://api.monday.com/v2",
+    MONDAY_API_BASE,
     accessToken,
     { query, variables },
   );
@@ -1963,7 +2535,7 @@ async function runMondayConnectionTest(accessToken: string): Promise<Record<stri
 }
 
 async function runZoomConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
-  return await providerRequest("GET", "https://api.zoom.us/v2/users/me", accessToken);
+  return await providerRequest("GET", `${ZOOM_API_BASE}/users/me`, accessToken);
 }
 
 async function runQuickbooksConnectionTest(
@@ -1971,7 +2543,7 @@ async function runQuickbooksConnectionTest(
   realmId: string,
 ): Promise<Record<string, unknown>> {
   const url =
-    `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=65`;
+    `https://quickbooks.api.intuit.com/v3/company/${realmId}/companyinfo/${realmId}?minorversion=${encodeURIComponent(QUICKBOOKS_MINOR_VERSION)}`;
   return await providerRequest(
     "GET",
     url,
@@ -1982,21 +2554,19 @@ async function runQuickbooksConnectionTest(
 }
 
 async function runNotionConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
-  return await providerRequest(
-    "GET",
-    "https://api.notion.com/v1/users/me",
-    accessToken,
-    undefined,
-    { "Notion-Version": "2022-06-28" },
-  );
+  return await notionRequest("GET", "/v1/users/me", accessToken);
 }
 
 async function runTrelloConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
   return await providerRequest(
     "GET",
-    "https://api.trello.com/1/members/me?fields=id,fullName,username",
+    `${TRELLO_API_BASE}/members/me?fields=id,fullName,username`,
     accessToken,
   );
+}
+
+async function runStripeConnectionTest(accessToken: string): Promise<Record<string, unknown>> {
+  return await stripeRequest("GET", "/v1/account", accessToken);
 }
 
 async function runProviderConnectionTest(
@@ -2014,6 +2584,7 @@ async function runProviderConnectionTest(
   if (providerKey === "monday") return await runMondayConnectionTest(accessToken);
   if (providerKey === "notion") return await runNotionConnectionTest(accessToken);
   if (providerKey === "trello") return await runTrelloConnectionTest(accessToken);
+  if (providerKey === "stripe") return await runStripeConnectionTest(accessToken);
   if (providerKey === "clickup") {
     return await providerRequest("GET", "https://api.clickup.com/api/v2/user", accessToken);
   }
@@ -2446,11 +3017,60 @@ async function quickbooksQuery(
   const q = encodeURIComponent(sql);
   return await providerRequest(
     "GET",
-    `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${q}&minorversion=65`,
+    `https://quickbooks.api.intuit.com/v3/company/${realmId}/query?query=${q}&minorversion=${encodeURIComponent(QUICKBOOKS_MINOR_VERSION)}`,
     accessToken,
     undefined,
     { Accept: "application/json" },
   );
+}
+
+async function stripeRequest(
+  method: "GET" | "POST",
+  path: string,
+  accessToken: string,
+  params?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const url = new URL(`${STRIPE_API_BASE}${path.startsWith("/") ? path : `/${path}`}`);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    "Stripe-Version": STRIPE_API_VERSION,
+  };
+  let body: string | undefined;
+
+  if (method === "GET" && params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v === undefined || v === null || v === "") continue;
+      url.searchParams.set(k, String(v));
+    }
+  } else if (method === "POST") {
+    const form = new URLSearchParams();
+    for (const [k, v] of Object.entries(params ?? {})) {
+      if (v === undefined || v === null || v === "") continue;
+      if (k === "metadata" && v && typeof v === "object" && !Array.isArray(v)) {
+        for (const [mk, mv] of Object.entries(v as Record<string, unknown>)) {
+          if (mv === undefined || mv === null) continue;
+          form.set(`metadata[${mk}]`, String(mv));
+        }
+        continue;
+      }
+      form.set(k, String(v));
+    }
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+    body = form.toString();
+  }
+
+  const res = await fetchWithRetry(url.toString(), { method, headers, body }, 3);
+  const json = await parseJsonSafe(res);
+  if (!res.ok) {
+    const err = asObject(json.error);
+    const message = typeof err.message === "string"
+      ? err.message
+      : typeof json.error === "string"
+        ? json.error
+        : `Stripe request failed (${res.status})`;
+    throw new Error(message);
+  }
+  return json;
 }
 
 async function pullMondaySyncData(
@@ -2727,6 +3347,83 @@ async function pullQuickbooksSyncData(
   };
 }
 
+async function pullStripeSyncData(
+  accessToken: string,
+  cursorState: Record<string, unknown>,
+): Promise<SyncPullResult> {
+  const records: SyncEntityRecord[] = [];
+  const documents: SyncDocumentRecord[] = [];
+  const events: ConnectorEventInput[] = [];
+
+  const customerParams: Record<string, unknown> = { limit: 100 };
+  if (typeof cursorState.customersStartingAfter === "string" && cursorState.customersStartingAfter) {
+    customerParams.starting_after = cursorState.customersStartingAfter;
+  }
+  const customersResp = await stripeRequest("GET", "/v1/customers", accessToken, customerParams);
+  const customerRows = Array.isArray(customersResp.data) ? customersResp.data : [];
+  let lastCustomerId = "";
+  for (const row of customerRows) {
+    const customer = asObject(row);
+    const id = String(customer.id ?? "");
+    if (!id) continue;
+    lastCustomerId = id;
+    records.push({
+      entityType: "Account",
+      externalId: id,
+      payload: customer,
+    });
+    documents.push({
+      externalId: `customer:${id}`,
+      title: String(customer.name ?? customer.email ?? id),
+      content: JSON.stringify(customer),
+      metadata: { objectType: "customer" },
+    });
+  }
+
+  const intentParams: Record<string, unknown> = { limit: 100 };
+  if (typeof cursorState.paymentIntentsStartingAfter === "string" && cursorState.paymentIntentsStartingAfter) {
+    intentParams.starting_after = cursorState.paymentIntentsStartingAfter;
+  }
+  const intentsResp = await stripeRequest("GET", "/v1/payment_intents", accessToken, intentParams);
+  const intentRows = Array.isArray(intentsResp.data) ? intentsResp.data : [];
+  let lastIntentId = "";
+  for (const row of intentRows) {
+    const intent = asObject(row);
+    const id = String(intent.id ?? "");
+    if (!id) continue;
+    lastIntentId = id;
+    records.push({
+      entityType: "PaymentIntent",
+      externalId: id,
+      payload: intent,
+    });
+    documents.push({
+      externalId: `payment_intent:${id}`,
+      title: `PaymentIntent ${id}`,
+      content: JSON.stringify(intent),
+      metadata: { objectType: "payment_intent", status: intent.status ?? null },
+    });
+    events.push({
+      providerKey: "stripe",
+      eventType: "payment_intent.synced",
+      externalEventId: `payment_intent:${id}:${intent.created ?? ""}`,
+      payload: { id, status: intent.status ?? null, amount: intent.amount ?? null },
+    });
+  }
+
+  return {
+    records,
+    documents,
+    nextCursor: {
+      customersStartingAfter: customersResp.has_more === true ? lastCustomerId : null,
+      paymentIntentsStartingAfter: intentsResp.has_more === true ? lastIntentId : null,
+      syncedAt: nowIso(),
+    },
+    notes: [`Stripe rows synced: ${records.length}`],
+    events,
+  };
+}
+
 async function pullProviderSyncData(
   providerKey: ProviderKey,
   credential: ProviderCredentialPayload,
@@ -2802,6 +3499,9 @@ async function pullProviderSyncData(
   }
   if (providerKey === "trello") {
     return await pullTrelloSyncData(token, cursorState);
+  }
+  if (providerKey === "stripe") {
+    return await pullStripeSyncData(token, cursorState);
   }
   if (providerKey === "notion") {
     return { records: [], documents: [], events: [], nextCursor: cursorState, notes: [] };
@@ -3532,6 +4232,39 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "zoom.update_meeting") {
+    const meetingId = String(args.meetingId ?? "").trim();
+    const payload: Record<string, unknown> = {};
+    if (typeof args.topic === "string" && args.topic.trim()) payload.topic = args.topic.trim();
+    if (typeof args.startTime === "string" && args.startTime.trim()) payload.start_time = args.startTime;
+    if (typeof args.durationMinutes === "number") payload.duration = clampInt(args.durationMinutes, 30, 1, 600);
+    if (typeof args.timezone === "string" && args.timezone.trim()) payload.timezone = args.timezone;
+    if (typeof args.agenda === "string") payload.agenda = args.agenda;
+    await providerRequest(
+      "PATCH",
+      `https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`,
+      accessToken,
+      payload,
+    );
+    return {
+      result: { updated: true, meetingId, fields: Object.keys(payload) },
+      citations: [toolCitation("zoom", `meeting:${meetingId}`)],
+    };
+  }
+
+  if (toolId === "zoom.delete_meeting") {
+    const meetingId = String(args.meetingId ?? "").trim();
+    const occurrenceId = typeof args.occurrenceId === "string" ? args.occurrenceId.trim() : "";
+    const endpoint = occurrenceId
+      ? `https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}?occurrence_id=${encodeURIComponent(occurrenceId)}`
+      : `https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`;
+    await providerRequest("DELETE", endpoint, accessToken);
+    return {
+      result: { deleted: true, meetingId, occurrenceId: occurrenceId || null },
+      citations: [toolCitation("zoom", `meeting:${meetingId}`)],
+    };
+  }
+
   if (toolId === "hubspot.search_records") {
     const objectType = String(args.objectType ?? "contacts");
     const query = typeof args.query === "string" ? args.query : "";
@@ -3821,8 +4554,290 @@ async function providerToolExecute(
     };
   }
 
-  const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
-  if (!realmId) throw new Error("QuickBooks realm_id missing");
+  if (toolId === "trello.update_card") {
+    const cardId = String(args.cardId ?? "");
+    const body: Record<string, unknown> = {};
+    if (typeof args.name === "string" && args.name.trim()) body.name = args.name.trim();
+    if (typeof args.desc === "string") body.desc = args.desc;
+    if (typeof args.due === "string" && args.due.trim()) body.due = args.due;
+    if (typeof args.listId === "string" && args.listId.trim()) body.idList = args.listId.trim();
+    const out = await providerRequest(
+      "PUT",
+      `https://api.trello.com/1/cards/${encodeURIComponent(cardId)}`,
+      accessToken,
+      body,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("trello", `card:${cardId}`, String(out.name ?? body.name ?? ""))],
+    };
+  }
+
+  if (toolId === "stripe.list_customers") {
+    const out = await stripeRequest("GET", "/v1/customers", accessToken, {
+      limit: Math.max(1, Math.min(100, Number(args.limit ?? 25))),
+      starting_after: typeof args.startingAfter === "string" ? args.startingAfter : undefined,
+      email: typeof args.email === "string" ? args.email : undefined,
+    });
+    const customers = Array.isArray(out.data) ? out.data : [];
+    return {
+      result: out,
+      citations: customers.slice(0, 5).map((item) => {
+        const customer = asObject(item);
+        return toolCitation("stripe", `customer:${customer.id ?? crypto.randomUUID()}`, String(customer.email ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "stripe.get_customer") {
+    const customerId = String(args.customerId ?? "").trim();
+    const out = await stripeRequest(
+      "GET",
+      `/v1/customers/${encodeURIComponent(customerId)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("stripe", `customer:${customerId}`, String(out.email ?? out.name ?? ""))],
+    };
+  }
+
+  if (toolId === "stripe.list_payment_intents") {
+    const out = await stripeRequest("GET", "/v1/payment_intents", accessToken, {
+      limit: Math.max(1, Math.min(100, Number(args.limit ?? 25))),
+      starting_after: typeof args.startingAfter === "string" ? args.startingAfter : undefined,
+      customer: typeof args.customer === "string" ? args.customer : undefined,
+      status: typeof args.status === "string" ? args.status : undefined,
+    });
+    const intents = Array.isArray(out.data) ? out.data : [];
+    return {
+      result: out,
+      citations: intents.slice(0, 5).map((item) => {
+        const intent = asObject(item);
+        return toolCitation("stripe", `payment_intent:${intent.id ?? crypto.randomUUID()}`, String(intent.status ?? ""));
+      }),
+    };
+  }
+
+  if (toolId === "stripe.get_payment_intent") {
+    const paymentIntentId = String(args.paymentIntentId ?? "");
+    const out = await stripeRequest(
+      "GET",
+      `/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("stripe", `payment_intent:${paymentIntentId}`)],
+    };
+  }
+
+  if (toolId === "stripe.create_refund") {
+    const paymentIntentId = typeof args.paymentIntentId === "string" ? args.paymentIntentId.trim() : "";
+    const chargeId = typeof args.chargeId === "string" ? args.chargeId.trim() : "";
+    const out = await stripeRequest("POST", "/v1/refunds", accessToken, {
+      payment_intent: paymentIntentId || undefined,
+      charge: chargeId || undefined,
+      amount: typeof args.amount === "number" ? Math.trunc(args.amount) : undefined,
+      reason: typeof args.reason === "string" ? args.reason : undefined,
+      metadata: args.metadata && typeof args.metadata === "object" && !Array.isArray(args.metadata)
+        ? args.metadata as Record<string, unknown>
+        : undefined,
+    });
+    const id = String(out.id ?? crypto.randomUUID());
+    return {
+      result: out,
+      citations: [toolCitation("stripe", `refund:${id}`)],
+    };
+  }
+
+  const genericMethod = String(args.method ?? "GET").toUpperCase();
+  const genericPath = String(args.path ?? "").trim();
+  const genericQuery = args.query;
+  const genericBody = args.body && typeof args.body === "object" && !Array.isArray(args.body)
+    ? args.body as Record<string, unknown>
+    : undefined;
+  const genericHeaders = toRequestHeaders(args.headers);
+
+  if (toolId === "gmail.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(GOOGLE_GMAIL_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("gmail", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "google_drive.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(GOOGLE_DRIVE_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_drive", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "google_calendar.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(GOOGLE_CALENDAR_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("google_calendar", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "slack.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(SLACK_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("slack", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "zoom.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(ZOOM_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("zoom", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "hubspot.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(HUBSPOT_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("hubspot", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "stripe.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(STRIPE_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      { "Stripe-Version": STRIPE_API_VERSION, ...genericHeaders },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("stripe", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "clickup.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(CLICKUP_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("clickup", genericPath || "/")],
+    };
+  }
+
+  if (toolId === "monday.api_request") {
+    const query = String(args.query ?? "");
+    const variables = args.variables && typeof args.variables === "object" && !Array.isArray(args.variables)
+      ? args.variables as Record<string, unknown>
+      : undefined;
+    const out = await providerRequest(
+      "POST",
+      MONDAY_API_BASE,
+      accessToken,
+      { query, variables },
+      genericHeaders,
+    );
+    const errors = Array.isArray(out.errors) ? out.errors : [];
+    if (errors.length > 0) {
+      const first = asObject(errors[0]);
+      throw new Error(String(first.message ?? "monday api_request failed"));
+    }
+    return {
+      result: asObject(out.data),
+      citations: [toolCitation("monday", "graphql")],
+    };
+  }
+
+  if (toolId === "trello.api_request") {
+    const out = await providerRequest(
+      genericMethod,
+      buildUrlWithQuery(TRELLO_API_BASE, genericPath, genericQuery),
+      accessToken,
+      genericBody,
+      genericHeaders,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("trello", genericPath || "/")],
+    };
+  }
+
+  const isQuickbooksTool = toolId.startsWith("quickbooks.");
+  const realmId = isQuickbooksTool && typeof credential.realm_id === "string" ? credential.realm_id : "";
+  if (isQuickbooksTool && !realmId) throw new Error("QuickBooks realm_id missing");
+
+  if (toolId === "quickbooks.api_request") {
+    const explicitRealm = typeof args.realmId === "string" && args.realmId.trim()
+      ? args.realmId.trim()
+      : realmId;
+    if (!explicitRealm) throw new Error("quickbooks.api_request requires realmId");
+    const qbPath = String(args.path ?? "").trim().replace(/^\/+/, "");
+    const minor = typeof args.query === "object" && args.query !== null && !Array.isArray(args.query) &&
+        (args.query as Record<string, unknown>).minorversion
+      ? String((args.query as Record<string, unknown>).minorversion)
+      : QUICKBOOKS_MINOR_VERSION;
+    const qbQuery = typeof args.query === "object" && args.query !== null && !Array.isArray(args.query)
+      ? { ...(args.query as Record<string, unknown>) }
+      : {};
+    if (!("minorversion" in qbQuery)) qbQuery.minorversion = minor;
+    const out = await providerRequest(
+      String(args.method ?? "GET").toUpperCase(),
+      buildUrlWithQuery(`https://quickbooks.api.intuit.com/v3/company/${encodeURIComponent(explicitRealm)}`, `/${qbPath}`, qbQuery),
+      accessToken,
+      args.body && typeof args.body === "object" && !Array.isArray(args.body) ? args.body as Record<string, unknown> : undefined,
+      { Accept: "application/json", ...toRequestHeaders(args.headers) },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("quickbooks", qbPath || "/")],
+    };
+  }
 
   if (toolId === "quickbooks.list_customers") {
     const page = Math.max(1, Number(args.page ?? 1));
@@ -3978,58 +4993,110 @@ async function providerToolExecute(
 
   if (toolId === "notion.pages.search") {
     const query = typeof args.query === "string" ? args.query.trim() : "";
-    const pageSize = Math.max(1, Math.min(100, Number(args.pageSize ?? 20)));
-    const startCursor = typeof args.startCursor === "string" ? args.startCursor : "";
+    const pageSize = clampInt(args.pageSize, 20, 1, 100);
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor.trim() : "";
     const payload: Record<string, unknown> = {
       filter: { value: "page", property: "object" },
       page_size: pageSize,
     };
     if (query) payload.query = query;
     if (startCursor) payload.start_cursor = startCursor;
-    const out = await providerRequest(
-      "POST",
-      "https://api.notion.com/v1/search",
-      accessToken,
-      payload,
-      { "Notion-Version": "2022-06-28" },
-    );
+    const out = await notionRequest("POST", "/v1/search", accessToken, payload);
     const results = Array.isArray(out.results) ? out.results : [];
+    const summaries = results.map(notionSearchSummary);
     return {
-      result: { results, hasMore: out.has_more ?? false, nextCursor: out.next_cursor ?? null },
-      citations: results.slice(0, 5).map((item) => {
-        const page = asObject(item);
-        return toolCitation("notion", String(page.id ?? crypto.randomUUID()));
-      }),
+      result: {
+        results,
+        summaries,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: summaries.slice(0, 5).map((item) => toolCitation("notion", String(item.id ?? crypto.randomUUID()), String(item.title ?? ""))),
+    };
+  }
+
+  if (toolId === "notion.search") {
+    const query = typeof args.query === "string" ? args.query.trim() : "";
+    const objectType = typeof args.objectType === "string" ? args.objectType.trim() : "";
+    const pageSize = clampInt(args.pageSize, 20, 1, 100);
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor.trim() : "";
+    const sortTimestamp = typeof args.sortTimestamp === "string" ? args.sortTimestamp : "";
+    const sortDirection = typeof args.sortDirection === "string" ? args.sortDirection : "";
+    const payload: Record<string, unknown> = { page_size: pageSize };
+    if (query) payload.query = query;
+    if (objectType === "page" || objectType === "database") {
+      payload.filter = { value: objectType, property: "object" };
+    }
+    if (sortTimestamp && sortDirection) {
+      payload.sort = { timestamp: sortTimestamp, direction: sortDirection };
+    }
+    if (startCursor) payload.start_cursor = startCursor;
+    const out = await notionRequest("POST", "/v1/search", accessToken, payload);
+    const results = Array.isArray(out.results) ? out.results : [];
+    const summaries = results.map(notionSearchSummary);
+    return {
+      result: {
+        results,
+        summaries,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: summaries.slice(0, 5).map((item) => toolCitation("notion", String(item.id ?? crypto.randomUUID()), String(item.title ?? ""))),
     };
   }
 
   if (toolId === "notion.pages.retrieve") {
-    const pageId = String(args.pageId ?? "").trim();
-    const out = await providerRequest(
+    const pageId = toNotionId(args.pageId ?? args.pageUrl ?? "");
+    const out = await notionRequest("GET", `/v1/pages/${encodeURIComponent(pageId)}`, accessToken);
+    return {
+      result: { ...out, summary: notionSearchSummary(out) },
+      citations: [toolCitation("notion", pageId, notionPageTitle(out))],
+    };
+  }
+
+  if (toolId === "notion.pages.retrieve_property_item") {
+    const pageId = toNotionId(args.pageId ?? args.pageUrl ?? "");
+    const propertyId = String(args.propertyId ?? "").trim();
+    const q = new URLSearchParams();
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor.trim() : "";
+    if (startCursor) q.set("start_cursor", startCursor);
+    q.set("page_size", String(clampInt(args.pageSize, 20, 1, 100)));
+    const qs = q.toString();
+    const out = await notionRequest(
       "GET",
-      `https://api.notion.com/v1/pages/${encodeURIComponent(pageId)}`,
+      `/v1/pages/${encodeURIComponent(pageId)}/properties/${encodeURIComponent(propertyId)}${qs ? `?${qs}` : ""}`,
       accessToken,
-      undefined,
-      { "Notion-Version": "2022-06-28" },
     );
     return {
-      result: out,
-      citations: [toolCitation("notion", pageId)],
+      result: {
+        ...out,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: [toolCitation("notion", `${pageId}:property:${propertyId}`)],
     };
   }
 
   if (toolId === "notion.pages.create") {
-    const parentPageId = String(args.parentPageId ?? "").trim();
+    const parentPageId = toNotionId(args.parentPageId ?? "");
+    const parentDatabaseId = toNotionId(args.parentDatabaseId ?? "");
     const title = String(args.title ?? "").trim();
-    const content = typeof args.content === "string" ? args.content.trim() : "";
+    const titleProperty = typeof args.titleProperty === "string" && args.titleProperty.trim()
+      ? args.titleProperty.trim()
+      : "title";
+    const properties = args.properties && typeof args.properties === "object" && !Array.isArray(args.properties)
+      ? { ...(args.properties as Record<string, unknown>) }
+      : {};
+    if (!properties[titleProperty]) {
+      properties[titleProperty] = {
+        title: [{ type: "text", text: { content: title } }],
+      };
+    }
     const payload: Record<string, unknown> = {
-      parent: { page_id: parentPageId },
-      properties: {
-        title: {
-          title: [{ type: "text", text: { content: title } }],
-        },
-      },
+      parent: parentDatabaseId ? { database_id: parentDatabaseId } : { page_id: parentPageId },
+      properties,
     };
+    const content = typeof args.content === "string" ? args.content.trim() : "";
     if (content) {
       payload.children = [{
         object: "block",
@@ -4037,13 +5104,7 @@ async function providerToolExecute(
         paragraph: { rich_text: [{ type: "text", text: { content } }] },
       }];
     }
-    const out = await providerRequest(
-      "POST",
-      "https://api.notion.com/v1/pages",
-      accessToken,
-      payload,
-      { "Notion-Version": "2022-06-28" },
-    );
+    const out = await notionRequest("POST", "/v1/pages", accessToken, payload);
     return {
       result: out,
       citations: [toolCitation("notion", String(out.id ?? crypto.randomUUID()), title)],
@@ -4051,29 +5112,34 @@ async function providerToolExecute(
   }
 
   if (toolId === "notion.pages.update") {
-    const pageId = String(args.pageId ?? "").trim();
+    const pageId = toNotionId(args.pageId ?? args.pageUrl ?? "");
     const title = typeof args.title === "string" ? args.title.trim() : "";
+    const titleProperty = typeof args.titleProperty === "string" && args.titleProperty.trim()
+      ? args.titleProperty.trim()
+      : "title";
     const appendContent = typeof args.appendContent === "string" ? args.appendContent.trim() : "";
-    let updatedPage: Record<string, unknown> = {};
+    const properties = args.properties && typeof args.properties === "object" && !Array.isArray(args.properties)
+      ? { ...(args.properties as Record<string, unknown>) }
+      : {};
     if (title) {
-      updatedPage = await providerRequest(
+      properties[titleProperty] = {
+        title: [{ type: "text", text: { content: title } }],
+      };
+    }
+    let updatedPage: Record<string, unknown> = {};
+    if (Object.keys(properties).length > 0) {
+      updatedPage = await notionRequest(
         "PATCH",
-        `https://api.notion.com/v1/pages/${encodeURIComponent(pageId)}`,
+        `/v1/pages/${encodeURIComponent(pageId)}`,
         accessToken,
-        {
-          properties: {
-            title: {
-              title: [{ type: "text", text: { content: title } }],
-            },
-          },
-        },
-        { "Notion-Version": "2022-06-28" },
+        { properties },
       );
     }
+    let appendResult: Record<string, unknown> | null = null;
     if (appendContent) {
-      await providerRequest(
+      appendResult = await notionRequest(
         "PATCH",
-        `https://api.notion.com/v1/blocks/${encodeURIComponent(pageId)}/children`,
+        `/v1/blocks/${encodeURIComponent(pageId)}/children`,
         accessToken,
         {
           children: [{
@@ -4082,12 +5148,232 @@ async function providerToolExecute(
             paragraph: { rich_text: [{ type: "text", text: { content: appendContent } }] },
           }],
         },
-        { "Notion-Version": "2022-06-28" },
       );
     }
     return {
-      result: { pageId, updatedPage, appendedContent: Boolean(appendContent) },
+      result: { pageId, updatedPage, appendResult, appendedContent: Boolean(appendContent) },
       citations: [toolCitation("notion", pageId, title || appendContent.slice(0, 120))],
+    };
+  }
+
+  if (toolId === "notion.pages.archive" || toolId === "notion.pages.unarchive") {
+    const pageId = toNotionId(args.pageId ?? args.pageUrl ?? "");
+    const archived = toolId === "notion.pages.archive";
+    const out = await notionRequest(
+      "PATCH",
+      `/v1/pages/${encodeURIComponent(pageId)}`,
+      accessToken,
+      { archived },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("notion", pageId, archived ? "archived" : "unarchived")],
+    };
+  }
+
+  if (toolId === "notion.blocks.retrieve") {
+    const blockId = toNotionId(args.blockId ?? args.pageId ?? args.pageUrl ?? "");
+    const out = await notionRequest("GET", `/v1/blocks/${encodeURIComponent(blockId)}`, accessToken);
+    return {
+      result: out,
+      citations: [toolCitation("notion", `block:${blockId}`)],
+    };
+  }
+
+  if (toolId === "notion.blocks.list_children") {
+    const blockId = toNotionId(args.blockId ?? args.pageId ?? args.pageUrl ?? "");
+    const q = new URLSearchParams();
+    q.set("page_size", String(clampInt(args.pageSize, 20, 1, 100)));
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor.trim() : "";
+    if (startCursor) q.set("start_cursor", startCursor);
+    const out = await notionRequest(
+      "GET",
+      `/v1/blocks/${encodeURIComponent(blockId)}/children?${q.toString()}`,
+      accessToken,
+    );
+    const results = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: {
+        results,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: results.slice(0, 5).map((item) => {
+        const block = asObject(item);
+        return toolCitation("notion", `block:${String(block.id ?? crypto.randomUUID())}`);
+      }),
+    };
+  }
+
+  if (toolId === "notion.blocks.append_children") {
+    const blockId = toNotionId(args.blockId ?? args.pageId ?? args.pageUrl ?? "");
+    const children = Array.isArray(args.children) ? args.children as unknown[] : [];
+    const out = await notionRequest(
+      "PATCH",
+      `/v1/blocks/${encodeURIComponent(blockId)}/children`,
+      accessToken,
+      { children: children as Record<string, unknown>[] },
+    );
+    const appended = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: out,
+      citations: appended.slice(0, 5).map((item) => {
+        const block = asObject(item);
+        return toolCitation("notion", `block:${String(block.id ?? crypto.randomUUID())}`);
+      }),
+    };
+  }
+
+  if (toolId === "notion.blocks.update") {
+    const blockId = toNotionId(args.blockId ?? "");
+    const blockPatch = args.block && typeof args.block === "object" && !Array.isArray(args.block)
+      ? args.block as Record<string, unknown>
+      : {};
+    const out = await notionRequest(
+      "PATCH",
+      `/v1/blocks/${encodeURIComponent(blockId)}`,
+      accessToken,
+      blockPatch,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("notion", `block:${blockId}`)],
+    };
+  }
+
+  if (toolId === "notion.blocks.delete") {
+    const blockId = toNotionId(args.blockId ?? "");
+    const out = await notionRequest(
+      "PATCH",
+      `/v1/blocks/${encodeURIComponent(blockId)}`,
+      accessToken,
+      { archived: true },
+    );
+    return {
+      result: out,
+      citations: [toolCitation("notion", `block:${blockId}`, "deleted")],
+    };
+  }
+
+  if (toolId === "notion.databases.retrieve") {
+    const databaseId = toNotionId(args.databaseId ?? "");
+    const out = await notionRequest("GET", `/v1/databases/${encodeURIComponent(databaseId)}`, accessToken);
+    return {
+      result: out,
+      citations: [toolCitation("notion", `database:${databaseId}`, String(out.title ?? ""))],
+    };
+  }
+
+  if (toolId === "notion.databases.query") {
+    const databaseId = toNotionId(args.databaseId ?? "");
+    const payload: Record<string, unknown> = {
+      page_size: clampInt(args.pageSize, 20, 1, 100),
+    };
+    if (typeof args.startCursor === "string" && args.startCursor.trim()) payload.start_cursor = args.startCursor.trim();
+    if (args.filter && typeof args.filter === "object" && !Array.isArray(args.filter)) payload.filter = args.filter;
+    if (Array.isArray(args.sorts)) payload.sorts = args.sorts;
+    const out = await notionRequest("POST", `/v1/databases/${encodeURIComponent(databaseId)}/query`, accessToken, payload);
+    const results = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: {
+        results,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: results.slice(0, 5).map((item) => {
+        const page = asObject(item);
+        return toolCitation("notion", String(page.id ?? crypto.randomUUID()));
+      }),
+    };
+  }
+
+  if (toolId === "notion.databases.update") {
+    const databaseId = toNotionId(args.databaseId ?? "");
+    const patch: Record<string, unknown> = {};
+    if (typeof args.title === "string" && args.title.trim()) {
+      patch.title = [{ type: "text", text: { content: args.title.trim() } }];
+    }
+    if (typeof args.description === "string") {
+      patch.description = [{ type: "text", text: { content: args.description } }];
+    }
+    if (args.properties && typeof args.properties === "object" && !Array.isArray(args.properties)) {
+      patch.properties = args.properties;
+    }
+    const out = await notionRequest("PATCH", `/v1/databases/${encodeURIComponent(databaseId)}`, accessToken, patch);
+    return {
+      result: out,
+      citations: [toolCitation("notion", `database:${databaseId}`)],
+    };
+  }
+
+  if (toolId === "notion.data_sources.retrieve") {
+    const dataSourceId = toNotionId(args.dataSourceId ?? "");
+    const out = await notionRequest("GET", `/v1/data_sources/${encodeURIComponent(dataSourceId)}`, accessToken);
+    return {
+      result: out,
+      citations: [toolCitation("notion", `data_source:${dataSourceId}`)],
+    };
+  }
+
+  if (toolId === "notion.data_sources.query") {
+    const dataSourceId = toNotionId(args.dataSourceId ?? "");
+    const payload: Record<string, unknown> = { page_size: clampInt(args.pageSize, 20, 1, 100) };
+    if (typeof args.startCursor === "string" && args.startCursor.trim()) payload.start_cursor = args.startCursor.trim();
+    if (args.filter && typeof args.filter === "object" && !Array.isArray(args.filter)) payload.filter = args.filter;
+    if (Array.isArray(args.sorts)) payload.sorts = args.sorts;
+    const out = await notionRequest("POST", `/v1/data_sources/${encodeURIComponent(dataSourceId)}/query`, accessToken, payload);
+    const results = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: {
+        results,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: results.slice(0, 5).map((item) => {
+        const page = asObject(item);
+        return toolCitation("notion", String(page.id ?? crypto.randomUUID()));
+      }),
+    };
+  }
+
+  if (toolId === "notion.comments.list") {
+    const blockId = toNotionId(args.blockId ?? args.pageId ?? args.pageUrl ?? "");
+    const q = new URLSearchParams();
+    q.set("block_id", blockId);
+    q.set("page_size", String(clampInt(args.pageSize, 20, 1, 100)));
+    const startCursor = typeof args.startCursor === "string" ? args.startCursor.trim() : "";
+    if (startCursor) q.set("start_cursor", startCursor);
+    const out = await notionRequest("GET", `/v1/comments?${q.toString()}`, accessToken);
+    const results = Array.isArray(out.results) ? out.results : [];
+    return {
+      result: {
+        results,
+        hasMore: out.has_more === true,
+        nextCursor: typeof out.next_cursor === "string" ? out.next_cursor : null,
+      },
+      citations: results.slice(0, 5).map((item) => {
+        const comment = asObject(item);
+        return toolCitation("notion", `comment:${String(comment.id ?? crypto.randomUUID())}`);
+      }),
+    };
+  }
+
+  if (toolId === "notion.comments.create") {
+    const pageId = toNotionId(args.pageId ?? args.pageUrl ?? "");
+    const discussionId = String(args.discussionId ?? "").trim();
+    const text = String(args.text ?? "").trim();
+    const payload: Record<string, unknown> = {
+      rich_text: [{ type: "text", text: { content: text } }],
+    };
+    if (discussionId) {
+      payload.discussion_id = discussionId;
+    } else {
+      payload.parent = { page_id: pageId };
+    }
+    const out = await notionRequest("POST", "/v1/comments", accessToken, payload);
+    return {
+      result: out,
+      citations: [toolCitation("notion", `comment:${String(out.id ?? crypto.randomUUID())}`, text.slice(0, 120))],
     };
   }
 
@@ -4141,6 +5427,39 @@ async function providerToolExecute(
     return {
       result: out,
       citations: [toolCitation("clickup", `/v2/list/${listId}/task`, "task_created")],
+    };
+  }
+
+  if (toolId === "clickup.get_task") {
+    const taskId = String(args.taskId ?? "");
+    const out = await providerRequest(
+      "GET",
+      `https://api.clickup.com/api/v2/task/${encodeURIComponent(taskId)}`,
+      accessToken,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("clickup", `/v2/task/${taskId}`, String(out.name ?? ""))],
+    };
+  }
+
+  if (toolId === "clickup.update_task") {
+    const taskId = String(args.taskId ?? "");
+    const body: Record<string, unknown> = {};
+    if (typeof args.name === "string" && args.name.trim()) body.name = args.name.trim();
+    if (typeof args.description === "string") body.description = args.description;
+    if (typeof args.status === "string" && args.status.trim()) body.status = args.status;
+    if (typeof args.priority === "number") body.priority = clampInt(args.priority, 3, 1, 4);
+    if (typeof args.dueDate === "number") body.due_date = Math.trunc(args.dueDate);
+    const out = await providerRequest(
+      "PUT",
+      `https://api.clickup.com/api/v2/task/${encodeURIComponent(taskId)}`,
+      accessToken,
+      body,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("clickup", `/v2/task/${taskId}`, String(out.name ?? body.name ?? ""))],
     };
   }
 
@@ -4296,7 +5615,15 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "google_calendar.list_events") {
     next.maxResults = clampInt(next.maxResults, 50, 1, 150);
   }
-  if (tool.id === "notion.pages.search") {
+  if (
+    tool.id === "notion.pages.search" ||
+    tool.id === "notion.search" ||
+    tool.id === "notion.blocks.list_children" ||
+    tool.id === "notion.pages.retrieve_property_item" ||
+    tool.id === "notion.comments.list" ||
+    tool.id === "notion.databases.query" ||
+    tool.id === "notion.data_sources.query"
+  ) {
     next.pageSize = clampInt(next.pageSize, 20, 1, 100);
   }
   if (tool.id === "zoom.list_meetings") {
@@ -4316,6 +5643,9 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "trello.list_boards" || tool.id === "trello.list_cards") {
     next.limit = clampInt(next.limit, 25, 1, 100);
   }
+  if (tool.id === "stripe.list_customers" || tool.id === "stripe.list_payment_intents") {
+    next.limit = clampInt(next.limit, 25, 1, 100);
+  }
   return next;
 }
 
@@ -4324,6 +5654,27 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const optional = shape.includes("?");
     if (!optional && (args[argName] === undefined || args[argName] === null || args[argName] === "")) {
       throw new Error(`Missing required argument: ${argName}`);
+    }
+  }
+  if (tool.id.endsWith(".api_request") && tool.id !== "monday.api_request") {
+    const method = String(args.method ?? "").toUpperCase();
+    if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      throw new Error(`${tool.id} method must be one of GET, POST, PUT, PATCH, DELETE`);
+    }
+    const path = String(args.path ?? "").trim();
+    if (!path || path.includes("://")) {
+      throw new Error(`${tool.id} path must be relative, e.g. /users/me`);
+    }
+  }
+  if (tool.id === "monday.api_request") {
+    const q = String(args.query ?? "").trim();
+    if (!q) throw new Error("monday.api_request requires GraphQL query");
+  }
+  if (tool.id === "quickbooks.api_request") {
+    const hasRealm = typeof args.realmId === "string" && args.realmId.trim().length > 0;
+    if (!hasRealm) {
+      // runtime falls back to connector credential realm_id; this validation guards explicit empty payloads only
+      if (args.realmId !== undefined) throw new Error("quickbooks.api_request realmId cannot be empty");
     }
   }
   if (tool.id === "google_drive.create_permission") {
@@ -4338,15 +5689,73 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
       throw new Error("totalAmt must be a positive number");
     }
   }
+  if (tool.id === "notion.pages.retrieve") {
+    if (!args.pageId && !args.pageUrl) {
+      throw new Error("notion.pages.retrieve requires pageId or pageUrl");
+    }
+  }
+  if (tool.id === "notion.pages.create") {
+    if (!args.parentPageId && !args.parentDatabaseId) {
+      throw new Error("notion.pages.create requires parentPageId or parentDatabaseId");
+    }
+    if (args.parentPageId && args.parentDatabaseId) {
+      throw new Error("notion.pages.create accepts only one parent type");
+    }
+  }
   if (tool.id === "notion.pages.update") {
-    if (!args.title && !args.appendContent) {
-      throw new Error("notion.pages.update requires title or appendContent");
+    if (!args.pageId && !args.pageUrl) {
+      throw new Error("notion.pages.update requires pageId or pageUrl");
+    }
+    if (!args.title && !args.appendContent && !args.properties) {
+      throw new Error("notion.pages.update requires title, properties, or appendContent");
+    }
+  }
+  if (tool.id === "notion.pages.archive" || tool.id === "notion.pages.unarchive") {
+    if (!args.pageId && !args.pageUrl) {
+      throw new Error(`${tool.id} requires pageId or pageUrl`);
+    }
+  }
+  if (tool.id === "notion.blocks.list_children" || tool.id === "notion.blocks.append_children") {
+    if (!args.blockId && !args.pageId && !args.pageUrl) {
+      throw new Error(`${tool.id} requires blockId, pageId, or pageUrl`);
+    }
+  }
+  if (tool.id === "notion.blocks.append_children") {
+    if (!Array.isArray(args.children) || args.children.length === 0) {
+      throw new Error("notion.blocks.append_children requires non-empty children array");
+    }
+  }
+  if (tool.id === "notion.comments.list") {
+    if (!args.blockId && !args.pageId && !args.pageUrl) {
+      throw new Error("notion.comments.list requires blockId, pageId, or pageUrl");
+    }
+  }
+  if (tool.id === "notion.comments.create") {
+    const hasParent = Boolean(args.pageId || args.pageUrl || args.discussionId);
+    if (!hasParent) {
+      throw new Error("notion.comments.create requires pageId/pageUrl or discussionId");
     }
   }
   if (tool.id === "zoom.create_meeting") {
     const durationMinutes = Number(args.durationMinutes ?? 30);
     if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 600) {
       throw new Error("durationMinutes must be between 1 and 600");
+    }
+  }
+  if (tool.id === "zoom.update_meeting") {
+    const hasAnyPatch = [
+      "topic",
+      "startTime",
+      "durationMinutes",
+      "timezone",
+      "agenda",
+    ].some((field) => args[field] !== undefined && args[field] !== null && args[field] !== "");
+    if (!hasAnyPatch) throw new Error("zoom.update_meeting requires at least one mutable field");
+    if (args.durationMinutes !== undefined) {
+      const durationMinutes = Number(args.durationMinutes);
+      if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 600) {
+        throw new Error("durationMinutes must be between 1 and 600");
+      }
     }
   }
   if (tool.id === "clickup.create_task") {
@@ -4358,6 +5767,19 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     }
     if (Array.isArray(args.assignees) && args.assignees.length > 50) {
       throw new Error("assignees exceeds maximum length");
+    }
+  }
+  if (tool.id === "clickup.update_task") {
+    const hasAnyPatch = [
+      "name",
+      "description",
+      "status",
+      "priority",
+      "dueDate",
+    ].some((field) => args[field] !== undefined && args[field] !== null && args[field] !== "");
+    if (!hasAnyPatch) throw new Error("clickup.update_task requires at least one mutable field");
+    if (typeof args.name === "string" && args.name.length > 500) {
+      throw new Error("name exceeds maximum length");
     }
   }
   if (tool.id === "monday.create_item" || tool.id === "monday.change_item_column_values") {
@@ -4376,6 +5798,32 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     if (!name) throw new Error("name is required");
     if (name.length > 16_384) throw new Error("name exceeds maximum length");
     if (desc.length > 16_384) throw new Error("desc exceeds maximum length");
+  }
+  if (tool.id === "trello.update_card") {
+    const hasAnyPatch = [
+      "name",
+      "desc",
+      "due",
+      "listId",
+    ].some((field) => args[field] !== undefined && args[field] !== null && args[field] !== "");
+    const name = typeof args.name === "string" ? args.name : "";
+    const desc = typeof args.desc === "string" ? args.desc : "";
+    if (!hasAnyPatch) throw new Error("trello.update_card requires at least one mutable field");
+    if (name.length > 16_384) throw new Error("name exceeds maximum length");
+    if (desc.length > 16_384) throw new Error("desc exceeds maximum length");
+  }
+  if (tool.id === "stripe.create_refund") {
+    const paymentIntentId = String(args.paymentIntentId ?? "").trim();
+    const chargeId = String(args.chargeId ?? "").trim();
+    if (!paymentIntentId && !chargeId) {
+      throw new Error("stripe.create_refund requires paymentIntentId or chargeId");
+    }
+    if (args.amount !== undefined) {
+      const amount = Number(args.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("amount must be a positive number");
+      }
+    }
   }
 }
 

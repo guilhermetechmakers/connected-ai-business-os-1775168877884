@@ -1,12 +1,5 @@
 import {
-  CalendarDays,
-  Cloud,
-  Mail,
-  FileText,
-  Landmark,
-  MessageSquare,
   Plug,
-  Video,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -27,26 +20,35 @@ import {
   connectorRowToHealthStatus,
 } from "@/components/integrations/onboarding/integration-health-badge";
 
-function ProviderIcon({ providerId }: { providerId: string }) {
-  const cls = "h-8 w-8 shrink-0 text-primary";
-  switch (providerId) {
-    case "slack":
-      return <MessageSquare className={cls} aria-hidden />;
-    case "google_drive":
-      return <FileText className={cls} aria-hidden />;
-    case "gmail":
-      return <Mail className={cls} aria-hidden />;
-    case "google_calendar":
-      return <CalendarDays className={cls} aria-hidden />;
-    case "hubspot":
-      return <Cloud className={cls} aria-hidden />;
-    case "quickbooks":
-      return <Landmark className={cls} aria-hidden />;
-    case "zoom":
-      return <Video className={cls} aria-hidden />;
-    default:
-      return <Plug className={cls} aria-hidden />;
+const PROVIDER_LOGO_URLS: Record<string, string> = {
+  clickup: "https://cdn.simpleicons.org/clickup",
+  gmail: "https://cdn.simpleicons.org/gmail",
+  google_calendar: "https://cdn.simpleicons.org/googlecalendar",
+  google_drive: "https://cdn.simpleicons.org/googledrive",
+  hubspot: "https://cdn.simpleicons.org/hubspot",
+  monday: "https://cdn.simpleicons.org/mondaydotcom",
+  notion: "https://cdn.simpleicons.org/notion",
+  quickbooks: "https://cdn.simpleicons.org/intuitquickbooks",
+  slack: "https://cdn.simpleicons.org/slack",
+  stripe: "https://cdn.simpleicons.org/stripe",
+  trello: "https://cdn.simpleicons.org/trello",
+  zoom: "https://cdn.simpleicons.org/zoom",
+};
+
+function ProviderIcon({ providerId, providerName, logoUrl }: { providerId: string; providerName: string; logoUrl: string | null }) {
+  const resolvedLogoUrl = logoUrl ?? PROVIDER_LOGO_URLS[providerId] ?? null;
+  if (resolvedLogoUrl) {
+    return (
+      <img
+        src={resolvedLogoUrl}
+        alt={`${providerName} logo`}
+        loading="lazy"
+        className="h-8 w-8 shrink-0 rounded-md object-contain"
+      />
+    );
   }
+
+  return <Plug className="h-8 w-8 shrink-0 text-primary" aria-hidden />;
 }
 
 export interface IntegrationCatalogCardProps {
@@ -100,7 +102,7 @@ export function IntegrationCatalogCard({
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <div className="rounded-xl border border-border/60 bg-surface-inner p-2">
-              <ProviderIcon providerId={item.id} />
+              <ProviderIcon providerId={item.id} providerName={item.name} logoUrl={item.logoUrl} />
             </div>
             <div>
               <CardTitle className="font-display text-lg text-foreground">{item.name}</CardTitle>

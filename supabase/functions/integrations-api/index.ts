@@ -27,6 +27,8 @@ const providerKeySchema = z.enum([
   "zoom",
   "hubspot",
   "quickbooks",
+  "stripe",
+  "notion",
   "clickup",
   "monday",
   "trello",

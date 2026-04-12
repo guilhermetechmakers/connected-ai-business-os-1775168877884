@@ -1,7 +1,15 @@
 ﻿import { CONNECTOR_PROVIDERS } from "@/lib/connector-registry";
 import { invokeEdgeFunction } from "@/lib/edge-function-invoke";
 import { isSupabaseConfigured } from "@/lib/supabase";
-import type { IntegrationOp, ProviderCatalogItem } from "@/types/integrations";
+import type {
+  IntegrationOp,
+  NotionQueryArgs,
+  NotionToolId,
+  ProviderApiQueryArgs,
+  ProviderApiToolId,
+  ProviderCatalogItem,
+  ToolExecuteResult,
+} from "@/types/integrations";
 
 function mockCatalogList(): { catalog: ProviderCatalogItem[] } {
   const raw = Array.isArray(CONNECTOR_PROVIDERS) ? CONNECTOR_PROVIDERS : [];
@@ -42,5 +50,23 @@ async function invokeIntegrations<T>(body: IntegrationOp): Promise<T> {
 export const integrationsClient = {
   invoke: invokeIntegrations,
   mockCatalogList,
+  executeNotionTool: async (toolId: NotionToolId, args: NotionQueryArgs, confirmed = true): Promise<ToolExecuteResult> =>
+    await invokeIntegrations<ToolExecuteResult>({
+      op: "tools.execute",
+      toolId,
+      args,
+      confirmed,
+    }),
+  executeProviderApiTool: async (
+    toolId: ProviderApiToolId,
+    args: ProviderApiQueryArgs,
+    confirmed = true,
+  ): Promise<ToolExecuteResult> =>
+    await invokeIntegrations<ToolExecuteResult>({
+      op: "tools.execute",
+      toolId,
+      args: args as Record<string, unknown>,
+      confirmed,
+    }),
 };
 

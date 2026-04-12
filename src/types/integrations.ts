@@ -14,6 +14,7 @@ export type IntegrationProviderKey =
   | "zoom"
   | "hubspot"
   | "quickbooks"
+  | "stripe"
   | "notion"
   | "clickup"
   | "monday"
@@ -110,6 +111,78 @@ export type IntegrationToolDefinition = {
   riskTier?: "low" | "medium" | "high" | "critical";
   requiresConfirmation: boolean;
   argsShape?: Record<string, unknown>;
+};
+
+export type NotionToolId =
+  | "notion.pages.search"
+  | "notion.search"
+  | "notion.pages.retrieve"
+  | "notion.pages.retrieve_property_item"
+  | "notion.pages.create"
+  | "notion.pages.update"
+  | "notion.pages.archive"
+  | "notion.pages.unarchive"
+  | "notion.blocks.retrieve"
+  | "notion.blocks.list_children"
+  | "notion.blocks.append_children"
+  | "notion.blocks.update"
+  | "notion.blocks.delete"
+  | "notion.databases.retrieve"
+  | "notion.databases.query"
+  | "notion.databases.update"
+  | "notion.data_sources.retrieve"
+  | "notion.data_sources.query"
+  | "notion.comments.list"
+  | "notion.comments.create";
+
+export type ProviderApiToolId =
+  | "gmail.api_request"
+  | "google_drive.api_request"
+  | "google_calendar.api_request"
+  | "slack.api_request"
+  | "zoom.api_request"
+  | "hubspot.api_request"
+  | "quickbooks.api_request"
+  | "stripe.api_request"
+  | "clickup.api_request"
+  | "monday.api_request"
+  | "trello.api_request";
+
+export type NotionQueryArgs = {
+  query?: string;
+  pageId?: string;
+  pageUrl?: string;
+  blockId?: string;
+  propertyId?: string;
+  parentPageId?: string;
+  parentDatabaseId?: string;
+  databaseId?: string;
+  dataSourceId?: string;
+  title?: string;
+  titleProperty?: string;
+  appendContent?: string;
+  content?: string;
+  text?: string;
+  discussionId?: string;
+  startCursor?: string;
+  pageSize?: number;
+  objectType?: "page" | "database";
+  sortTimestamp?: "last_edited_time";
+  sortDirection?: "ascending" | "descending";
+  filter?: Record<string, unknown>;
+  sorts?: Record<string, unknown>[];
+  properties?: Record<string, unknown>;
+  children?: Record<string, unknown>[];
+};
+
+export type ProviderApiQueryArgs = {
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path?: string;
+  query?: Record<string, unknown> | string;
+  body?: Record<string, unknown>;
+  headers?: Record<string, string>;
+  realmId?: string;
+  variables?: Record<string, unknown>;
 };
 
 export type ToolExecuteResult = {

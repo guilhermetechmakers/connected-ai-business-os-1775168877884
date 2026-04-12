@@ -1,7 +1,7 @@
 # Integrations Capability Matrix (AI Agent)
 
 This matrix defines the canonical provider-to-tool mapping for AI execution via `toolsExecute`.
-It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Slack, Zoom, Notion, ClickUp, monday.com, and Trello.
+It is the implementation contract for integration parity across Gmail, Google Drive, Google Calendar, HubSpot, QuickBooks, Stripe, Slack, Zoom, Notion, ClickUp, monday.com, and Trello.
 
 ## Policy Columns
 
@@ -67,6 +67,8 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 |---|---|---|---|---|---|---|
 | `zoom.list_meetings` | `GET /v2/users/{userId}/meetings` | read | low | reader+ | no | safe read |
 | `zoom.create_meeting` | `POST /v2/users/{userId}/meetings` | write | medium | comms+ | yes | non-idempotent |
+| `zoom.update_meeting` | `PATCH /v2/meetings/{meetingId}` | write | medium | comms+ | yes | idempotent-ish |
+| `zoom.delete_meeting` | `DELETE /v2/meetings/{meetingId}` | write | high | comms_admin+ | yes | idempotent-ish |
 
 ## HubSpot
 
@@ -92,6 +94,16 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `quickbooks.send_invoice_reminder` | `POST /v3/company/{realmId}/invoice/{id}/send` | write | medium | finance_ops+ | yes | non-idempotent |
 | `quickbooks.update_invoice_safe_fields` | `GET invoice + sparse update` | write | high | finance_admin+ | yes | idempotent-ish |
 
+## Stripe
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `stripe.list_customers` | `GET /v1/customers` | read | low | finance_read+ | no | safe read |
+| `stripe.get_customer` | `GET /v1/customers/{id}` | read | low | finance_read+ | no | safe read |
+| `stripe.list_payment_intents` | `GET /v1/payment_intents` | read | low | finance_read+ | no | safe read |
+| `stripe.get_payment_intent` | `GET /v1/payment_intents/{id}` | read | low | finance_read+ | no | safe read |
+| `stripe.create_refund` | `POST /v1/refunds` | write | high | finance_ops+ | yes | non-idempotent |
+
 ## monday.com
 
 | toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
@@ -108,6 +120,8 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `clickup.list_workspaces` | `GET /v2/team` | read | low | reader+ | no | safe read |
 | `clickup.list_tasks` | `GET /v2/list/{listId}/task` | read | low | reader+ | no | safe read |
 | `clickup.create_task` | `POST /v2/list/{listId}/task` | write | medium | ops+ | yes | non-idempotent |
+| `clickup.get_task` | `GET /v2/task/{taskId}` | read | low | reader+ | no | safe read |
+| `clickup.update_task` | `PUT /v2/task/{taskId}` | write | medium | ops+ | yes | idempotent-ish |
 
 ## Trello
 
@@ -116,6 +130,7 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `trello.list_boards` | `GET /1/members/me?boards=open` | read | low | reader+ | no | safe read |
 | `trello.list_cards` | `GET /1/boards/{boardId}?cards=open` | read | low | reader+ | no | safe read |
 | `trello.create_card` | `POST /1/cards` | write | medium | ops+ | yes | non-idempotent |
+| `trello.update_card` | `PUT /1/cards/{cardId}` | write | medium | ops+ | yes | idempotent-ish |
 
 ## Role Groups (normalized)
 

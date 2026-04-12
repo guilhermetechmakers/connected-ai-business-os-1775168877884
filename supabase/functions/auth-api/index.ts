@@ -83,6 +83,7 @@ const opSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("password.request"),
     email: z.string().email(),
+    redirectTo: z.string().url().optional(),
   }),
   z.object({
     op: z.literal("password.confirm"),
@@ -362,17 +363,20 @@ async function requireUser(
   return { userId: data.user.id, jwt, admin };
 }
 
-async function isLockedOut(
+async function getActiveLockoutUntil(
   admin: SupabaseClient,
   emailNorm: string,
-): Promise<boolean> {
+): Promise<Date | null> {
   const { data } = await admin
     .from("auth_lockouts")
     .select("locked_until")
     .eq("email_normalized", emailNorm)
     .maybeSingle();
   const until = data?.locked_until ? new Date(data.locked_until as string) : null;
-  return until !== null && until > new Date();
+  if (!until || Number.isNaN(until.getTime())) {
+    return null;
+  }
+  return until > new Date() ? until : null;
 }
 
 async function recordFailure(admin: SupabaseClient, emailNorm: string, ip: string): Promise<void> {
@@ -506,6 +510,7 @@ async function notifyEmail(
   kind: "verification" | "password_reset",
   to: string,
   token: string,
+  redirectTo?: string,
 ): Promise<void> {
   const fnUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/email-auth-notifications`;
   const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -518,7 +523,7 @@ async function notifyEmail(
         apikey: key,
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({ kind, to, token }),
+      body: JSON.stringify({ kind, to, token, redirectTo }),
     });
   } catch {
     /* non-fatal */
@@ -912,13 +917,7 @@ serve(async (req) => {
         void parsed.rememberMe;
         const emailNorm = normalizeEmail(parsed.email);
         const ip = getClientIp(req);
-        if (await isLockedOut(admin, emailNorm)) {
-          return jsonResponse({
-            data: null,
-            error: { message: "Too many attempts. Try again later." },
-            meta: { code: "lockout" },
-          });
-        }
+        const activeLockoutUntil = await getActiveLockoutUntil(admin, emailNorm);
 
         const anon = createClient(supabaseUrl, anonKey, {
           auth: { persistSession: false, autoRefreshToken: false },
@@ -928,7 +927,38 @@ serve(async (req) => {
           password: parsed.password,
         });
         if (signErr || !sessionData.session) {
+          if (activeLockoutUntil) {
+            const retryAfterSeconds = Math.max(
+              1,
+              Math.ceil((activeLockoutUntil.getTime() - Date.now()) / 1000),
+            );
+            return jsonResponse({
+              data: null,
+              error: { message: "Too many attempts. Try again later." },
+              meta: {
+                code: "lockout",
+                retry_after_seconds: retryAfterSeconds,
+                locked_until: activeLockoutUntil.toISOString(),
+              },
+            });
+          }
           await recordFailure(admin, emailNorm, ip);
+          const lockoutAfterFailure = await getActiveLockoutUntil(admin, emailNorm);
+          if (lockoutAfterFailure) {
+            const retryAfterSeconds = Math.max(
+              1,
+              Math.ceil((lockoutAfterFailure.getTime() - Date.now()) / 1000),
+            );
+            return jsonResponse({
+              data: null,
+              error: { message: "Too many attempts. Try again later." },
+              meta: {
+                code: "lockout",
+                retry_after_seconds: retryAfterSeconds,
+                locked_until: lockoutAfterFailure.toISOString(),
+              },
+            });
+          }
           return jsonResponse({
             data: null,
             error: { message: "Invalid credentials" },
@@ -1117,7 +1147,7 @@ serve(async (req) => {
           company_id: profile.company_id,
           expires_at: exp,
         });
-        await notifyEmail("password_reset", parsed.email, token);
+        await notifyEmail("password_reset", parsed.email, token, parsed.redirectTo);
         await logSecurityEvent(admin, profile.company_id as string, profile.id as string, "password_reset_requested", {});
         return jsonResponse({
           data: { ok: true },

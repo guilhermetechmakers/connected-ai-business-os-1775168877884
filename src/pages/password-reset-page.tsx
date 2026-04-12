@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 
@@ -46,6 +46,7 @@ const resetSchema = z
 
 export default function PasswordResetPage() {
   const [done, setDone] = useState(false);
+  const [searchParams] = useSearchParams();
   const requestForm = useForm<z.infer<typeof requestSchema>>({
     resolver: zodResolver(requestSchema),
     defaultValues: { email: "" },
@@ -57,6 +58,12 @@ export default function PasswordResetPage() {
 
   const pwd = resetForm.watch("password");
   const strength = Math.min(100, (pwd?.length ?? 0) * 7);
+  const tokenFromUrl = searchParams.get("token")?.trim() ?? "";
+
+  useEffect(() => {
+    if (!tokenFromUrl) return;
+    resetForm.setValue("token", tokenFromUrl, { shouldValidate: true });
+  }, [resetForm, tokenFromUrl]);
 
   return (
     <PublicChrome>
@@ -81,7 +88,7 @@ export default function PasswordResetPage() {
                 </p>
               </div>
             ) : (
-              <Tabs defaultValue="request" className="space-y-6">
+              <Tabs defaultValue={tokenFromUrl ? "reset" : "request"} className="space-y-6">
                 <TabsList className="grid w-full grid-cols-2 bg-surface-inner">
                   <TabsTrigger value="request">Request link</TabsTrigger>
                   <TabsTrigger value="reset">Set password</TabsTrigger>
@@ -96,7 +103,11 @@ export default function PasswordResetPage() {
                         }
                         try {
                           await invokeAuthApi<{ ok: boolean }>(
-                            { op: "password.request", email: vals.email },
+                            {
+                              op: "password.request",
+                              email: vals.email,
+                              redirectTo: window.location.origin,
+                            },
                             { skipAuthHeader: true },
                           );
                           toast.success("If an account exists, a reset link was sent.");

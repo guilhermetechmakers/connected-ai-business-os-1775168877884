@@ -25,6 +25,7 @@ const PROVIDER_KEYS: IntegrationProviderKey[] = [
   "zoom",
   "hubspot",
   "quickbooks",
+  "stripe",
   "notion",
   "clickup",
   "monday",

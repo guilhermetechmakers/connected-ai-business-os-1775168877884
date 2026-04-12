@@ -351,6 +351,14 @@ function normalizeToolChoiceForResponses(
   return undefined;
 }
 
+function stripOpenAiTokenLimits(payload: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...payload };
+  delete sanitized.max_tokens;
+  delete sanitized.max_completion_tokens;
+  delete sanitized.max_output_tokens;
+  return sanitized;
+}
+
 function mapMessagesForResponses(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const input: Array<Record<string, unknown>> = [];
   for (const msg of messages) {
@@ -456,6 +464,7 @@ function resolveModelProvider(): {
   const openAiAdapter: AiProviderAdapter = {
     type: "openai",
     chatCompletions: async (payload) => {
+      const sanitizedPayload = stripOpenAiTokenLimits(payload as Record<string, unknown>);
       if (isResponsesApiEnabled()) {
         const reasoning = payload.reasoning ?? { effort: getOpenAiReasoningEffort() };
         const text = payload.text ?? { verbosity: getOpenAiVerbosity() };
@@ -519,7 +528,7 @@ function resolveModelProvider(): {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sanitizedPayload),
       });
       if (!fallbackRes.ok) {
         const detail = await fallbackRes.text();
@@ -985,6 +994,23 @@ function asRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   return {};
+}
+
+function toNotionId(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const m = raw.match(/[0-9a-fA-F]{32}/);
+  if (m) {
+    const compact = m[0].toLowerCase();
+    return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+  }
+  if (/^[0-9a-fA-F-]{32,36}$/.test(raw)) {
+    const compact = raw.replace(/-/g, "").toLowerCase();
+    if (compact.length === 32) {
+      return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+    }
+  }
+  return raw;
 }
 
 function normalizeLimit(value: unknown, fallback = 20, max = 100): number {
@@ -3258,7 +3284,20 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "zoom", "hubspot", "quickbooks", "notion", "clickup", "monday", "trello"],
+            enum: [
+              "gmail",
+              "google_calendar",
+              "google_drive",
+              "slack",
+              "zoom",
+              "hubspot",
+              "quickbooks",
+              "stripe",
+              "notion",
+              "clickup",
+              "monday",
+              "trello",
+            ],
             description: "The integration to query.",
           },
           query_type: {
@@ -3306,6 +3345,43 @@ const AGENT_TOOLS = [
               date_from: { type: "string", description: "ISO date lower bound." },
               date_to: { type: "string", description: "ISO date upper bound." },
               limit: { type: "number", description: "Max records (1-50)." },
+            },
+          },
+          queryArgs: {
+            type: "object",
+            description:
+              "Provider-specific arguments. Supports both typed operations and advanced full-surface provider API calls.",
+            properties: {
+              method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+              path: { type: "string" },
+              body: { type: "object" },
+              headers: { type: "object" },
+              variables: { type: "object" },
+              realmId: { type: "string" },
+              query: { type: "string" },
+              pageId: { type: "string" },
+              pageUrl: { type: "string" },
+              blockId: { type: "string" },
+              propertyId: { type: "string" },
+              parentPageId: { type: "string" },
+              parentDatabaseId: { type: "string" },
+              databaseId: { type: "string" },
+              dataSourceId: { type: "string" },
+              title: { type: "string" },
+              titleProperty: { type: "string" },
+              appendContent: { type: "string" },
+              content: { type: "string" },
+              text: { type: "string" },
+              startCursor: { type: "string" },
+              pageSize: { type: "number" },
+              objectType: { type: "string", enum: ["page", "database"] },
+              sortTimestamp: { type: "string" },
+              sortDirection: { type: "string", enum: ["ascending", "descending"] },
+              filter: { type: "object" },
+              sorts: { type: "array", items: { type: "object" } },
+              properties: { type: "object" },
+              children: { type: "array", items: { type: "object" } },
+              discussionId: { type: "string" },
             },
           },
         },
@@ -3678,8 +3754,26 @@ async function executeAgentTool(
           return `Unable to fetch live data: ${msg}`;
         }
       };
+      const sharedQueryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+      const runGenericApiRequest = async (toolId: string): Promise<string | AgentToolExecution> => {
+        return await genericRead(toolId, {
+          method: String(sharedQueryArgs.method ?? "GET").toUpperCase(),
+          path: String(sharedQueryArgs.path ?? ""),
+          query: sharedQueryArgs.query && typeof sharedQueryArgs.query === "object" && !Array.isArray(sharedQueryArgs.query)
+            ? sharedQueryArgs.query
+            : undefined,
+          body: sharedQueryArgs.body && typeof sharedQueryArgs.body === "object" && !Array.isArray(sharedQueryArgs.body)
+            ? sharedQueryArgs.body
+            : undefined,
+          headers: sharedQueryArgs.headers && typeof sharedQueryArgs.headers === "object" && !Array.isArray(sharedQueryArgs.headers)
+            ? sharedQueryArgs.headers
+            : undefined,
+          realmId: typeof sharedQueryArgs.realmId === "string" ? sharedQueryArgs.realmId : undefined,
+        });
+      };
 
       if (provider === "gmail") {
+        if (queryType.includes("api")) return await runGenericApiRequest("gmail.api_request");
         if (operation === "create" || queryType.includes("send")) {
           const emailPayload = asRecord(args.email ?? args.event ?? args.queryArgs ?? args);
           const to = String(emailPayload.to ?? "");
@@ -3847,6 +3941,7 @@ async function executeAgentTool(
       }
 
       if (provider === "google_calendar") {
+        if (queryType.includes("api")) return await runGenericApiRequest("google_calendar.api_request");
         if (operation === "create") {
           const eventPayload = (args.event ?? args.queryArgs ?? {}) as Record<string, unknown>;
           if (isCalendarCreateDateAmbiguousFromUserMessage(streamContext.userMessage)) {
@@ -4111,6 +4206,7 @@ async function executeAgentTool(
       }
 
       if (provider === "google_drive") {
+        if (queryType.includes("api")) return await runGenericApiRequest("google_drive.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         if (operation === "create" && queryType.includes("folder")) {
           const name = String(queryArgs.name ?? "");
@@ -4196,12 +4292,55 @@ async function executeAgentTool(
 
       if (provider === "notion") {
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        const userMessageLower = streamContext.userMessage.toLowerCase();
+        const explicitQuery = typeof queryArgs.query === "string" ? queryArgs.query.trim() : "";
+        const inferredSearch = typeof filters.search === "string" ? filters.search.trim() : "";
+        const isCountIntent = queryType.includes("count") ||
+          /\bhow many\b/.test(userMessageLower) ||
+          (/\bnotion\b/.test(userMessageLower) && /\b(total|count|number of)\b/.test(userMessageLower));
+        const isListAllIntent = /\blist all\b/.test(userMessageLower) || queryType.includes("list_all");
+        const pageId = toNotionId(queryArgs.pageId ?? queryArgs.id ?? "");
+        const pageUrl = String(queryArgs.pageUrl ?? queryArgs.url ?? "").trim();
+        const resolvedPageId = pageId || toNotionId(pageUrl);
+        const blockId = toNotionId(queryArgs.blockId ?? "");
+        const databaseId = toNotionId(queryArgs.databaseId ?? "");
+        const dataSourceId = toNotionId(queryArgs.dataSourceId ?? "");
 
         if (operation === "create") {
+          if (queryType.includes("comment")) {
+            const text = String(queryArgs.text ?? queryArgs.content ?? "").trim();
+            const discussionId = String(queryArgs.discussionId ?? "").trim();
+            if (!text || (!resolvedPageId && !discussionId)) {
+              return "Notion comment create requires text and pageId/pageUrl or discussionId.";
+            }
+            return await genericRead("notion.comments.create", {
+              pageId: resolvedPageId || undefined,
+              discussionId: discussionId || undefined,
+              text,
+            });
+          }
+          if (queryType.includes("block")) {
+            const children = Array.isArray(queryArgs.children) ? queryArgs.children : [];
+            const targetBlockId = blockId || resolvedPageId;
+            if (!targetBlockId || children.length === 0) {
+              return "Notion block append requires blockId/pageId/pageUrl and children array.";
+            }
+            return await genericRead("notion.blocks.append_children", {
+              blockId: targetBlockId,
+              children,
+            });
+          }
           const parentPageId = String(queryArgs.parentPageId ?? queryArgs.parent_id ?? "").trim();
+          const parentDatabaseId = String(queryArgs.parentDatabaseId ?? queryArgs.parent_database_id ?? "").trim();
           const title = String(queryArgs.title ?? "").trim();
           const content = typeof queryArgs.content === "string" ? queryArgs.content : undefined;
-          if (!parentPageId || !title) return "Notion page create requires parentPageId and title.";
+          const titleProperty = typeof queryArgs.titleProperty === "string" ? queryArgs.titleProperty : undefined;
+          const properties = queryArgs.properties && typeof queryArgs.properties === "object" && !Array.isArray(queryArgs.properties)
+            ? queryArgs.properties as Record<string, unknown>
+            : undefined;
+          if ((!parentPageId && !parentDatabaseId) || !title) {
+            return "Notion page create requires title and parentPageId or parentDatabaseId.";
+          }
           if (executionMode !== "auto") {
             return {
               text: `Pending confirmation required for "Notion: create page".`,
@@ -4210,24 +4349,75 @@ async function executeAgentTool(
               pendingConfirmation: {
                 actionId: "notion.pages.create",
                 label: "Notion: create page",
-                preview: { args: { parentPageId, title, content: content ?? null } },
+                preview: {
+                  args: {
+                    parentPageId: parentPageId || null,
+                    parentDatabaseId: parentDatabaseId || null,
+                    title,
+                    titleProperty: titleProperty ?? null,
+                    properties: properties ?? null,
+                    content: content ?? null,
+                  },
+                },
               },
-              result: { parentPageId, title },
+              result: { parentPageId: parentPageId || null, parentDatabaseId: parentDatabaseId || null, title },
             };
           }
-          return await genericRead("notion.pages.create", { parentPageId, title, content });
+          return await genericRead("notion.pages.create", {
+            parentPageId: parentPageId || undefined,
+            parentDatabaseId: parentDatabaseId || undefined,
+            title,
+            titleProperty,
+            properties,
+            content,
+          });
         }
 
         if (operation === "update") {
-          const pageId = String(queryArgs.pageId ?? "").trim();
+          if (queryType.includes("block")) {
+            if (queryType.includes("delete") || queryType.includes("archive")) {
+              const targetBlockId = blockId || resolvedPageId;
+              if (!targetBlockId) return "Notion block delete requires blockId/pageId/pageUrl.";
+              return await genericRead("notion.blocks.delete", { blockId: targetBlockId });
+            }
+            const targetBlockId = blockId || resolvedPageId;
+            const blockPatch = queryArgs.block && typeof queryArgs.block === "object" && !Array.isArray(queryArgs.block)
+              ? queryArgs.block as Record<string, unknown>
+              : null;
+            if (!targetBlockId || !blockPatch) return "Notion block update requires blockId/pageId/pageUrl and block payload.";
+            return await genericRead("notion.blocks.update", { blockId: targetBlockId, block: blockPatch });
+          }
+          if (queryType.includes("database")) {
+            if (!databaseId) return "Notion database update requires databaseId.";
+            return await genericRead("notion.databases.update", {
+              databaseId,
+              title: typeof queryArgs.title === "string" ? queryArgs.title : undefined,
+              description: typeof queryArgs.description === "string" ? queryArgs.description : undefined,
+              properties: queryArgs.properties && typeof queryArgs.properties === "object" && !Array.isArray(queryArgs.properties)
+                ? queryArgs.properties as Record<string, unknown>
+                : undefined,
+            });
+          }
           const title = typeof queryArgs.title === "string" ? queryArgs.title : undefined;
           const appendContent = typeof queryArgs.appendContent === "string"
             ? queryArgs.appendContent
             : typeof queryArgs.content === "string"
             ? queryArgs.content
             : undefined;
-          if (!pageId) return "Notion page update requires pageId.";
-          if (!title && !appendContent) return "Notion page update requires title or appendContent.";
+          const titleProperty = typeof queryArgs.titleProperty === "string" ? queryArgs.titleProperty : undefined;
+          const properties = queryArgs.properties && typeof queryArgs.properties === "object" && !Array.isArray(queryArgs.properties)
+            ? queryArgs.properties as Record<string, unknown>
+            : undefined;
+          if (!resolvedPageId) return "Notion page update requires pageId or pageUrl.";
+          if (!title && !appendContent && !properties && !queryType.includes("archive") && !queryType.includes("unarchive")) {
+            return "Notion page update requires title, properties, appendContent, archive, or unarchive intent.";
+          }
+          if (queryType.includes("archive")) {
+            return await genericRead("notion.pages.archive", { pageId: resolvedPageId });
+          }
+          if (queryType.includes("unarchive")) {
+            return await genericRead("notion.pages.unarchive", { pageId: resolvedPageId });
+          }
           if (executionMode !== "auto") {
             return {
               text: `Pending confirmation required for "Notion: update page".`,
@@ -4236,29 +4426,237 @@ async function executeAgentTool(
               pendingConfirmation: {
                 actionId: "notion.pages.update",
                 label: "Notion: update page",
-                preview: { args: { pageId, title: title ?? null, appendContent: appendContent ?? null } },
+                preview: {
+                  args: {
+                    pageId: resolvedPageId,
+                    title: title ?? null,
+                    titleProperty: titleProperty ?? null,
+                    properties: properties ?? null,
+                    appendContent: appendContent ?? null,
+                  },
+                },
               },
-              result: { pageId },
+              result: { pageId: resolvedPageId },
             };
           }
-          return await genericRead("notion.pages.update", { pageId, title, appendContent });
+          return await genericRead("notion.pages.update", {
+            pageId: resolvedPageId,
+            title,
+            titleProperty,
+            properties,
+            appendContent,
+          });
         }
 
-        if (queryType.includes("page") && queryType.includes("get")) {
-          const pageId = String(queryArgs.pageId ?? "").trim();
-          if (!pageId) return "Notion page lookup requires pageId.";
-          return await genericRead("notion.pages.retrieve", { pageId });
+        if (queryType.includes("comment")) {
+          const targetBlockId = blockId || resolvedPageId;
+          if (!targetBlockId) return "Notion comments list requires blockId/pageId/pageUrl.";
+          return await genericRead("notion.comments.list", {
+            blockId: targetBlockId,
+            pageSize: normalizeLimit(queryArgs.pageSize ?? filters.limit, 20, 100),
+            startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+          });
         }
 
-        const search = typeof filters.search === "string" ? filters.search.trim() : "";
-        return await genericRead("notion.pages.search", {
-          query: search || undefined,
-          pageSize: Math.min(limit, 50),
-          startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+        if (queryType.includes("data_source")) {
+          if (!dataSourceId) return "Notion data source request requires dataSourceId.";
+          if (queryType.includes("query") || queryType.includes("list")) {
+            return await genericRead("notion.data_sources.query", {
+              dataSourceId,
+              filter: queryArgs.filter,
+              sorts: Array.isArray(queryArgs.sorts) ? queryArgs.sorts : undefined,
+              pageSize: normalizeLimit(queryArgs.pageSize ?? filters.limit, 20, 100),
+              startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+            });
+          }
+          return await genericRead("notion.data_sources.retrieve", { dataSourceId });
+        }
+
+        if (queryType.includes("database")) {
+          if (!databaseId) return "Notion database request requires databaseId.";
+          if (queryType.includes("query") || queryType.includes("list")) {
+            return await genericRead("notion.databases.query", {
+              databaseId,
+              filter: queryArgs.filter,
+              sorts: Array.isArray(queryArgs.sorts) ? queryArgs.sorts : undefined,
+              pageSize: normalizeLimit(queryArgs.pageSize ?? filters.limit, 20, 100),
+              startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+            });
+          }
+          return await genericRead("notion.databases.retrieve", { databaseId });
+        }
+
+        if (queryType.includes("block") || queryType.includes("content")) {
+          const targetBlockId = blockId || resolvedPageId;
+          if (!targetBlockId) return "Notion block/content request requires blockId/pageId/pageUrl.";
+          if (queryType.includes("children") || queryType.includes("content") || queryType.includes("list")) {
+            return await genericRead("notion.blocks.list_children", {
+              blockId: targetBlockId,
+              pageSize: normalizeLimit(queryArgs.pageSize ?? filters.limit, 20, 100),
+              startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+            });
+          }
+          return await genericRead("notion.blocks.retrieve", { blockId: targetBlockId });
+        }
+
+        if ((queryType.includes("page") && queryType.includes("get")) || queryType.includes("retrieve")) {
+          if (!resolvedPageId) return "Notion page lookup requires pageId or pageUrl.";
+          if (queryType.includes("property") && typeof queryArgs.propertyId === "string" && queryArgs.propertyId.trim()) {
+            return await genericRead("notion.pages.retrieve_property_item", {
+              pageId: resolvedPageId,
+              propertyId: queryArgs.propertyId,
+              pageSize: normalizeLimit(queryArgs.pageSize ?? filters.limit, 20, 100),
+              startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+            });
+          }
+          return await genericRead("notion.pages.retrieve", { pageId: resolvedPageId });
+        }
+
+        if (isCountIntent) {
+          try {
+            let totalPages = 0;
+            let hasMore = true;
+            let nextCursor: string | undefined;
+            let pageRequests = 0;
+            const maxPageRequests = 25; // Guardrail: count up to 2,500 pages per request.
+
+            while (hasMore && pageRequests < maxPageRequests) {
+              const exec = await toolsExecute(runtimeSupabase, {
+                companyId,
+                userId,
+                roles: userRoles,
+                toolId: "notion.pages.search",
+                args: {
+                  pageSize: 100,
+                  startCursor: nextCursor,
+                },
+                confirmed: true,
+                source: "ai_chat",
+                masterKey: String(masterKey),
+              });
+              const out = asRecord(exec.result ?? {});
+              const results = Array.isArray(out.results) ? out.results : [];
+              totalPages += results.length;
+              hasMore = out.hasMore === true;
+              nextCursor = typeof out.nextCursor === "string" && out.nextCursor.trim()
+                ? out.nextCursor
+                : undefined;
+              pageRequests += 1;
+              if (!hasMore || !nextCursor) break;
+            }
+
+            const truncated = hasMore && pageRequests >= maxPageRequests;
+            const text = truncated
+              ? `Notion returned at least ${totalPages} pages (partial count due to pagination guardrail).`
+              : `Notion returned ${totalPages} pages.`;
+            return {
+              text,
+              status: "completed",
+              actionId: "notion.pages.search",
+              result: {
+                totalPages,
+                truncated,
+                pageRequests,
+              },
+            };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Notion page count failed";
+            return `Unable to count Notion pages: ${msg}`;
+          }
+        }
+
+        if (isListAllIntent) {
+          try {
+            const titles: string[] = [];
+            let hasMore = true;
+            let nextCursor: string | undefined;
+            let pageRequests = 0;
+            const maxPageRequests = 25;
+            while (hasMore && pageRequests < maxPageRequests) {
+              const exec = await toolsExecute(runtimeSupabase, {
+                companyId,
+                userId,
+                roles: userRoles,
+                toolId: "notion.pages.search",
+                args: { pageSize: 100, startCursor: nextCursor },
+                confirmed: true,
+                source: "ai_chat",
+                masterKey: String(masterKey),
+              });
+              const out = asRecord(exec.result ?? {});
+              const summaries = Array.isArray(out.summaries) ? out.summaries : [];
+              for (const s of summaries) {
+                const item = asRecord(s);
+                const title = typeof item.title === "string" ? item.title.trim() : "";
+                if (title) titles.push(title);
+              }
+              hasMore = out.hasMore === true;
+              nextCursor = typeof out.nextCursor === "string" && out.nextCursor.trim() ? out.nextCursor : undefined;
+              pageRequests += 1;
+              if (!hasMore || !nextCursor) break;
+            }
+            return {
+              text: `Fetched ${titles.length} Notion page titles${hasMore ? " (partial)" : ""}.`,
+              status: "completed",
+              actionId: "notion.pages.search",
+              result: {
+                titles,
+                hasMore,
+                nextCursor: nextCursor ?? null,
+                pageRequests,
+              },
+            };
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Notion list all failed";
+            return `Unable to list all Notion pages: ${msg}`;
+          }
+        }
+
+        const shouldUseSearchQuery = queryType.includes("search") || queryType.includes("find") || queryType.includes("lookup");
+        const search = explicitQuery || (shouldUseSearchQuery ? inferredSearch : "");
+        const searchResult = await toolsExecute(runtimeSupabase, {
+          companyId,
+          userId,
+          roles: userRoles,
+          toolId: shouldUseSearchQuery && queryType.includes("global") ? "notion.search" : "notion.pages.search",
+          args: {
+            query: search || undefined,
+            objectType: typeof queryArgs.objectType === "string" ? queryArgs.objectType : undefined,
+            sortTimestamp: typeof queryArgs.sortTimestamp === "string" ? queryArgs.sortTimestamp : undefined,
+            sortDirection: typeof queryArgs.sortDirection === "string" ? queryArgs.sortDirection : undefined,
+            pageSize: normalizeLimit(queryArgs.pageSize ?? limit, 20, 100),
+            startCursor: typeof queryArgs.startCursor === "string" ? queryArgs.startCursor : undefined,
+          },
+          confirmed: true,
+          source: "ai_chat",
+          masterKey: String(masterKey),
         });
+        const out = asRecord(searchResult.result ?? {});
+        const summaries = (Array.isArray(out.summaries) ? out.summaries : []).map((item) => {
+          const rec = asRecord(item);
+          return {
+            id: String(rec.id ?? ""),
+            title: typeof rec.title === "string" ? rec.title : "",
+            url: typeof rec.url === "string" ? rec.url : "",
+            lastEditedTime: typeof rec.lastEditedTime === "string" ? rec.lastEditedTime : "",
+          };
+        });
+        return {
+          text: `Fetched ${summaries.length} Notion results.`,
+          status: "completed",
+          actionId: "notion.pages.search",
+          result: {
+            summaries,
+            hasMore: out.hasMore === true,
+            nextCursor: typeof out.nextCursor === "string" ? out.nextCursor : null,
+            totalInBatch: summaries.length,
+          },
+          citations: Array.isArray(searchResult.citations) ? searchResult.citations as Array<Record<string, unknown>> : [],
+        };
       }
 
       if (provider === "slack") {
+        if (queryType.includes("api")) return await runGenericApiRequest("slack.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         if (operation === "create" || queryType.includes("send")) {
           const channel = typeof filters.search === "string" && filters.search.trim()
@@ -4382,8 +4780,74 @@ async function executeAgentTool(
       }
 
       if (provider === "zoom") {
+        if (queryType.includes("api")) return await runGenericApiRequest("zoom.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
-        if (operation === "create") {
+        if (operation !== "list") {
+          if (operation === "delete" || queryType.includes("delete") || queryType.includes("cancel")) {
+            const meetingId = String(queryArgs.meetingId ?? "");
+            const occurrenceId = typeof queryArgs.occurrenceId === "string" ? queryArgs.occurrenceId : undefined;
+            if (!meetingId) return "Zoom meeting delete requires meetingId.";
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "Zoom: delete meeting".`,
+                status: "pending_confirmation",
+                actionId: "zoom.delete_meeting",
+                pendingConfirmation: {
+                  actionId: "zoom.delete_meeting",
+                  label: "Zoom: delete meeting",
+                  preview: { args: { meetingId, occurrenceId } },
+                },
+                result: { meetingId },
+              };
+            }
+            return await genericRead("zoom.delete_meeting", { meetingId, occurrenceId });
+          }
+          if (operation === "update" || queryType.includes("update")) {
+            const meetingId = String(queryArgs.meetingId ?? "");
+            const topic = typeof queryArgs.topic === "string" ? queryArgs.topic : undefined;
+            const startTime = typeof queryArgs.startTime === "string"
+              ? queryArgs.startTime
+              : (typeof queryArgs.start_time === "string" ? queryArgs.start_time : undefined);
+            const durationMinutes = typeof queryArgs.durationMinutes === "number"
+              ? queryArgs.durationMinutes
+              : (typeof queryArgs.duration === "number" ? queryArgs.duration : undefined);
+            const timezone = typeof queryArgs.timezone === "string" ? queryArgs.timezone : undefined;
+            const agenda = typeof queryArgs.agenda === "string" ? queryArgs.agenda : undefined;
+            if (!meetingId) return "Zoom meeting update requires meetingId.";
+            if (
+              topic === undefined &&
+              startTime === undefined &&
+              durationMinutes === undefined &&
+              timezone === undefined &&
+              agenda === undefined
+            ) {
+              return "Zoom meeting update requires at least one mutable field (topic/startTime/durationMinutes/timezone/agenda).";
+            }
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "Zoom: update meeting".`,
+                status: "pending_confirmation",
+                actionId: "zoom.update_meeting",
+                pendingConfirmation: {
+                  actionId: "zoom.update_meeting",
+                  label: "Zoom: update meeting",
+                  preview: { args: { meetingId, topic, startTime, durationMinutes, timezone, agenda } },
+                },
+                result: { meetingId },
+              };
+            }
+            return await genericRead("zoom.update_meeting", {
+              meetingId,
+              topic,
+              startTime,
+              durationMinutes,
+              timezone,
+              agenda,
+            });
+          }
+          if (operation !== "create" && !queryType.includes("create")) {
+            // Fall through to list for non-write intents.
+          } else {
           const topic = String(queryArgs.topic ?? args.query_type ?? "").trim();
           const startTime = typeof queryArgs.startTime === "string"
             ? queryArgs.startTime
@@ -4414,6 +4878,7 @@ async function executeAgentTool(
             timezone,
             agenda,
           });
+          }
         }
 
         const userId = typeof queryArgs.userId === "string" ? queryArgs.userId : "me";
@@ -4426,6 +4891,7 @@ async function executeAgentTool(
       }
 
       if (provider === "hubspot") {
+        if (queryType.includes("api")) return await runGenericApiRequest("hubspot.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         if (queryType.includes("record") && operation === "list") {
           const objectType = String(queryArgs.objectType ?? "contacts");
@@ -4552,6 +5018,7 @@ async function executeAgentTool(
       }
 
       if (provider === "quickbooks") {
+        if (queryType.includes("api")) return await runGenericApiRequest("quickbooks.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         if (operation !== "list") {
           if (queryType.includes("reminder")) {
@@ -4654,9 +5121,114 @@ async function executeAgentTool(
         });
       }
 
-      if (provider === "clickup") {
+      if (provider === "stripe") {
+        if (queryType.includes("api")) return await runGenericApiRequest("stripe.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
-        if (operation === "create") {
+        if (operation === "create" || queryType.includes("refund")) {
+          const paymentIntentId = String(queryArgs.paymentIntentId ?? "");
+          const chargeId = String(queryArgs.chargeId ?? "");
+          const amount = queryArgs.amount === undefined ? undefined : Number(queryArgs.amount);
+          const reason = typeof queryArgs.reason === "string" ? queryArgs.reason : undefined;
+          const metadata = queryArgs.metadata && typeof queryArgs.metadata === "object" && !Array.isArray(queryArgs.metadata)
+            ? queryArgs.metadata
+            : undefined;
+          if (!paymentIntentId && !chargeId) return "Stripe refund create requires paymentIntentId or chargeId.";
+          if (amount !== undefined && (!Number.isFinite(amount) || amount <= 0)) {
+            return "Stripe refund create requires amount to be a positive number when provided.";
+          }
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "Stripe: create refund".`,
+              status: "pending_confirmation",
+              actionId: "stripe.create_refund",
+              pendingConfirmation: {
+                actionId: "stripe.create_refund",
+                label: "Stripe: create refund",
+                preview: { args: { paymentIntentId, chargeId, amount, reason, metadata } },
+              },
+              result: { paymentIntentId, chargeId, amount: amount ?? null },
+            };
+          }
+          return await genericRead("stripe.create_refund", {
+            paymentIntentId,
+            chargeId,
+            amount,
+            reason,
+            metadata,
+          });
+        }
+
+        const paymentIntentId = String(queryArgs.paymentIntentId ?? "");
+        if (paymentIntentId || (queryType.includes("payment_intent") && !queryType.includes("list"))) {
+          if (!paymentIntentId) return "Stripe payment intent lookup requires paymentIntentId.";
+          return await genericRead("stripe.get_payment_intent", { paymentIntentId });
+        }
+        const customerId = String(queryArgs.customerId ?? "");
+        if (customerId || (queryType.includes("customer") && !queryType.includes("list"))) {
+          if (!customerId) return "Stripe customer lookup requires customerId.";
+          return await genericRead("stripe.get_customer", { customerId });
+        }
+        if (queryType.includes("payment_intent")) {
+          return await genericRead("stripe.list_payment_intents", {
+            limit: Math.min(100, limit),
+            customer: typeof queryArgs.customer === "string" ? queryArgs.customer : undefined,
+            status: typeof queryArgs.status === "string" ? queryArgs.status : undefined,
+            startingAfter: typeof queryArgs.startingAfter === "string" ? queryArgs.startingAfter : undefined,
+          });
+        }
+        return await genericRead("stripe.list_customers", {
+          limit: Math.min(100, limit),
+          email: typeof queryArgs.email === "string" ? queryArgs.email : undefined,
+          startingAfter: typeof queryArgs.startingAfter === "string" ? queryArgs.startingAfter : undefined,
+        });
+      }
+
+      if (provider === "clickup") {
+        if (queryType.includes("api")) return await runGenericApiRequest("clickup.api_request");
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation !== "list") {
+          if (operation === "update" || queryType.includes("update")) {
+            const taskId = String(queryArgs.taskId ?? "");
+            const name = typeof queryArgs.name === "string" ? queryArgs.name : undefined;
+            const description = typeof queryArgs.description === "string" ? queryArgs.description : undefined;
+            const status = typeof queryArgs.status === "string" ? queryArgs.status : undefined;
+            const priority = typeof queryArgs.priority === "number" ? queryArgs.priority : undefined;
+            const dueDate = typeof queryArgs.dueDate === "number" ? queryArgs.dueDate : undefined;
+            if (!taskId) return "ClickUp task update requires taskId.";
+            if (
+              name === undefined &&
+              description === undefined &&
+              status === undefined &&
+              priority === undefined &&
+              dueDate === undefined
+            ) {
+              return "ClickUp task update requires at least one mutable field.";
+            }
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "ClickUp: update task".`,
+                status: "pending_confirmation",
+                actionId: "clickup.update_task",
+                pendingConfirmation: {
+                  actionId: "clickup.update_task",
+                  label: "ClickUp: update task",
+                  preview: { args: { taskId, name, description, status, priority, dueDate } },
+                },
+                result: { taskId },
+              };
+            }
+            return await genericRead("clickup.update_task", {
+              taskId,
+              name,
+              description,
+              status,
+              priority,
+              dueDate,
+            });
+          }
+          if (operation !== "create" && !queryType.includes("create")) {
+            // Fall through to read handlers.
+          } else {
           const listId = String(queryArgs.listId ?? "");
           const name = String(queryArgs.name ?? "");
           const description = typeof queryArgs.description === "string" ? queryArgs.description : undefined;
@@ -4687,6 +5259,12 @@ async function executeAgentTool(
             priority,
             dueDate,
           });
+          }
+        }
+        const taskId = String(queryArgs.taskId ?? "");
+        if (taskId || (queryType.includes("task") && !queryType.includes("list"))) {
+          if (!taskId) return "ClickUp task lookup requires taskId.";
+          return await genericRead("clickup.get_task", { taskId });
         }
         if (queryType.includes("workspace") || queryType.includes("team")) {
           return await genericRead("clickup.list_workspaces", {});
@@ -4704,6 +5282,19 @@ async function executeAgentTool(
       }
 
       if (provider === "monday") {
+        if (queryType.includes("api")) {
+          return await genericRead("monday.api_request", {
+            query: String(sharedQueryArgs.query ?? ""),
+            variables: sharedQueryArgs.variables && typeof sharedQueryArgs.variables === "object" &&
+                !Array.isArray(sharedQueryArgs.variables)
+              ? sharedQueryArgs.variables
+              : undefined,
+            headers: sharedQueryArgs.headers && typeof sharedQueryArgs.headers === "object" &&
+                !Array.isArray(sharedQueryArgs.headers)
+              ? sharedQueryArgs.headers
+              : undefined,
+          });
+        }
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         const boardId = String(queryArgs.boardId ?? filters.boardId ?? "");
 
@@ -4766,10 +5357,43 @@ async function executeAgentTool(
       }
 
       if (provider === "trello") {
+        if (queryType.includes("api")) return await runGenericApiRequest("trello.api_request");
         const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
         const boardId = String(queryArgs.boardId ?? filters.boardId ?? "");
 
-        if (operation === "create") {
+        if (operation !== "list") {
+          if (operation === "update" || queryType.includes("update")) {
+            const cardId = String(queryArgs.cardId ?? "");
+            const name = typeof queryArgs.name === "string"
+              ? queryArgs.name
+              : (typeof queryArgs.cardName === "string" ? queryArgs.cardName : undefined);
+            const desc = typeof queryArgs.desc === "string"
+              ? queryArgs.desc
+              : (typeof queryArgs.description === "string" ? queryArgs.description : undefined);
+            const due = typeof queryArgs.due === "string" ? queryArgs.due : undefined;
+            const listId = typeof queryArgs.listId === "string" ? queryArgs.listId : undefined;
+            if (!cardId) return "Trello card update requires cardId.";
+            if (name === undefined && desc === undefined && due === undefined && listId === undefined) {
+              return "Trello card update requires at least one mutable field.";
+            }
+            if (executionMode !== "auto") {
+              return {
+                text: `Pending confirmation required for "Trello: update card".`,
+                status: "pending_confirmation",
+                actionId: "trello.update_card",
+                pendingConfirmation: {
+                  actionId: "trello.update_card",
+                  label: "Trello: update card",
+                  preview: { args: { cardId, name, desc, due, listId } },
+                },
+                result: { cardId },
+              };
+            }
+            return await genericRead("trello.update_card", { cardId, name, desc, due, listId });
+          }
+          if (operation !== "create" && !queryType.includes("create")) {
+            // Fall through to read handlers.
+          } else {
           const listId = String(queryArgs.listId ?? "");
           const name = String(queryArgs.name ?? queryArgs.cardName ?? "").trim();
           const desc = typeof queryArgs.desc === "string"
@@ -4791,6 +5415,7 @@ async function executeAgentTool(
             };
           }
           return await genericRead("trello.create_card", { listId, name, desc, due });
+          }
         }
 
         if (boardId || queryType.includes("card")) {
@@ -4806,7 +5431,7 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, zoom, hubspot, quickbooks, notion, clickup, monday, trello.`;
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, zoom, hubspot, quickbooks, stripe, notion, clickup, monday, trello.`;
     }
 
     case "send_slack_message": {
@@ -5649,7 +6274,7 @@ serve(async (req) => {
     const started = performance.now();
     const integrationToolsCatalogBlock =
       `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
-      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, Notion, ClickUp project/task data, monday.com board data, or Trello board/card data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, Stripe payments, Notion, ClickUp project/task data, monday.com board data, or Trello board/card data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
       "--- End integration tools ---";
 
     const systemPreamble = [
@@ -5658,6 +6283,7 @@ serve(async (req) => {
       `Temporal anchor: referenceNowIso=${temporalAnchor.referenceNowIso}, clientTimeZone=${temporalAnchor.clientTimeZone ?? "unknown"}, clientLocale=${temporalAnchor.clientLocale ?? "unknown"}.`,
       "For relative dates (today/tomorrow/next week), use the temporal anchor and do not infer historical years.",
       "Google Calendar create (query_integration, provider google_calendar, operation create): put invitee emails in event.attendees (strings or {email}). Do not put invitees only in the description. Default event.sendCalendarInvites to true when adding attendees so Google sends invitation emails; set false only if the user explicitly asks to add attendees without emailing.",
+      "Notion reads/writes: use queryArgs and explicit ids/cursors. For 'list all pages', continue with startCursor until hasMore=false. For page retrieval/content, accept pageId or pageUrl and prefer notion.pages.retrieve + notion.blocks.list_children when user asks for content.",
       "If the user gives only a clock time (e.g. 6pm) without a calendar day, ask which day to use before creating the event.",
       "Always follow this orchestration flow: understand the user intent, pick the best tool, execute it, then use tool results to produce the final answer.",
       "Never claim an entity/dashboard/report/workflow/module was created or updated unless a tool result explicitly confirms completion.",

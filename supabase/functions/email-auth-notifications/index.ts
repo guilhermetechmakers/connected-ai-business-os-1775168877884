@@ -11,6 +11,7 @@ const bodySchema = z.object({
   kind: z.enum(["verification", "password_reset"]),
   to: z.string().email(),
   token: z.string().min(4),
+  redirectTo: z.string().url().optional(),
 });
 
 function jsonResponse(data: unknown, status = 200): Response {
@@ -20,12 +21,18 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-function getAppBaseUrl(): string {
+function sanitizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+function getAppBaseUrl(redirectTo?: string): string {
+  if (redirectTo) return sanitizeBaseUrl(redirectTo);
+
   const appUrl = Deno.env.get("APP_URL")?.trim();
-  if (appUrl) return appUrl.replace(/\/+$/, "");
+  if (appUrl) return sanitizeBaseUrl(appUrl);
   const fallback = Deno.env.get("SITE_URL")?.trim();
-  if (fallback) return fallback.replace(/\/+$/, "");
-  throw new Error("APP_URL not configured");
+  if (fallback) return sanitizeBaseUrl(fallback);
+  return "http://localhost:5174";
 }
 
 function buildEmailContent(
@@ -95,7 +102,7 @@ serve(async (req) => {
       return jsonResponse({ ok: false, error: "Invalid body" }, 400);
     }
 
-    const appBaseUrl = getAppBaseUrl();
+    const appBaseUrl = getAppBaseUrl(parsed.data.redirectTo);
     const from = getAuthFromEmail();
     const content = buildEmailContent(parsed.data.kind, appBaseUrl, parsed.data.token);
     await sendResendEmail({
@@ -109,7 +116,7 @@ serve(async (req) => {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("email-auth-notifications failed:", message);
 
-    if (message === "APP_URL not configured" || message === "AUTH_FROM_EMAIL not configured") {
+    if (message === "AUTH_FROM_EMAIL not configured") {
       return jsonResponse({ ok: false, error: message }, 500);
     }
 
