@@ -1753,14 +1753,11 @@ async function generateCustomDashboardCodeArtifact(params: {
     "You build production-ready custom dashboards for Connected AI Business OS.",
     "Use read_integration_data to fetch required live tenant data before finishing.",
     "When enough data is collected, call finish_custom_dashboard with a complete payload.",
-    "The generated component code must be TSX and must export default a React component named CustomDashboard.",
-    "Do not import external packages. Use only React globals and plain JSX.",
-    "The component receives props: snapshotData, queryPlan, sources, refreshedAt.",
-    "Use intentional card-based layout and readable labels aligned with app dashboard style.",
-    "The UI must look like a real dashboard: at least 3 KPI cards, at least 1 chart section, and at least 1 table/list section.",
-    "Never render raw JSON dumps with JSON.stringify as the main content.",
-    "Do not output markdown code fences. Return executable TSX only.",
-    "If data is missing, render explicit empty states.",
+    "Do not generate frontend code.",
+    "The frontend is prebuilt in the app; your job is to return a structured visual plan + data mapping only.",
+    "Always include snapshotData.visualPlan.sections with a practical mix of cards/charts/tables.",
+    "The visual plan should include at least: one KPI cards section, one chart section, and one table section when data exists.",
+    "If data is missing, still return explicit empty-state friendly sections.",
     `Available integration read tools:\n${toolCatalogPrompt}`,
   ].join("\n");
 
@@ -1809,7 +1806,7 @@ async function generateCustomDashboardCodeArtifact(params: {
           properties: {
             title: { type: "string" },
             description: { type: "string" },
-            componentCodeTsx: { type: "string" },
+            componentCodeTsx: { type: "string", description: "Set to '/* prebuilt-runtime */'." },
             queryPlan: {
               type: "array",
               items: {
@@ -1856,7 +1853,7 @@ async function generateCustomDashboardCodeArtifact(params: {
           const structured = customDashboardFinishSchema.safeParse(parsed);
           if (structured.success) {
             const queryPlan = normalizeCustomDashboardQueryPlan(structured.data.queryPlan ?? queryPlanSteps);
-            const code = normalizeGeneratedComponentCode(structured.data.componentCodeTsx, structured.data.title);
+            const code = "/* prebuilt-runtime */";
             let sources = normalizeIntegrationSources(structured.data.sources ?? Array.from(integrationSources));
             let snapshotData = asRecord(
               sanitizeCustomDashboardSnapshot(structured.data.snapshotData ?? {
@@ -2033,7 +2030,7 @@ async function generateCustomDashboardCodeArtifact(params: {
             citationsOut.push(...materialized.citations);
           }
         }
-        const code = normalizeGeneratedComponentCode(structured.data.componentCodeTsx, structured.data.title);
+        const code = "/* prebuilt-runtime */";
         finished = {
           title: structured.data.title,
           description: structured.data.description ?? "",
@@ -2076,7 +2073,7 @@ async function generateCustomDashboardCodeArtifact(params: {
   return {
     title: fallbackTitle,
     description: `AI-generated dashboard based on intent: ${params.intent.slice(0, 220)}`,
-    componentCodeTsx: buildFallbackCustomDashboardCode(fallbackTitle),
+    componentCodeTsx: "/* prebuilt-runtime */",
     queryPlan: queryPlanSteps,
     snapshotData: fallbackSnapshot,
     sources: fallbackSources,
