@@ -16,7 +16,8 @@ export type ProviderKey =
   | "gmail"
   | "google_calendar"
   | "hubspot"
-  | "quickbooks";
+  | "quickbooks"
+  | "clickup";
 
 const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_drive",
@@ -24,7 +25,7 @@ const GOOGLE_PROVIDER_KEYS: ProviderKey[] = [
   "google_calendar",
 ];
 
-type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks";
+type OAuthProviderKey = "slack" | "google" | "hubspot" | "quickbooks" | "clickup";
 type ToolAccessLevel = "read" | "write";
 type ToolRiskTier = "low" | "medium" | "high" | "critical";
 type ToolRoleGroup =
@@ -219,6 +220,13 @@ export const PROVIDER_CATALOG: ProviderCatalogItem[] = [
     id: "quickbooks",
     name: "QuickBooks",
     description: "Customer and invoice sync with finance-safe updates.",
+    supportsOAuth: true,
+    supportsApiKey: false,
+  },
+  {
+    id: "clickup",
+    name: "ClickUp",
+    description: "Workspace/task listing and task creation actions.",
     supportsOAuth: true,
     supportsApiKey: false,
   },
@@ -682,6 +690,47 @@ const TOOL_DEFINITIONS: RuntimeToolDefinition[] = [
     requiresConfirmation: true,
     argsShape: { customerId: "string", totalAmt: "number", privateNote: "string?" },
   },
+  {
+    id: "clickup.list_workspaces",
+    providerKey: "clickup",
+    label: "ClickUp: list workspaces",
+    description: "List workspaces available to the authorized user.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: {},
+  },
+  {
+    id: "clickup.list_tasks",
+    providerKey: "clickup",
+    label: "ClickUp: list tasks",
+    description: "List tasks from a ClickUp list.",
+    accessLevel: "read",
+    riskTier: "low",
+    roleGroup: "reader_plus",
+    requiresConfirmation: false,
+    argsShape: { listId: "string", limit: "number?", page: "number?", includeClosed: "boolean?" },
+  },
+  {
+    id: "clickup.create_task",
+    providerKey: "clickup",
+    label: "ClickUp: create task",
+    description: "Create a task in a ClickUp list.",
+    accessLevel: "write",
+    riskTier: "medium",
+    roleGroup: "ops_plus",
+    requiresConfirmation: true,
+    argsShape: {
+      listId: "string",
+      name: "string",
+      description: "string?",
+      assignees: "number[]?",
+      status: "string?",
+      priority: "number?",
+      dueDate: "number?",
+    },
+  },
 ];
 
 function getToolRiskTier(tool: RuntimeToolDefinition): ToolRiskTier {
@@ -702,6 +751,7 @@ function getToolRoleGroup(tool: RuntimeToolDefinition): ToolRoleGroup | undefine
     return "comms_plus";
   }
   if (tool.providerKey === "google_drive") return "ops_plus";
+  if (tool.providerKey === "clickup") return "ops_plus";
   return undefined;
 }
 
@@ -886,6 +936,7 @@ function toOAuthProvider(providerKey: ProviderKey): OAuthProviderKey {
   if (GOOGLE_PROVIDER_KEYS.includes(providerKey)) return "google";
   if (providerKey === "slack") return "slack";
   if (providerKey === "hubspot") return "hubspot";
+  if (providerKey === "clickup") return "clickup";
   return "quickbooks";
 }
 
@@ -978,6 +1029,20 @@ function getOAuthConfig(providerKey: ProviderKey): OAuthConfig {
         "crm.objects.notes.read",
         "crm.objects.notes.write",
       ],
+    };
+  }
+
+  if (provider === "clickup") {
+    return {
+      provider,
+      authUrl: Deno.env.get("CLICKUP_OAUTH_AUTH_URL") ??
+        "https://app.clickup.com/api",
+      tokenUrl: Deno.env.get("CLICKUP_OAUTH_TOKEN_URL") ??
+        "https://api.clickup.com/api/v2/oauth/token",
+      clientId: envRequired("CLICKUP_CLIENT_ID"),
+      clientSecret: envRequired("CLICKUP_CLIENT_SECRET"),
+      scopes: [],
+      extraAuthParams: { redirect_uri: redirectUri },
     };
   }
 
@@ -1622,6 +1687,9 @@ async function runProviderConnectionTest(
   if (providerKey === "gmail") return await runGmailConnectionTest(accessToken);
   if (providerKey === "google_calendar") return await runCalendarConnectionTest(accessToken);
   if (providerKey === "hubspot") return await runHubspotConnectionTest(accessToken);
+  if (providerKey === "clickup") {
+    return await providerRequest("GET", "https://api.clickup.com/api/v2/user", accessToken);
+  }
 
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) {
@@ -2159,6 +2227,39 @@ async function pullProviderSyncData(
   }
   if (providerKey === "hubspot") {
     return await pullHubspotSyncData(token, cursorState);
+  }
+  if (providerKey === "clickup") {
+    const teamsResp = await providerRequest(
+      "GET",
+      "https://api.clickup.com/api/v2/team",
+      token,
+    );
+    const teams = Array.isArray(teamsResp.teams) ? teamsResp.teams : [];
+    const records: SyncEntityRecord[] = [];
+    const documents: SyncDocumentRecord[] = [];
+    for (const item of teams.slice(0, 100)) {
+      const team = asObject(item);
+      const id = String(team.id ?? "");
+      if (!id) continue;
+      const name = typeof team.name === "string" ? team.name : id;
+      records.push({
+        entityType: "Workspace",
+        externalId: id,
+        payload: { id, name, color: team.color ?? null },
+      });
+      documents.push({
+        externalId: `workspace:${id}`,
+        title: name,
+        content: `ClickUp workspace ${name}`,
+        metadata: { provider: "clickup" },
+      });
+    }
+    return {
+      records,
+      documents,
+      nextCursor: { syncedAt: nowIso() },
+      notes: [`ClickUp workspaces synced: ${records.length}`],
+    };
   }
   const realmId = typeof credential.realm_id === "string" ? credential.realm_id : "";
   if (!realmId) throw new Error("QuickBooks credential missing realm_id");
@@ -3114,6 +3215,59 @@ async function providerToolExecute(
     };
   }
 
+  if (toolId === "clickup.list_workspaces") {
+    const out = await providerRequest(
+      "GET",
+      "https://api.clickup.com/api/v2/team",
+      accessToken,
+    );
+    const teams = Array.isArray(out.teams) ? out.teams : [];
+    return {
+      result: { teams },
+      citations: [toolCitation("clickup", "/v2/team", `teams=${teams.length}`)],
+    };
+  }
+
+  if (toolId === "clickup.list_tasks") {
+    const listId = String(args.listId ?? "");
+    const q = new URLSearchParams();
+    q.set("limit", String(clampInt(args.limit, 20, 1, 100)));
+    q.set("page", String(clampInt(args.page, 0, 0, 1_000)));
+    if (args.includeClosed === true) q.set("include_closed", "true");
+    const out = await providerRequest(
+      "GET",
+      `https://api.clickup.com/api/v2/list/${encodeURIComponent(listId)}/task?${q.toString()}`,
+      accessToken,
+    );
+    const tasks = Array.isArray(out.tasks) ? out.tasks : [];
+    return {
+      result: { tasks, listId },
+      citations: [toolCitation("clickup", `/v2/list/${listId}/task`, `tasks=${tasks.length}`)],
+    };
+  }
+
+  if (toolId === "clickup.create_task") {
+    const listId = String(args.listId ?? "");
+    const body: Record<string, unknown> = {
+      name: String(args.name ?? ""),
+    };
+    if (typeof args.description === "string") body.description = args.description;
+    if (Array.isArray(args.assignees)) body.assignees = args.assignees;
+    if (typeof args.status === "string" && args.status.trim()) body.status = args.status;
+    if (typeof args.priority === "number") body.priority = clampInt(args.priority, 3, 1, 4);
+    if (typeof args.dueDate === "number") body.due_date = Math.trunc(args.dueDate);
+    const out = await providerRequest(
+      "POST",
+      `https://api.clickup.com/api/v2/list/${encodeURIComponent(listId)}/task`,
+      accessToken,
+      body,
+    );
+    return {
+      result: out,
+      citations: [toolCitation("clickup", `/v2/list/${listId}/task`, "task_created")],
+    };
+  }
+
   throw new Error(`Unsupported tool: ${toolId}`);
 }
 
@@ -3266,6 +3420,10 @@ function constrainToolArgs(tool: RuntimeToolDefinition, args: Record<string, unk
   if (tool.id === "google_calendar.list_events") {
     next.maxResults = clampInt(next.maxResults, 50, 1, 150);
   }
+  if (tool.id === "clickup.list_tasks") {
+    next.limit = clampInt(next.limit, 20, 1, 100);
+    next.page = clampInt(next.page, 0, 0, 1_000);
+  }
   return next;
 }
 
@@ -3286,6 +3444,17 @@ function validateToolArgs(tool: RuntimeToolDefinition, args: Record<string, unkn
     const totalAmt = Number(args.totalAmt ?? 0);
     if (!Number.isFinite(totalAmt) || totalAmt <= 0) {
       throw new Error("totalAmt must be a positive number");
+    }
+  }
+  if (tool.id === "clickup.create_task") {
+    const name = String(args.name ?? "").trim();
+    if (!name) throw new Error("name is required");
+    if (name.length > 500) throw new Error("name exceeds maximum length");
+    if (args.assignees !== undefined && !Array.isArray(args.assignees)) {
+      throw new Error("assignees must be an array of user ids");
+    }
+    if (Array.isArray(args.assignees) && args.assignees.length > 50) {
+      throw new Error("assignees exceeds maximum length");
     }
   }
 }

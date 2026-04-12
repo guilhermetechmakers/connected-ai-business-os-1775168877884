@@ -265,6 +265,7 @@ serve(async (req) => {
     "Google Drive: search -> \"google_drive.search_files\"; metadata -> \"google_drive.fetch_file_metadata\"; content -> \"google_drive.fetch_file_content\"; revisions -> \"google_drive.list_revisions\".",
     "HubSpot: search -> \"hubspot.search_records\"; record lookup -> \"hubspot.get_record\"; contact/deal writes -> \"hubspot.upsert_contact\" / \"hubspot.create_contact\" / \"hubspot.create_deal\" / \"hubspot.update_deal_stage\".",
     "QuickBooks: list -> \"quickbooks.list_invoices\" / \"quickbooks.list_customers\"; single invoice -> \"quickbooks.get_invoice\"; writes -> \"quickbooks.create_customer\" / \"quickbooks.create_invoice\" / \"quickbooks.send_invoice_reminder\" / \"quickbooks.update_invoice_safe_fields\".",
+    "ClickUp: workspace list -> \"clickup.list_workspaces\"; task list -> \"clickup.list_tasks\"; task create -> \"clickup.create_task\".",
     "Use timeWindowHint \"today\" for \"today\" / \"this day\". Use \"explicit\" only when you also set explicitDate {year,month,day} for that local calendar day.",
     "For google_calendar.list_events: any specific calendar day (including named weekdays like \"next Monday\", \"this Friday\", \"on Tuesday\") MUST set explicitDate to the resolved {year,month,day} using clientNowIso + clientTimeZone (and clientLocale for disambiguation). Never set timeWindowHint to \"explicit\" without explicitDate.",
     "Relative date phrases must be resolved using clientNowIso + clientTimeZone when provided.",

@@ -506,6 +506,12 @@ async function handleOp(
           type: "OAuth",
           sampleMappings: { "Invoice.Id": "Document.externalId", "Line.Amount": "Opportunity.amount" },
         },
+        {
+          provider: "clickup",
+          label: "ClickUp",
+          type: "OAuth",
+          sampleMappings: { "team.id": "Workspace.externalId", "task.name": "Task.title" },
+        },
       ];
       const { data: connRows } = await supabase
         .from("connectors")

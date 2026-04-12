@@ -17,6 +17,7 @@ Deno.test("runtime tool catalog includes expanded parity tools", () => {
     "slack.update_message",
     "hubspot.create_deal",
     "quickbooks.create_invoice",
+    "clickup.create_task",
   ];
   for (const id of required) assert(ids.has(id), `Missing tool ${id}`);
 });
@@ -67,3 +68,17 @@ Deno.test("role group guard enforces finance admin tools", () => {
   assertEquals(denied, false);
 });
 
+Deno.test("clickup task creation validates required fields and assignment shape", () => {
+  const tool = listRuntimeToolDefinitions().find((t) => t.id === "clickup.create_task");
+  if (!tool) throw new Error("tool missing");
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "123" }),
+    Error,
+    "Missing required argument: name",
+  );
+  assertThrows(
+    () => runtimePolicyTestHooks.validateToolArgs(tool, { listId: "123", name: "Task", assignees: "bad-shape" }),
+    Error,
+    "assignees must be an array of user ids",
+  );
+});

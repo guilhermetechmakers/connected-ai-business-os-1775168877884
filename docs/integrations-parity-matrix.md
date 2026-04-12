@@ -85,6 +85,14 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 | `quickbooks.send_invoice_reminder` | `POST /v3/company/{realmId}/invoice/{id}/send` | write | medium | finance_ops+ | yes | non-idempotent |
 | `quickbooks.update_invoice_safe_fields` | `GET invoice + sparse update` | write | high | finance_admin+ | yes | idempotent-ish |
 
+## ClickUp
+
+| toolId | Provider Endpoint | access | risk | roles | confirm | idempotency |
+|---|---|---|---|---|---|---|
+| `clickup.list_workspaces` | `GET /v2/team` | read | low | reader+ | no | safe read |
+| `clickup.list_tasks` | `GET /v2/list/{listId}/task` | read | low | reader+ | no | safe read |
+| `clickup.create_task` | `POST /v2/list/{listId}/task` | write | medium | ops+ | yes | non-idempotent |
+
 ## Role Groups (normalized)
 
 - `reader+`: `admin`, `owner`, `manager`, `company_admin`, `executive`, `analyst`, `auditor`, `compliance_auditor`.
@@ -97,4 +105,3 @@ It is the implementation contract for integration parity across Gmail, Google Dr
 - `finance_admin+`: `admin`, `owner`, `company_admin`, `executive`, `finance_admin`.
 - `ops+`: `admin`, `owner`, `manager`, `company_admin`, `executive`, `builder`, `integration_admin`.
 - `integration_admin+`: `admin`, `owner`, `company_admin`, `executive`, `integration_admin`, `super_admin`.
-

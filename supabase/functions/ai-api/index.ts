@@ -3258,7 +3258,7 @@ const AGENT_TOOLS = [
         properties: {
           provider: {
             type: "string",
-            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks"],
+            enum: ["gmail", "google_calendar", "google_drive", "slack", "hubspot", "quickbooks", "clickup"],
             description: "The integration to query.",
           },
           query_type: {
@@ -4546,7 +4546,56 @@ async function executeAgentTool(
         });
       }
 
-      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks.`;
+      if (provider === "clickup") {
+        const queryArgs = asRecord(args.queryArgs ?? args.event ?? {});
+        if (operation === "create") {
+          const listId = String(queryArgs.listId ?? "");
+          const name = String(queryArgs.name ?? "");
+          const description = typeof queryArgs.description === "string" ? queryArgs.description : undefined;
+          const assignees = Array.isArray(queryArgs.assignees) ? queryArgs.assignees : undefined;
+          const status = typeof queryArgs.status === "string" ? queryArgs.status : undefined;
+          const priority = typeof queryArgs.priority === "number" ? queryArgs.priority : undefined;
+          const dueDate = typeof queryArgs.dueDate === "number" ? queryArgs.dueDate : undefined;
+          if (!listId || !name) return "ClickUp task create requires listId and name.";
+          if (executionMode !== "auto") {
+            return {
+              text: `Pending confirmation required for "ClickUp: create task".`,
+              status: "pending_confirmation",
+              actionId: "clickup.create_task",
+              pendingConfirmation: {
+                actionId: "clickup.create_task",
+                label: "ClickUp: create task",
+                preview: { args: { listId, name, description, assignees, status, priority, dueDate } },
+              },
+              result: { listId, name },
+            };
+          }
+          return await genericRead("clickup.create_task", {
+            listId,
+            name,
+            description,
+            assignees,
+            status,
+            priority,
+            dueDate,
+          });
+        }
+        if (queryType.includes("workspace") || queryType.includes("team")) {
+          return await genericRead("clickup.list_workspaces", {});
+        }
+        const listId = String(queryArgs.listId ?? "");
+        if (!listId) {
+          return "ClickUp task list requires queryArgs.listId. Use query_type='workspaces' to discover available workspaces.";
+        }
+        return await genericRead("clickup.list_tasks", {
+          listId,
+          page: typeof queryArgs.page === "number" ? queryArgs.page : 0,
+          limit: Math.min(100, limit),
+          includeClosed: queryArgs.includeClosed === true,
+        });
+      }
+
+      return `Live integration query is not implemented for provider "${provider}". Supported: gmail, google_calendar, google_drive, slack, hubspot, quickbooks, clickup.`;
     }
 
     case "send_slack_message": {
@@ -5389,7 +5438,7 @@ serve(async (req) => {
     const started = performance.now();
     const integrationToolsCatalogBlock =
       `\n\n--- Connected integration tools (this user) ---\n${buildToolCatalogSummary(permittedForStream)}\n` +
-      "For factual questions about this user's email, calendar, Slack, Drive, CRM, or accounting data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
+      "For factual questions about this user's email, calendar, Slack, Drive, CRM, accounting, or ClickUp project/task data, call query_integration with a supported provider from this list. Do not invent connector data.\n" +
       "--- End integration tools ---";
 
     const systemPreamble = [
