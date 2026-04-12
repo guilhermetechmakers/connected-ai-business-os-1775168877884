@@ -6,6 +6,7 @@ import {
   Landmark,
   MessageSquare,
   Plug,
+  Video,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +42,8 @@ function ProviderIcon({ providerId }: { providerId: string }) {
       return <Cloud className={cls} aria-hidden />;
     case "quickbooks":
       return <Landmark className={cls} aria-hidden />;
+    case "zoom":
+      return <Video className={cls} aria-hidden />;
     default:
       return <Plug className={cls} aria-hidden />;
   }

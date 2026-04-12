@@ -162,6 +162,46 @@ export const CONNECTOR_PROVIDERS: ProviderDefinition[] = [
     ],
   },
   {
+    key: "zoom",
+    label: "Zoom",
+    description:
+      "Read upcoming meetings and create Zoom meetings for collaboration workflows.",
+    capabilities: ["oauth2", "rate_limited", "read", "write"],
+    auth: "oauth2",
+    defaultMappings: [
+      {
+        sourceField: "meeting.id",
+        targetEntity: "Activity",
+        targetField: "externalId",
+        dataType: "string",
+      },
+      {
+        sourceField: "meeting.topic",
+        targetEntity: "Activity",
+        targetField: "title",
+        dataType: "string",
+      },
+      {
+        sourceField: "meeting.start_time",
+        targetEntity: "Activity",
+        targetField: "startAt",
+        dataType: "timestamp",
+      },
+      {
+        sourceField: "meeting.duration",
+        targetEntity: "Activity",
+        targetField: "durationMinutes",
+        dataType: "number",
+      },
+      {
+        sourceField: "meeting.join_url",
+        targetEntity: "Document",
+        targetField: "url",
+        dataType: "string",
+      },
+    ],
+  },
+  {
     key: "quickbooks",
     label: "QuickBooks Online",
     description:

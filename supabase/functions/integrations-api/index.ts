@@ -24,6 +24,7 @@ const providerKeySchema = z.enum([
   "google_drive",
   "gmail",
   "google_calendar",
+  "zoom",
   "hubspot",
   "quickbooks",
 ]);

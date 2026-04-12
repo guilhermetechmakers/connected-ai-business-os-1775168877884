@@ -11,6 +11,7 @@ export type IntegrationProviderKey =
   | "google_drive"
   | "gmail"
   | "google_calendar"
+  | "zoom"
   | "hubspot"
   | "quickbooks";
 

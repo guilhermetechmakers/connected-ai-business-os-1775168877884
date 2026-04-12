@@ -262,6 +262,7 @@ serve(async (req) => {
     "If the user specifies only a clock time (e.g. 6pm) with no calendar day (no today/tomorrow/weekday/date), set confidence below 0.65 or intent \"general\" with fallbackBehavior \"use_llm_tools\" so the assistant can ask which day — do not silently pick \"today\".",
     "Gmail: search/list -> \"gmail.search_messages\"; single message -> \"gmail.get_message\"; thread -> \"gmail.get_thread\"; send -> \"gmail.send_email\"; draft -> \"gmail.create_draft\".",
     "Slack: channel read -> \"slack.fetch_channel_messages\"; thread read -> \"slack.fetch_thread_replies\"; send -> \"slack.send_message\"; update/delete -> \"slack.update_message\" / \"slack.delete_message\".",
+    "Zoom: list meetings -> \"zoom.list_meetings\"; create meeting -> \"zoom.create_meeting\".",
     "Google Drive: search -> \"google_drive.search_files\"; metadata -> \"google_drive.fetch_file_metadata\"; content -> \"google_drive.fetch_file_content\"; revisions -> \"google_drive.list_revisions\".",
     "HubSpot: search -> \"hubspot.search_records\"; record lookup -> \"hubspot.get_record\"; contact/deal writes -> \"hubspot.upsert_contact\" / \"hubspot.create_contact\" / \"hubspot.create_deal\" / \"hubspot.update_deal_stage\".",
     "QuickBooks: list -> \"quickbooks.list_invoices\" / \"quickbooks.list_customers\"; single invoice -> \"quickbooks.get_invoice\"; writes -> \"quickbooks.create_customer\" / \"quickbooks.create_invoice\" / \"quickbooks.send_invoice_reminder\" / \"quickbooks.update_invoice_safe_fields\".",
